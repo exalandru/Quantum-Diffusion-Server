@@ -1,0 +1,23 @@
+# Logs
+mflux.log
+*.log
+
+# Images générées servies en response_format="url"
+images/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Outils
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# macOS
+.DS_Store
