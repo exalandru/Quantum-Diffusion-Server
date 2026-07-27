@@ -113,6 +113,18 @@ export function Dashboard({
           </div>
         </div>
 
+        {/* An unexpected exit is otherwise invisible: the status poll flips the
+            badge back to "stopped" with nothing to say why. */}
+        {!running && state.server.lastExit && (
+          <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
+            <span className="badge warn">
+              <span className="dot" />
+              {state.server.lastExit}
+            </span>{" "}
+            See the Logs tab for the reason.
+          </p>
+        )}
+
         <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
           The server listens within a second but loads no weights at startup: the first generation
           pays for loading the model, which can take several minutes.

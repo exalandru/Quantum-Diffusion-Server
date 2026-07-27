@@ -15,6 +15,7 @@
     "progress_log_every": 1
   },
   "default_model": "flux2-klein",
+  "default_size": null,
   "models": {
     "flux2-klein": {
       "enabled": true,

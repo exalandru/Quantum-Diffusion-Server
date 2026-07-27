@@ -40,9 +40,10 @@ struct Overview {
 fn overview(app: AppHandle, state: State<'_, SharedSupervisor>) -> Result<Overview, String> {
     let paths = Paths::new(&app)?;
     let hf_home = Paths::default_hf_home();
+    // `status()` reaps a self-exited child, hence the mutable guard.
     let server = state
         .try_lock()
-        .map(|guard| guard.status())
+        .map(|mut guard| guard.status())
         .unwrap_or_default();
 
     Ok(Overview {

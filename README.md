@@ -174,6 +174,19 @@ OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does
 | `progress_log_every` | `1` | a progress log every N steps; `0` to turn it off |
 | `shutdown_grace_s` | `10` | bounds the graceful shutdown; without it a SIGTERM mid-generation would wait for `request_timeout_s` |
 
+### Top-level keys
+
+Two keys sit outside `server`, because they are generation defaults rather than transport settings:
+
+| key | default | role |
+|---|---|---|
+| `default_model` | `flux2-klein` | model used when the request names none. Must be enabled |
+| `default_size` | `null` | config-wide resolution, `"WxH"`. Applies to every model; `null` leaves each on its catalogue size |
+
+`default_size` is the single knob for "generate bigger", without repeating the value under each model. It is still overridable per model — see below — which is what you want when one model does not deserve the same area as the others: `flux2-dev` is a 32B, `flux2-klein` a distilled 4B.
+
+Both accept an environment override too: `MFLUX_SERVER_DEFAULT_MODEL`, `MFLUX_SERVER_DEFAULT_SIZE`.
+
 ### The `models` section — per model
 
 Each entry may contain these keys (all optional, `null` = the catalogue default):
@@ -208,6 +221,7 @@ A full example:
     "progress_log_every": 1
   },
   "default_model": "flux2-klein",
+  "default_size": null,
   "models": {
     "flux2-klein": {
       "enabled": true,
@@ -257,7 +271,16 @@ A full example:
 
 #### Overriding `steps` and `size` — per request or in the config
 
-Both parameters can be overridden **on every request** (highest priority), then in the config, then by the catalogue:
+`size` now has four levels of precedence, `steps` three. Highest wins:
+
+| priority | `size` | `steps` |
+|---|---|---|
+| 1 | the request's `size` | the request's `steps` |
+| 2 | `models.<key>.default_size` | `models.<key>.default_steps` |
+| 3 | the top-level `default_size` | — |
+| 4 | the catalogue | the catalogue |
+
+A per-model `default_size` therefore wins over the global one, which is the point: it is the escape hatch for the one model that should not follow the config-wide resolution.
 
 ```bash
 # Per request — ignores both the config and catalogue defaults
@@ -266,10 +289,11 @@ curl http://127.0.0.1:8765/v1/images/generations \
   -d '{"prompt": "a red fox in the snow", "size": "1024x1024", "steps": 30}'
 ```
 
-In the config, to change a model's default behaviour:
+In the config, to raise the resolution everywhere and change one model's default behaviour:
 
 ```json
 {
+  "default_size": "1536x1536",
   "models": {
     "z-image": {
       "default_size": "1024x1024",
@@ -279,6 +303,8 @@ In the config, to change a model's default behaviour:
   }
 }
 ```
+
+Every model then generates at 1536², except `z-image` which stays at 1024².
 
 #### Quantization — why `z-image` at 8-bit?
 

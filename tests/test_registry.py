@@ -125,6 +125,56 @@ def test_overrides_are_applied():
     assert spec.default_guidance == 5.0
 
 
+# ── Config-wide resolution ─────────────────────────────────────────────────
+
+
+def test_global_default_size_applies_to_every_model():
+    registry = build_registry({}, default_size="1024x1024")
+    assert {(spec.default_width, spec.default_height) for spec in registry.values()} == {(1024, 1024)}
+
+
+def test_a_per_model_size_wins_over_the_global_one():
+    """The escape hatch: one knob for everything, minus the model you pin.
+
+    A 32B does not want the same area as a distilled 4B, so `flux2-dev` has to
+    remain overridable without giving up the global setting.
+    """
+    registry = build_registry(
+        {"flux2-dev": ModelOverride(default_size="768x768")},
+        default_size="1920x1080",
+    )
+    assert (registry["flux2-dev"].default_width, registry["flux2-dev"].default_height) == (768, 768)
+    # 1080 is truncated to 1072, like any other size.
+    assert (registry["z-image"].default_width, registry["z-image"].default_height) == (1920, 1072)
+
+
+def test_no_global_size_leaves_the_catalogue_untouched():
+    catalogue = build_registry({})
+    assert build_registry({}, default_size=None) == catalogue
+
+
+@pytest.mark.parametrize("size", ["auto", "1024", "axb", "1024x"])
+def test_an_invalid_global_size_is_rejected(size):
+    # Rejected at startup rather than on the first request: `load_settings` calls
+    # `registry()` eagerly for exactly this reason.
+    with pytest.raises(ValueError):
+        Settings.model_validate({"default_size": size}).registry()
+
+
+def test_an_empty_global_size_means_unset():
+    # Same convention as `api_key` and `log_file`: an empty string is how an
+    # environment variable says "leave this alone", so it must not be read as a
+    # malformed size.
+    assert Settings.model_validate({"default_size": ""}).registry() == build_registry({})
+
+
+def test_the_global_size_reaches_settings_registry():
+    settings = Settings.model_validate({"default_size": "512x512"})
+    spec = settings.registry()["flux2-klein"]
+    assert (spec.default_width, spec.default_height) == (512, 512)
+    assert spec.default_size == "512x512"
+
+
 def test_overriding_guidance_on_a_distilled_model_fails():
     with pytest.raises(ValueError, match="guidance"):
         build_registry({"flux2-klein": ModelOverride(default_guidance=3.5)})

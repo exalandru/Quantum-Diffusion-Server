@@ -33,6 +33,9 @@ fn default_config() -> Value {
             "shutdown_grace_s": 10
         },
         "default_model": "flux2-klein",
+        // Config-wide generation resolution. `null` leaves every model on its
+        // catalogue size; a per-model `default_size` still wins over this.
+        "default_size": null,
         "models": {
             "flux2-klein": {"enabled": true, "quantize": null, "enable_edit": true},
             "flux2-dev": {"enabled": true, "quantize": 8, "model_path": null},
@@ -83,3 +86,19 @@ pub fn shutdown_grace_s(paths: &Paths) -> f64 {
         .and_then(|value| value.get("server")?.get("shutdown_grace_s")?.as_f64())
         .unwrap_or(10.0)
 }
+
+/// Port declared in the configuration, `8765` by default.
+///
+/// The app used to pick a random free port on every start, which made the
+/// address unstable and could not be configured. Reading it from the file makes
+/// it both fixed across restarts and editable from the Configuration tab.
+pub fn port(paths: &Paths) -> u16 {
+    read(paths)
+        .ok()
+        .and_then(|value| value.get("server")?.get("port")?.as_u64())
+        .and_then(|value| u16::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_PORT)
+}
+
+pub const DEFAULT_PORT: u16 = 8765;

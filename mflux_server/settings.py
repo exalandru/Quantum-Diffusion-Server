@@ -113,6 +113,12 @@ class ModelOverride(BaseModel):
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     default_model: str = "flux2-klein"
+    #: Config-wide generation resolution, `"WxH"`. Sits below the per-model
+    #: `default_size` overrides and above the catalogue, so one knob covers every
+    #: model while a single model can still be pinned. `null` keeps each model on
+    #: its catalogue size. Lives here rather than under `server` because it is a
+    #: generation default, not a transport setting — same level as `default_model`.
+    default_size: str | None = None
     models: dict[str, ModelOverride] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -132,7 +138,7 @@ class Settings(BaseModel):
         return self
 
     def registry(self) -> dict[str, ModelSpec]:
-        return build_registry(self.models)
+        return build_registry(self.models, default_size=self.default_size)
 
 
 def _coerce_env(raw: str, field_name: str) -> Any:
@@ -190,9 +196,12 @@ def load_settings(path: Path | None = None) -> Settings:
     server_raw.update(_env_overrides())
     raw["server"] = server_raw
 
-    default_model_env = os.environ.get(f"{ENV_PREFIX}DEFAULT_MODEL")
-    if default_model_env:
-        raw["default_model"] = default_model_env
+    # The generic `MFLUX_SERVER_*` loop above only covers `ServerSettings`
+    # fields; these two live one level up and are special-cased.
+    for field_name in ("default_model", "default_size"):
+        value = os.environ.get(f"{ENV_PREFIX}{field_name.upper()}")
+        if value:
+            raw[field_name] = value
 
     try:
         settings = Settings.model_validate(raw)

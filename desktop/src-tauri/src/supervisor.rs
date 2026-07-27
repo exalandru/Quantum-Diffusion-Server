@@ -62,7 +62,19 @@ pub struct Supervisor {
 pub type SharedSupervisor = Arc<Mutex<Supervisor>>;
 
 impl Supervisor {
-    pub fn status(&self) -> ServerStatus {
+    /// Current status, reaping the child if it exited on its own.
+    ///
+    /// `&mut self` because of that reaping, and it is not optional: without it
+    /// `child` is never released when the server dies by itself, so the dashboard
+    /// keeps reporting a running process, `last_exit` stays empty, and `start()`
+    /// hands back the remembered port through its early return — leaving Start
+    /// unable to relaunch anything until the user hits Stop. A fixed port makes
+    /// self-exits likely (a port collision is one), so this has to be honest.
+    ///
+    /// `try_wait()` is non-blocking, so reaping lazily on each status poll costs
+    /// nothing and needs neither a watcher task nor a channel.
+    pub fn status(&mut self) -> ServerStatus {
+        self.reap();
         ServerStatus {
             running: self.child.is_some(),
             port: self.port,
@@ -70,8 +82,30 @@ impl Supervisor {
         }
     }
 
+    /// Notice a process that exited without us asking, and record why.
+    fn reap(&mut self) {
+        let Some(child) = self.child.as_mut() else {
+            return;
+        };
+        // A `None` means still running and an `Err` means the status is
+        // unreadable; both leave the state alone.
+        if let Ok(Some(status)) = child.try_wait() {
+            self.last_exit = Some(match status.code() {
+                Some(0) => "the server exited normally".to_owned(),
+                Some(code) => format!("the server exited with code {code}"),
+                // No code means a signal; the reason is usually in the logs.
+                None => "the server was terminated by a signal".to_owned(),
+            });
+            self.child = None;
+            self.port = None;
+        }
+    }
+
     /// Start the server, or return the current port if it is already running.
     pub async fn start(&mut self, app: &AppHandle, paths: &Paths) -> Result<u16, String> {
+        // Reap first: without this the early return below would hand back the
+        // port of a process that already died.
+        self.reap();
         if let Some(port) = self.port {
             if self.child.is_some() {
                 return Ok(port);
@@ -86,7 +120,9 @@ impl Supervisor {
         paths.ensure()?;
         crate::config::ensure_exists(paths)?;
 
-        let port = free_port()?;
+        // `ensure_exists` just ran, so the file is on disk and readable here.
+        let port = crate::config::port(paths);
+        ensure_port_free(port)?;
         let hf_home = Paths::default_hf_home();
         let mut command = Command::new(paths.server_bin());
         command
@@ -204,18 +240,31 @@ where
     });
 }
 
-/// Reserve a free port by letting the OS choose it, then release it.
+/// Check the configured port is bindable, and say what is wrong if it is not.
 ///
-/// A race window remains between closing it and the server binding, unavoidable
-/// since `mflux-server` accepts no pre-opened socket and does not announce the
-/// port it obtained.
-fn free_port() -> Result<u16, String> {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("no free port: {error}"))?;
-    listener
-        .local_addr()
-        .map(|address| address.port())
-        .map_err(|error| format!("port unreadable: {error}"))
+/// Worth doing rather than letting uvicorn discover it: on a bind failure the
+/// server exits and the only symptom reaching the user would be `wait_healthy`
+/// timing out 30 seconds later with "the server is not listening", while the real
+/// `address already in use` sits buried in the log tab. Now that the port is
+/// fixed, a collision is a routine situation — a server left over from a previous
+/// session, or `uv run mflux-server` running alongside — so it deserves a precise
+/// message straight away.
+///
+/// A race window remains between this check and the server binding, unavoidable
+/// since `mflux-server` accepts no pre-opened socket.
+fn ensure_port_free(port: u16) -> Result<(), String> {
+    match std::net::TcpListener::bind(("127.0.0.1", port)) {
+        Ok(listener) => {
+            drop(listener);
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => Err(format!(
+            "Port {port} is already in use. Something else is holding it — a server left over \
+             from a previous session, or `uv run mflux-server` started alongside. Stop it, or \
+             change the port in the Configuration tab."
+        )),
+        Err(error) => Err(format!("Cannot bind 127.0.0.1:{port}: {error}")),
+    }
 }
 
 /// Wait for `/health` to answer. The server listens quickly — it loads no
