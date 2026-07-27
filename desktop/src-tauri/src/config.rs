@@ -1,21 +1,20 @@
-//! Lecture et écriture de `server-config.json`.
+//! Reading and writing `server-config.json`.
 //!
-//! L'app est propriétaire de ce fichier : il vit dans son espace de données et
-//! `MFLUX_SERVER_CONFIG` y pointe explicitement. Ce n'est pas facultatif —
-//! `mflux_server` cherche sinon un chemin relatif à son propre paquet, donc
-//! `site-packages/` dans une installation par wheel, où le fichier n'existe pas ;
-//! et une configuration absente n'est pas une erreur de son point de vue. Sans
-//! cette variable, tous les réglages seraient silencieusement ignorés.
+//! The app owns this file: it lives in the app's data directory and
+//! `MFLUX_SERVER_CONFIG` points at it explicitly. That is not optional —
+//! otherwise `mflux_server` looks for a path relative to its own package, so
+//! `site-packages/` in a wheel install, where the file does not exist; and from
+//! its point of view a missing configuration is not an error. Without that
+//! variable, every setting would be silently ignored.
 //!
-//! On ne valide rien ici : le serveur le fait déjà, et remonte une erreur de
-//! démarrage explicite. Dupliquer le schéma en Rust ne ferait que le laisser
-//! dériver.
+//! We validate nothing here: the server already does, and surfaces an explicit
+//! startup error. Duplicating the schema in Rust would only let it drift.
 
 use serde_json::{json, Value};
 
 use crate::paths::Paths;
 
-/// Configuration de départ, alignée sur celle du dépôt.
+/// Starting configuration, aligned with the repo's.
 fn default_config() -> Value {
     json!({
         "server": {
@@ -24,7 +23,7 @@ fn default_config() -> Value {
             "api_key": null,
             "cors_origins": ["*"],
             "max_n": 4,
-            // 50 étapes sur un modèle 32B dépassent largement les 900 s d'origine.
+            // 50 steps on a 32B model far exceed the original 900s.
             "request_timeout_s": 2400,
             "image_ttl_s": 3600,
             "max_upload_mb": 25,
@@ -44,7 +43,7 @@ fn default_config() -> Value {
     })
 }
 
-/// Crée le fichier s'il manque. Appelé avant chaque démarrage.
+/// Create the file when missing. Called before every start.
 pub fn ensure_exists(paths: &Paths) -> Result<(), String> {
     if paths.config.is_file() {
         return Ok(());
@@ -57,27 +56,27 @@ pub fn read(paths: &Paths) -> Result<Value, String> {
         return Ok(default_config());
     }
     let text = std::fs::read_to_string(&paths.config)
-        .map_err(|error| format!("lecture de {} impossible : {error}", paths.config.display()))?;
+        .map_err(|error| format!("could not read {}: {error}", paths.config.display()))?;
     serde_json::from_str(&text)
-        .map_err(|error| format!("{} n'est pas un JSON valide : {error}", paths.config.display()))
+        .map_err(|error| format!("{} is not valid JSON: {error}", paths.config.display()))
 }
 
 pub fn write(paths: &Paths, value: &Value) -> Result<(), String> {
     paths.ensure()?;
     let text = serde_json::to_string_pretty(value)
-        .map_err(|error| format!("sérialisation impossible : {error}"))?;
-    // Écriture puis remplacement atomique : une coupure au mauvais moment
-    // laisserait sinon une configuration tronquée, que le serveur refuserait au
-    // démarrage suivant.
+        .map_err(|error| format!("could not serialize: {error}"))?;
+    // Write then rename atomically: an interruption at the wrong moment would
+    // otherwise leave a truncated configuration, which the server would reject on
+    // the next start.
     let temporary = paths.config.with_extension("json.tmp");
     std::fs::write(&temporary, format!("{text}\n"))
-        .map_err(|error| format!("écriture de {} impossible : {error}", temporary.display()))?;
+        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
     std::fs::rename(&temporary, &paths.config)
-        .map_err(|error| format!("remplacement de {} impossible : {error}", paths.config.display()))
+        .map_err(|error| format!("could not replace {}: {error}", paths.config.display()))
 }
 
-/// Durée d'arrêt gracieux déclarée dans la configuration, pour dimensionner
-/// l'attente avant SIGKILL.
+/// Graceful-shutdown duration declared in the configuration, used to size the
+/// wait before SIGKILL.
 pub fn shutdown_grace_s(paths: &Paths) -> f64 {
     read(paths)
         .ok()

@@ -1,8 +1,9 @@
-"""Support FLUX.2-dev : config, mappings de poids, tokenizer, encodeur MLX.
+"""FLUX.2-dev support: config, weight mappings, tokenizer, MLX encoder.
 
-Aucun poids réel n'est chargé. Les valeurs attendues viennent des `config.json`
-du repo `black-forest-labs/FLUX.2-dev` et des index de poids — c'est ce qui rend
-ces tests utiles : ils figent l'architecture face à une évolution de mflux.
+No real weights are loaded. The expected values come from the `config.json`
+files of the `black-forest-labs/FLUX.2-dev` repo and from its weight indexes —
+that is what makes these tests useful: they pin the architecture down against
+any evolution of mflux.
 """
 
 from __future__ import annotations
@@ -25,10 +26,10 @@ from mflux_server.flux2_dev.weights import TEXT_ENCODER_PREFIX
 # ── Config ─────────────────────────────────────────────────────────────────
 
 
-def test_config_reprend_le_transformer_config_json():
-    # transformer/config.json du repo. `guidance_embeds` n'y figure pas mais les
-    # poids du guidance embedder sont présents : FLUX.2-dev est distillé sur la
-    # guidance, contrairement à klein.
+def test_config_mirrors_the_transformer_config_json():
+    # The repo's transformer/config.json. `guidance_embeds` is not in it, but the
+    # guidance embedder weights are: FLUX.2-dev is guidance-distilled, unlike
+    # klein.
     assert TRANSFORMER_OVERRIDES == {
         "num_layers": 8,
         "num_single_layers": 48,
@@ -39,45 +40,45 @@ def test_config_reprend_le_transformer_config_json():
     }
 
 
-def test_joint_attention_dim_est_le_produit_des_couches_empilees():
-    # C'est l'invariant qui relie l'encodeur au transformer : la contraction
-    # `context_embedder` attend exactement n_couches × hidden_size.
+def test_joint_attention_dim_is_the_product_of_stacked_layers():
+    # This is the invariant tying the encoder to the transformer: the
+    # `context_embedder` contraction expects exactly n_layers × hidden_size.
     assert (
         TRANSFORMER_OVERRIDES["joint_attention_dim"]
         == len(TEXT_ENCODER_OUT_LAYERS) * (TEXT_ENCODER_OVERRIDES["hidden_size"])
     )
 
 
-def test_couches_de_sortie_suivent_la_regle_de_klein():
-    # klein prend (9, 18, 27) sur 36 couches, soit (n//4, n//2, 3n//4).
+def test_output_layers_follow_the_klein_rule():
+    # klein takes (9, 18, 27) over 36 layers, i.e. (n//4, n//2, 3n//4).
     n = TEXT_ENCODER_OVERRIDES["num_hidden_layers"]
     assert TEXT_ENCODER_OUT_LAYERS == (n // 4, n // 2, 3 * n // 4)
 
 
-def test_model_config_expose_les_overrides_et_la_guidance():
+def test_model_config_exposes_overrides_and_guidance():
     config = flux2_dev_model_config()
     assert config.model_name == "black-forest-labs/FLUX.2-dev"
     assert config.transformer_overrides == TRANSFORMER_OVERRIDES
     assert config.text_encoder_overrides == TEXT_ENCODER_OVERRIDES
     assert config.supports_guidance is True
     assert config.max_sequence_length == 512
-    # Les défauts sigma_* doivent correspondre au scheduler_config.json du repo.
+    # The sigma_* defaults must match the repo's scheduler_config.json.
     assert (config.sigma_base_shift, config.sigma_max_shift) == (0.5, 1.15)
     assert (config.sigma_base_seq_len, config.sigma_max_seq_len) == (256, 4096)
 
 
-def test_model_config_nest_pas_partagee_entre_appels():
-    # `ModelConfig` garde les dicts par référence ; les muter fuiterait d'une
-    # instance à l'autre.
+def test_model_config_is_not_shared_between_calls():
+    # `ModelConfig` keeps the dicts by reference; mutating them would leak from
+    # one instance to the next.
     first = flux2_dev_model_config()
     first.transformer_overrides["num_layers"] = 999
     assert flux2_dev_model_config().transformer_overrides["num_layers"] == 8
 
 
-# ── Mappings de poids ──────────────────────────────────────────────────────
+# ── Weight mappings ────────────────────────────────────────────────────────
 
 
-def test_mapping_transformer_ajoute_le_guidance_embedder():
+def test_transformer_mapping_adds_the_guidance_embedder():
     from mflux.models.flux2.weights.flux2_weight_mapping import Flux2WeightMapping
 
     base = Flux2WeightMapping.get_transformer_mapping()
@@ -89,19 +90,19 @@ def test_mapping_transformer_ajoute_le_guidance_embedder():
     assert "time_guidance_embed.guidance_embedder.linear_2.weight" in sources
 
 
-def test_mapping_encodeur_texte_est_mistral_pas_qwen():
+def test_text_encoder_mapping_is_mistral_not_qwen():
     mapping = Flux2DevWeightDefinition.get_text_encoder_mapping()
-    # 2 tenseurs globaux + 9 par couche.
+    # 2 global tensors + 9 per layer.
     assert len(mapping) == 11
-    # Mistral n'a pas de normalisation par tête de q/k, contrairement à Qwen3.
+    # Mistral has no per-head q/k normalization, unlike Qwen3.
     assert not any("q_norm" in target.to_pattern or "k_norm" in target.to_pattern for target in mapping)
-    # Les clés du checkpoint sont préfixées : c'est un Mistral3 encapsulé.
+    # The checkpoint keys are prefixed: this is a wrapped Mistral3.
     assert all(source.startswith(TEXT_ENCODER_PREFIX) for target in mapping for source in target.from_pattern)
 
 
-def test_les_tenseurs_attendus_du_transformer_sont_tous_couverts():
-    # Rejoue l'expansion des motifs sur les noms réels du checkpoint, sans les
-    # télécharger : 11 tenseurs globaux, 16 par bloc double, 4 par bloc simple.
+def test_every_expected_transformer_tensor_is_covered():
+    # Replays the pattern expansion against the real checkpoint names without
+    # downloading them: 11 global tensors, 16 per double block, 4 per single one.
     from mflux.models.common.weights.mapping.weight_mapper import WeightMapper
 
     keys = _expected_transformer_keys()
@@ -114,7 +115,7 @@ def test_les_tenseurs_attendus_du_transformer_sont_tous_couverts():
     assert sorted(key for key in keys if key not in flat) == []
 
 
-def test_les_tenseurs_attendus_de_lencodeur_sont_tous_couverts():
+def test_every_expected_encoder_tensor_is_covered():
     from mflux.models.common.weights.mapping.weight_mapper import WeightMapper
 
     keys = _expected_text_encoder_keys()
@@ -127,39 +128,39 @@ def test_les_tenseurs_attendus_de_lencodeur_sont_tous_couverts():
     assert sorted(key for key in keys if key not in flat) == []
 
 
-def test_download_patterns_evitent_le_monolithe_racine():
+def test_download_patterns_avoid_the_root_monolith():
     patterns = Flux2DevWeightDefinition.get_download_patterns()
-    # Le repo expose un `flux2-dev.safetensors` de 64,8 Go qui duplique
-    # `transformer/` : un pattern racine doublerait le téléchargement.
+    # The repo exposes a 64.8 GB `flux2-dev.safetensors` that duplicates
+    # `transformer/`: a root-level pattern would double the download.
     assert not any(pattern.startswith("*") for pattern in patterns)
     assert "transformer/*.safetensors" in patterns
     assert "tokenizer/**" in patterns
 
 
-def test_lencodeur_filtre_la_tour_vision():
+def test_encoder_filters_out_the_vision_tower():
     components = {component.name: component for component in Flux2DevWeightDefinition.get_components()}
     assert sorted(components) == ["text_encoder", "transformer", "vae"]
-    # 585 tenseurs dans `text_encoder/`, dont 223 de tour vision, de projecteur
-    # multimodal et de lm_head qu'on ne charge pas.
+    # 585 tensors in `text_encoder/`, 223 of which are vision tower, multimodal
+    # projector and lm_head that we do not load.
     assert components["text_encoder"].weight_prefix_filters == [TEXT_ENCODER_PREFIX]
 
 
-def test_definition_mono_composant_pour_la_prequantification():
+def test_single_component_definition_for_prequantization():
     definition = single_component_definition("transformer")
     assert [component.name for component in definition.get_components()] == ["transformer"]
     assert definition.get_tokenizers() == []
     assert definition.get_download_patterns() == ["transformer/*.safetensors", "transformer/*.json"]
 
-    # Le tokenizer voyage avec l'encodeur : c'est lui qui en a besoin.
+    # The tokenizer travels with the encoder: that is what needs it.
     encoder = single_component_definition("text_encoder")
     assert [tokenizer.name for tokenizer in encoder.get_tokenizers()] == ["mistral3"]
     assert "tokenizer/**" in encoder.get_download_patterns()
 
-    with pytest.raises(ValueError, match="Composant inconnu"):
+    with pytest.raises(ValueError, match="Unknown component"):
         single_component_definition("unet")
 
 
-# ── Guidance embarquée ─────────────────────────────────────────────────────
+# ── Embedded guidance ──────────────────────────────────────────────────────
 
 
 def _tiny_flux2_transformer():
@@ -177,28 +178,28 @@ def _tiny_flux2_transformer():
     )
 
 
-def test_le_transformer_expose_le_guidance_embedder_attendu():
+def test_transformer_exposes_the_expected_guidance_embedder():
     from mlx.utils import tree_flatten
 
     embeddings = _tiny_flux2_transformer().time_guidance_embed
     names = {path for path, _ in tree_flatten(embeddings.parameters())}
-    # Les cibles de notre mapping doivent exister côté module, sinon les deux
-    # tenseurs supplémentaires de FLUX.2-dev tomberaient dans le vide.
+    # Our mapping's targets must exist on the module side, otherwise FLUX.2-dev's
+    # two extra tensors would fall into the void.
     assert {"guidance_linear_1.weight", "guidance_linear_2.weight"} <= names
 
 
-def test_la_guidance_doit_etre_premultipliee_par_mille():
-    """Vigie sur l'heuristique de mflux, que `_guidance_embed` compense.
+def test_guidance_must_be_premultiplied_by_a_thousand():
+    """Canary on the mflux heuristic that `_guidance_embed` compensates for.
 
-    `Flux2Transformer.__call__` ne met la guidance à l'échelle que si elle vaut
-    1.0 ou moins (flux2/.../transformer.py:91), alors que le chemin FLUX.1 — le
-    seul exercé en amont avec `guidance_embeds=True` — multiplie toujours par
-    `num_train_steps` (flux/.../transformer.py:155). Aucun modèle mflux livré
-    n'active `guidance_embeds` sur le transformer FLUX.2, donc ce chemin n'y est
-    pas testé.
+    `Flux2Transformer.__call__` only scales guidance when it is 1.0 or less
+    (flux2/.../transformer.py:91), whereas the FLUX.1 path — the only one
+    exercised upstream with `guidance_embeds=True` — always multiplies by
+    `num_train_steps` (flux/.../transformer.py:155). No shipped mflux model
+    enables `guidance_embeds` on the FLUX.2 transformer, so that path is untested
+    there.
 
-    Si mflux corrige l'heuristique, l'égalité ci-dessous casse : il faudra alors
-    retirer la pré-multiplication de `Flux2Dev._guidance_embed`.
+    If mflux fixes the heuristic, the equality below breaks: the
+    pre-multiplication in `Flux2Dev._guidance_embed` will then have to go.
     """
     transformer = _tiny_flux2_transformer()
     mx.random.seed(0)
@@ -215,18 +216,18 @@ def test_la_guidance_doit_etre_premultipliee_par_mille():
         mx.eval(output)
         return output
 
-    # Le scalaire est utilisé tel quel : pré-multiplier change bien le résultat.
+    # The scalar is used as-is: pre-multiplying does change the result.
     assert not mx.allclose(run(4.0), run(4000.0))
-    # Et il n'est mis à l'échelle que sous 1.0 — d'où la compensation côté serveur.
+    # And it is only scaled below 1.0 — hence the compensation on our side.
     assert mx.allclose(run(0.004), run(4.0))
 
 
-def test_flux2_dev_premultiplie_la_guidance():
+def test_flux2_dev_premultiplies_guidance():
     from mflux_server.flux2_dev.config import flux2_dev_model_config
 
     config = flux2_dev_model_config()
-    # `Flux2Dev._guidance_embed` reproduit `config.guidance * config.num_train_steps`
-    # du chemin FLUX.1 de mflux.
+    # `Flux2Dev._guidance_embed` reproduces `config.guidance *
+    # config.num_train_steps` from mflux's FLUX.1 path.
     assert config.num_train_steps == 1000
 
 
@@ -234,7 +235,7 @@ def test_flux2_dev_premultiplie_la_guidance():
 
 
 class _RecordingTokenizer:
-    """Capture les arguments d'`apply_chat_template` sans tokeniser."""
+    """Captures `apply_chat_template`'s arguments without tokenizing."""
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
@@ -249,21 +250,21 @@ class _RecordingTokenizer:
         }
 
 
-def test_tokenizer_envoie_un_message_system_et_pas_de_generation_prompt():
+def test_tokenizer_sends_a_system_message_and_no_generation_prompt():
     raw = _RecordingTokenizer()
     tokens = Flux2DevTokenizer(tokenizer=raw, max_length=16).tokenize("un renard roux")
 
     call = raw.calls[0]
     roles = [message["role"] for message in call["conversations"][0]]
-    # `LanguageTokenizer` de mflux n'enverrait que le rôle user, avec
-    # add_generation_prompt=True : les deux écarts sont silencieux à l'exécution.
+    # mflux's `LanguageTokenizer` would send the user role only, with
+    # add_generation_prompt=True: both departures are silent at runtime.
     assert roles == ["system", "user"]
     assert call["add_generation_prompt"] is False
     assert call["padding"] == "max_length"
     assert call["truncation"] is True
     assert call["max_length"] == 16
 
-    # Contenus en listes de parts typées, comme Flux2Pipeline.
+    # Contents as lists of typed parts, like Flux2Pipeline.
     user = call["conversations"][0][1]
     assert user["content"] == [{"type": "text", "text": "un renard roux"}]
 
@@ -271,22 +272,22 @@ def test_tokenizer_envoie_un_message_system_et_pas_de_generation_prompt():
     assert tokens.attention_mask.shape == (1, 16)
 
 
-def test_tokenizer_retire_le_token_dimage():
+def test_tokenizer_strips_the_image_token():
     raw = _RecordingTokenizer()
     Flux2DevTokenizer(tokenizer=raw, max_length=8).tokenize("[IMG]un renard")
     user = raw.calls[0]["conversations"][0][1]
     assert user["content"][0]["text"] == "un renard"
 
 
-def test_le_message_system_est_celui_de_diffusers():
+def test_system_message_matches_diffusers():
     from mflux_server.flux2_dev import SYSTEM_MESSAGE
 
-    # Le retour à la ligne est dans la source amont et change la tokenisation.
+    # The line break is in the upstream source and changes tokenization.
     assert SYSTEM_MESSAGE.startswith("You are an AI that reasons about image descriptions.")
     assert "object\nattribution" in SYSTEM_MESSAGE
 
 
-# ── Encodeur Mistral3 ──────────────────────────────────────────────────────
+# ── Mistral3 encoder ───────────────────────────────────────────────────────
 
 
 def _tiny_encoder(**overrides) -> Mistral3TextEncoder:
@@ -306,9 +307,9 @@ def _tiny_encoder(**overrides) -> Mistral3TextEncoder:
     return Mistral3TextEncoder(**kwargs)
 
 
-#: Forme jouet du vrai modèle. `hidden_size` n'est volontairement pas
-#: `num_attention_heads * head_dim`, comme sur FLUX.2-dev (5120 vs 32 × 128) :
-#: `q_proj` et `o_proj` n'y sont pas carrées.
+#: A toy shape of the real model. `hidden_size` is deliberately not
+#: `num_attention_heads * head_dim`, as on FLUX.2-dev (5120 vs 32 × 128), so
+#: `q_proj` and `o_proj` are not square there.
 _REFERENCE_SHAPE = {
     "vocab_size": 97,
     "hidden_size": 40,
@@ -324,7 +325,7 @@ _REFERENCE_SHAPE = {
 
 
 def _reference_pair():
-    """Un `MistralModel` de transformers et notre encodeur, mêmes poids."""
+    """A transformers `MistralModel` and our encoder, sharing the same weights."""
     import torch
     from mflux.models.common.weights.mapping.weight_mapper import WeightMapper
     from transformers import MistralConfig
@@ -335,8 +336,8 @@ def _reference_pair():
     reference.eval()
 
     encoder = Mistral3TextEncoder(**_REFERENCE_SHAPE)
-    # Les poids passent par notre propre table de correspondance : elle est donc
-    # validée en même temps que l'architecture.
+    # The weights go through our own mapping table, so it is validated at the
+    # same time as the architecture.
     encoder.update(
         WeightMapper.apply_mapping(
             hf_weights={
@@ -353,21 +354,21 @@ def _reference_pair():
 @pytest.mark.parametrize(
     ("label", "input_ids", "attention_mask"),
     [
-        # Le tokenizer de FLUX.2-dev complète à gauche : c'est le cas réel, et
-        # celui où une ligne de requête se retrouve entièrement masquée.
-        ("padding à gauche", [0, 0, 0, 0, 5, 12, 7, 33], [0, 0, 0, 0, 1, 1, 1, 1]),
-        ("padding à droite", [5, 12, 7, 33, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
-        ("sans padding", [5, 12, 7, 33, 2, 90, 4, 1], [1, 1, 1, 1, 1, 1, 1, 1]),
+        # FLUX.2-dev's tokenizer pads on the left: that is the real case, and
+        # the one where a query row ends up entirely masked.
+        ("left padding", [0, 0, 0, 0, 5, 12, 7, 33], [0, 0, 0, 0, 1, 1, 1, 1]),
+        ("right padding", [5, 12, 7, 33, 0, 0, 0, 0], [1, 1, 1, 1, 0, 0, 0, 0]),
+        ("no padding", [5, 12, 7, 33, 2, 90, 4, 1], [1, 1, 1, 1, 1, 1, 1, 1]),
     ],
 )
-def test_lencodeur_mlx_reproduit_mistral_de_transformers(label, input_ids, attention_mask):
-    """Le test décisif : même architecture, mêmes poids, mêmes états cachés.
+def test_mlx_encoder_matches_transformers_mistral(label, input_ids, attention_mask):
+    """The decisive test: same architecture, same weights, same hidden states.
 
-    Un modèle jouet à poids aléatoires suffit à valider tout ce qui pourrait
-    diverger silencieusement — RoPE, group-query attention, masque causal,
-    masque de padding, ordre des normes, indexation des états cachés. Une erreur
-    sur n'importe lequel produirait des images qui ignorent le prompt, sans
-    jamais lever d'exception.
+    A toy model with random weights is enough to validate everything that could
+    diverge silently — RoPE, grouped-query attention, the causal mask, the
+    padding mask, the order of the norms, the indexing of hidden states. An error
+    in any of them would produce images that ignore the prompt, without ever
+    raising.
     """
     import numpy as np
     import torch
@@ -389,20 +390,20 @@ def test_lencodeur_mlx_reproduit_mistral_de_transformers(label, input_ids, atten
     assert len(hidden_states) == len(expected.hidden_states)
     useful = np.array(attention_mask, dtype=bool)
     for index, ours in enumerate(hidden_states):
-        # Les positions de padding ne sont comparées ni ici ni en amont : leur
-        # sortie n'est lue par personne. Seul importe qu'elle reste finie.
+        # Padding positions are compared neither here nor upstream: nobody reads
+        # their output. All that matters is that it stays finite.
         theirs = expected.hidden_states[index].numpy()[:, useful]
-        assert np.abs(theirs - np.array(ours)[:, useful]).max() < 1e-5, f"écart à hidden_states[{index}]"
+        assert np.abs(theirs - np.array(ours)[:, useful]).max() < 1e-5, f"mismatch at hidden_states[{index}]"
 
 
-def test_le_padding_a_gauche_ne_produit_pas_de_nan():
-    """Régression : le padding à gauche masquait entièrement les premières lignes.
+def test_left_padding_does_not_produce_nan():
+    """Regression: left padding fully masked the leading rows.
 
-    Sous masque causal, une requête de padding en tête de séquence n'a qu'elle-même
-    à regarder — et elle est masquée. Le softmax renvoie alors NaN, et la ligne
-    suivante le propage (`0 × NaN = NaN`) : dès la deuxième couche, *toutes* les
-    positions sont contaminées et le prompt entier part en NaN. C'est exactement
-    ce que produit le tokenizer de FLUX.2-dev.
+    Under a causal mask, a padding query at the head of the sequence has only
+    itself to look at — and it is masked. Softmax then returns NaN, and the next
+    row propagates it (`0 × NaN = NaN`): by the second layer *every* position is
+    contaminated and the whole prompt goes to NaN. That is exactly what
+    FLUX.2-dev's tokenizer produces.
     """
     encoder = _tiny_encoder()
     input_ids = mx.array([[0, 0, 0, 0, 5, 12, 7, 33]])
@@ -413,7 +414,7 @@ def test_le_padding_a_gauche_ne_produit_pas_de_nan():
     assert bool(mx.all(mx.isfinite(embeds)))
 
 
-def test_lencodeur_produit_un_embedding_de_n_couches_fois_hidden():
+def test_encoder_produces_n_layers_times_hidden_embedding():
     encoder = _tiny_encoder()
     input_ids = mx.array([[1, 2, 3, 4, 5, 0, 0, 0]])
     attention_mask = mx.array([[1, 1, 1, 1, 1, 0, 0, 0]])
@@ -424,9 +425,9 @@ def test_lencodeur_produit_un_embedding_de_n_couches_fois_hidden():
     assert bool(mx.all(mx.isfinite(embeds)))
 
 
-def test_le_premier_etat_cache_est_la_sortie_de_lembedding():
-    # Indexation alignée sur HF : `hidden_states[0]` précède la première couche,
-    # sinon les couches (10, 20, 30) seraient décalées d'un cran.
+def test_first_hidden_state_is_the_embedding_output():
+    # HF-aligned indexing: `hidden_states[0]` precedes the first layer, otherwise
+    # layers (10, 20, 30) would be off by one.
     encoder = _tiny_encoder()
     input_ids = mx.array([[3, 4, 5]])
     _, hidden_states = encoder(input_ids, output_hidden_states=True)
@@ -434,9 +435,9 @@ def test_le_premier_etat_cache_est_la_sortie_de_lembedding():
     assert mx.allclose(hidden_states[0], encoder.embed_tokens(input_ids))
 
 
-def test_lattention_est_causale():
-    # Un token ne doit pas voir ses successeurs : changer le dernier token laisse
-    # les positions précédentes intactes.
+def test_attention_is_causal():
+    # A token must not see its successors: changing the last token leaves the
+    # preceding positions untouched.
     encoder = _tiny_encoder()
     first, _ = encoder(mx.array([[3, 4, 5, 6]]))
     second, _ = encoder(mx.array([[3, 4, 5, 9]]))
@@ -445,9 +446,9 @@ def test_lattention_est_causale():
     assert not mx.allclose(first[:, 3], second[:, 3], atol=1e-5)
 
 
-def test_le_masque_de_padding_isole_les_positions_utiles():
-    # Le prompt est complété jusqu'à max_length : sans masque, le padding
-    # polluerait les 512 positions transmises au transformer.
+def test_padding_mask_isolates_the_useful_positions():
+    # The prompt is padded up to max_length: without a mask, the padding would
+    # pollute all 512 positions handed to the transformer.
     encoder = _tiny_encoder()
     input_ids = mx.array([[3, 4, 5, 7, 7]])
     attention_mask = mx.array([[1, 1, 1, 0, 0]])
@@ -457,9 +458,9 @@ def test_le_masque_de_padding_isole_les_positions_utiles():
     assert mx.allclose(masked[:, :3], reference, atol=1e-5)
 
 
-def test_lattention_gere_le_group_query():
-    # hidden_size n'est pas num_heads * head_dim sur ce modèle : q_proj et o_proj
-    # ne sont pas carrées, et les têtes KV sont répétées.
+def test_attention_handles_grouped_query():
+    # hidden_size is not num_heads * head_dim on this model: q_proj and o_proj
+    # are not square, and the KV heads are repeated.
     encoder = _tiny_encoder(hidden_size=40, num_attention_heads=4, num_key_value_heads=2, head_dim=8)
     attention = encoder.layers[0].self_attn
     assert attention.q_proj.weight.shape == (32, 40)
@@ -472,9 +473,9 @@ def test_lattention_gere_le_group_query():
     assert output.shape == (1, 3, 40)
 
 
-def test_larchitecture_correspond_aux_noms_de_poids_du_checkpoint():
-    # Les chemins MLX doivent être exactement les cibles du mapping, sinon
-    # `model.update(..., strict=False)` laisserait des poids aléatoires en place.
+def test_architecture_matches_the_checkpoint_weight_names():
+    # The MLX paths must be exactly the mapping's targets, otherwise
+    # `model.update(..., strict=False)` would leave random weights in place.
     from mlx.utils import tree_flatten
 
     encoder = _tiny_encoder(num_hidden_layers=2)
@@ -495,7 +496,7 @@ def test_larchitecture_correspond_aux_noms_de_poids_du_checkpoint():
         ):
             expected.add(f"layers.{layer}.{suffix}")
 
-    # `rotary_emb.inv_freq` est calculé, pas chargé.
+    # `rotary_emb.inv_freq` is computed, not loaded.
     assert paths - {"rotary_emb.inv_freq"} == expected
 
     targets = {
@@ -506,7 +507,7 @@ def test_larchitecture_correspond_aux_noms_de_poids_du_checkpoint():
     assert targets == expected
 
 
-# ── Noms de tenseurs attendus du checkpoint ────────────────────────────────
+# ── Expected checkpoint tensor names ───────────────────────────────────────
 
 
 def _expected_transformer_keys() -> list[str]:

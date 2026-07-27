@@ -1,19 +1,19 @@
-"""Tour texte de Mistral3, portée en MLX.
+"""Mistral3's text tower, ported to MLX.
 
-FLUX.2 [dev] conditionne son transformer sur trois états cachés intermédiaires
-de l'encodeur `Mistral3ForConditionalGeneration` empilés — exactement la même
-mécanique que FLUX.2 klein avec Qwen3, mais mflux 0.18.0 ne fournit que le
+FLUX.2 [dev] conditions its transformer on three stacked intermediate hidden
+states of the `Mistral3ForConditionalGeneration` encoder — exactly the mechanic
+FLUX.2 klein uses with Qwen3, except mflux 0.18.0 only ships
 `Qwen3TextEncoder`.
 
-L'écart est mince : le décodeur Mistral est du dense standard (GQA + RoPE +
-RMSNorm + SwiGLU) et *la seule* différence structurelle avec
-`Qwen3VLAttention` est l'absence de `q_norm`/`k_norm` par tête. On ne peut pas
-réutiliser la classe de mflux en neutralisant ces normes : un `Qwen3VLRMSNorm`
-à poids unitaires reste une normalisation, pas une identité. Le reste
-(RMSNorm, MLP, RoPE, `_repeat_kv`, `_apply_rotary_pos_emb`) est repris tel quel.
+The gap is narrow: the Mistral decoder is standard dense (GQA + RoPE + RMSNorm +
+SwiGLU) and *the only* structural difference from `Qwen3VLAttention` is the
+absence of per-head `q_norm`/`k_norm`. mflux's class cannot be reused by
+neutralizing those norms: a `Qwen3VLRMSNorm` with unit weights is still a
+normalization, not an identity. Everything else (RMSNorm, MLP, RoPE,
+`_repeat_kv`, `_apply_rotary_pos_emb`) is reused as-is.
 
-Ce qui est chargé : `language_model.model.*` uniquement. Ni `lm_head`, ni tour
-vision, ni projecteur multimodal — on ne lit que des états cachés.
+What gets loaded: `language_model.model.*` only. No `lm_head`, no vision tower,
+no multimodal projector — we only read hidden states.
 """
 
 from __future__ import annotations
@@ -30,11 +30,10 @@ from mlx.core.fast import scaled_dot_product_attention
 
 
 class Mistral3Attention(nn.Module):
-    """Attention GQA sans normalisation de q/k.
+    """GQA attention without q/k normalization.
 
-    Attention au fait que `hidden_size` (5120) n'est pas
-    `num_attention_heads * head_dim` (4096) sur ce modèle : `q_proj` et
-    `o_proj` ne sont donc pas carrées.
+    Note that `hidden_size` (5120) is not `num_attention_heads * head_dim`
+    (4096) on this model, so `q_proj` and `o_proj` are not square.
     """
 
     def __init__(
@@ -89,7 +88,7 @@ class Mistral3Attention(nn.Module):
             key_states = Qwen3VLAttention._repeat_kv(key_states, self.num_key_value_groups)
             value_states = Qwen3VLAttention._repeat_kv(value_states, self.num_key_value_groups)
 
-        # float32 pour l'attention, comme le fait mflux sur ses autres encodeurs.
+        # float32 for attention, as mflux does on its other encoders.
         attn_output = scaled_dot_product_attention(
             query_states.astype(mx.float32),
             key_states.astype(mx.float32),
@@ -142,7 +141,7 @@ class Mistral3DecoderLayer(nn.Module):
 
 
 class Mistral3TextEncoder(nn.Module):
-    """Défauts issus de `text_encoder/config.json` de black-forest-labs/FLUX.2-dev."""
+    """Defaults taken from black-forest-labs/FLUX.2-dev's `text_encoder/config.json`."""
 
     def __init__(
         self,
@@ -202,11 +201,11 @@ class Mistral3TextEncoder(nn.Module):
         )
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        # Indexation calquée sur `MistralModel.forward` : l'état est empilé
-        # *avant* chaque couche — donc `[0]` est la sortie de l'embedding et
-        # `[i]` l'entrée de la couche i — puis la norme finale est empilée en
-        # dernier. Sans ça, les couches sélectionnées seraient décalées d'un
-        # cran par rapport à `outputs.hidden_states` de transformers.
+        # Indexing mirrors `MistralModel.forward`: the state is stacked *before*
+        # each layer — so `[0]` is the embedding output and `[i]` the input of
+        # layer i — then the final norm is stacked last. Without this, the
+        # selected layers would be off by one relative to transformers'
+        # `outputs.hidden_states`.
         hidden_states_list = [] if output_hidden_states else None
         for layer in self.layers:
             if output_hidden_states:
@@ -225,19 +224,19 @@ class Mistral3TextEncoder(nn.Module):
         attention_mask: mx.array | None = None,
         hidden_state_layers: tuple[int, ...] = (10, 20, 30),
     ) -> mx.array:
-        """Empile plusieurs états cachés en un embedding de `n * hidden_size`.
+        """Stack several hidden states into an `n * hidden_size` embedding.
 
-        `joint_attention_dim` du transformer FLUX.2-dev vaut 15360 = 3 × 5120,
-        d'où les trois couches. Signature alignée sur `Qwen3TextEncoder` pour
-        rester utilisable par `Flux2PromptEncoder.encode_prompt`.
+        The FLUX.2-dev transformer's `joint_attention_dim` is 15360 = 3 × 5120,
+        hence the three layers. The signature mirrors `Qwen3TextEncoder` so this
+        stays usable by `Flux2PromptEncoder.encode_prompt`.
         """
         _, hidden_states_list = self(
             input_ids=input_ids,
             attention_mask=attention_mask,
             output_hidden_states=True,
         )
-        if hidden_states_list is None:  # pragma: no cover - défensif
-            raise RuntimeError("États cachés indisponibles pour l'encodage du prompt.")
+        if hidden_states_list is None:  # pragma: no cover - defensive
+            raise RuntimeError("Hidden states unavailable for prompt encoding.")
 
         stacked = mx.stack([hidden_states_list[i] for i in hidden_state_layers], axis=1)
         batch_size, num_layers, seq_len, hidden_dim = stacked.shape
@@ -250,16 +249,15 @@ class Mistral3TextEncoder(nn.Module):
         seq_len: int,
         dtype: mx.Dtype,
     ) -> mx.array:
-        """Masque additif causal + padding, en `(B, 1, S, S)`.
+        """Additive causal + padding mask, shaped `(B, 1, S, S)`.
 
-        Construit en booléens pour pouvoir rouvrir les lignes entièrement
-        fermées. C'est indispensable, pas cosmétique : le tokenizer de
-        FLUX.2-dev complète **à gauche**, donc les premières requêtes sont des
-        tokens de padding qui, sous masque causal, n'ont qu'eux-mêmes à
-        regarder — et se retrouvent tout masquées. Le softmax y renvoie alors
-        des NaN, que la ligne suivante propage (`0 × NaN = NaN`) jusqu'à
-        contaminer *toutes* les positions dès la deuxième couche. transformers
-        applique le même correctif (`AttentionMaskConverter._unmask_unattended`).
+        Built in booleans so fully closed rows can be reopened. That is
+        essential, not cosmetic: FLUX.2-dev's tokenizer pads on the **left**, so
+        the first queries are padding tokens which, under a causal mask, have
+        only themselves to look at — and end up entirely masked. Softmax then
+        returns NaN, which the next row propagates (`0 × NaN = NaN`) until
+        *every* position is contaminated by the second layer. transformers
+        applies the same fix (`AttentionMaskConverter._unmask_unattended`).
         """
         indices = mx.arange(seq_len, dtype=mx.int32)
         attendable = mx.expand_dims(indices, axis=0) <= mx.expand_dims(indices, axis=1)
@@ -271,8 +269,8 @@ class Mistral3TextEncoder(nn.Module):
         if attention_mask is not None:
             not_padding = mx.expand_dims(mx.expand_dims(attention_mask == 1, axis=1), axis=1)
             attendable = mx.logical_and(attendable, not_padding)
-            # Une ligne sans aucune clé visible est rouverte en entier : sa
-            # sortie n'est jamais lue, mais elle doit rester finie.
+            # A row with no visible key is reopened entirely: its output is
+            # never read, but it has to stay finite.
             attendable = mx.logical_or(
                 attendable,
                 mx.all(mx.logical_not(attendable), axis=-1, keepdims=True),

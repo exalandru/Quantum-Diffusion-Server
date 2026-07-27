@@ -1,8 +1,8 @@
 # mflux-server
 
-Serveur local qui expose [mflux](https://github.com/filipstrand/mflux) — l'implémentation MLX de FLUX, Qwen-Image et Z-Image pour Apple Silicon — derrière une **API compatible OpenAI Images**. De quoi brancher n'importe quel frontend qui parle OpenAI (Misty Studio, Open WebUI, le SDK `openai`…) sur des modèles de diffusion qui tournent en local.
+A local server exposing [mflux](https://github.com/filipstrand/mflux) — the MLX implementation of FLUX, Qwen-Image and Z-Image for Apple Silicon — behind an **OpenAI-Images-compatible API**. Enough to point any OpenAI-speaking frontend (Misty Studio, Open WebUI, the `openai` SDK…) at diffusion models running locally.
 
-Le modèle est **chargé une fois et gardé en mémoire** entre les requêtes, au lieu d'être rechargé par un nouveau process à chaque image.
+The model is **loaded once and kept in memory** between requests, instead of being reloaded by a fresh process for every image.
 
 ## Installation
 
@@ -10,29 +10,29 @@ Le modèle est **chargé une fois et gardé en mémoire** entre les requêtes, a
 uv sync
 ```
 
-mflux est une dépendance du projet — pas besoin de `uv tool install mflux` à côté. Les poids déjà présents dans le cache HuggingFace sont réutilisés tels quels.
+mflux is a project dependency — no need for a separate `uv tool install mflux`. Weights already present in the HuggingFace cache are reused as-is.
 
-Les modèles `black-forest-labs/*` sont *gated* : il faut un token HuggingFace avec l'accès accordé (`hf auth login`). `flux2-dev` demande en plus une conversion préalable, voir [FLUX.2-dev](#flux2-dev--32b-en-8-bits).
+The `black-forest-labs/*` models are *gated*: you need a HuggingFace token that has been granted access (`hf auth login`). `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
 
-## Lancement
+## Running
 
-Il y a deux façons de s'en servir : l'app de bureau, ou le serveur en ligne de commande.
+There are two ways to use this: the desktop app, or the server on the command line.
 
-### App de bureau
+### Desktop app
 
-[`desktop/`](desktop/README.md) contient **Quantum Diffusion Server**, un panneau de contrôle macOS (Tauri + React) qui installe son propre Python, démarre et surveille le serveur, expose la configuration dans un formulaire et pilote la préparation des modèles. Rien à installer sur la machine : le `.app` fait 57 Mo et se charge du reste.
+[`desktop/`](desktop/README.md) holds **Quantum Diffusion Server**, a macOS control panel (Tauri + React) that installs its own Python, starts and supervises the server, exposes the configuration as a form and drives model preparation. Nothing to install on the machine: the `.app` is 57 MB and handles the rest.
 
 ```sh
 cd desktop && npm install && npm run app:build
 ```
 
-### En ligne de commande
+### Command line
 
 ```sh
 uv run mflux-server
 ```
 
-Le serveur écoute sur `http://127.0.0.1:8765`. Docs interactives sur `/docs`.
+The server listens on `http://127.0.0.1:8765`. Interactive docs at `/docs`.
 
 ```sh
 curl http://127.0.0.1:8765/health
@@ -40,73 +40,73 @@ curl http://127.0.0.1:8765/v1/models
 
 curl http://127.0.0.1:8765/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "un renard roux dans la neige", "size": "1024x1024"}'
+  -d '{"prompt": "a red fox in the snow", "size": "1024x1024"}'
 ```
 
-Avec le SDK officiel :
+With the official SDK:
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="peu-importe")
-result = client.images.generate(prompt="un renard roux dans la neige", size="1024x1024")
+client = OpenAI(base_url="http://127.0.0.1:8765/v1", api_key="unused")
+result = client.images.generate(prompt="a red fox in the snow", size="1024x1024")
 print(result.data[0].url)
 ```
 
-## Performances
+## Performance
 
-Mesures réelles sur M3 Ultra / 103 Go, poids déjà en cache HuggingFace :
+Real measurements on an M3 Ultra / 103 GB, weights already in the HuggingFace cache:
 
-| scénario | subprocess (ancien) | serveur, modèle chaud |
+| scenario | subprocess (old) | server, warm model |
 |---|---|---|
-| `flux2-klein`, 1024×1024, 4 étapes | 34,3 s | **18,5 s** |
-| `z-image-turbo`, 1280×720, 9 étapes | — | 45 s au 1ᵉʳ appel, puis **32 s** |
+| `flux2-klein`, 1024×1024, 4 steps | 34.3s | **18.5s** |
+| `z-image-turbo`, 1280×720, 9 steps | — | 45s on the 1st call, then **32s** |
 
-Soit environ **1,8×** sur le modèle par défaut, et ce gain se répète à chaque image.
+That is roughly **1.8×** on the default model, and the gain repeats on every image.
 
-Il faut avoir en tête d'où il vient, parce que ce n'est pas ce qu'on croit : mflux charge ses poids en **lazy/mmap**, donc un modèle 9B est « prêt » en une demi-seconde et le vrai coût est payé pendant la première génération. Ce que le serveur économise, c'est le démarrage d'un process Python complet (import de torch, transformers, mlx) et la rematérialisation des poids — pas un chargement de plusieurs minutes. Sur un modèle où l'inférence domine (`z-image-turbo` à ~3,5 s l'étape), le gain relatif est donc plus faible.
+It is worth knowing where it comes from, because it is not what one would assume: mflux loads its weights **lazily / mmap'd**, so a 9B model is "ready" in half a second and the real cost is paid during the first generation. What the server saves is the startup of a full Python process (importing torch, transformers, mlx) and the rematerialization of the weights — not a multi-minute load. On a model where inference dominates (`z-image-turbo` at ~3.5s per step), the relative gain is therefore smaller.
 
-Corollaire : la mémoire est le vrai facteur limitant. Faire tourner un autre process mflux à côté du serveur fait évincer ses pages et triple le temps de la génération suivante.
+Corollary: memory is the real limiting factor. Running another mflux process alongside the server evicts its pages and triples the time of the next generation.
 
-## Modèles
+## Models
 
-| clé | repo | taille déf. | steps déf. | guidance | negative_prompt | img2img | édition |
+| key | repo | default size | default steps | guidance | negative_prompt | img2img | editing |
 |---|---|---|---|---|---|---|---|
-| `flux2-klein` *(défaut)* | `black-forest-labs/FLUX.2-klein-9B` | 1920×1072 | 4 | figée à 1.0 | ❌ | ✅ | ✅ |
+| `flux2-klein` *(default)* | `black-forest-labs/FLUX.2-klein-9B` | 1920×1072 | 4 | fixed at 1.0 | ❌ | ✅ | ✅ |
 | `flux2-dev` | `black-forest-labs/FLUX.2-dev` | 1024×1024 | 50 | 4.0 | ❌ | ✅ | ❌ |
-| `qwen-image` | `mlx-community/Qwen-Image-2512-8bit` | 1920×1072 | 20 | 3.5 | ✅ | ✅ | sur option |
+| `qwen-image` | `mlx-community/Qwen-Image-2512-8bit` | 1920×1072 | 20 | 3.5 | ✅ | ✅ | opt-in |
 | `z-image` | `mlx-community/Z-Image-bf16` | 1920×1072 | 50 | 4.0 | ✅ | ✅ | ❌ |
-| `z-image-turbo` | `mlx-community/Z-Image-Turbo-bf16` | 1280×720 | 9 | forcée à 0 | ✅ | ✅ | ❌ |
+| `z-image-turbo` | `mlx-community/Z-Image-Turbo-bf16` | 1280×720 | 9 | forced to 0 | ✅ | ✅ | ❌ |
 
-Détails utiles :
+Useful details:
 
-- **`flux2-klein` est distillé.** 4 étapes suffisent, la guidance est figée à 1.0 et `negative_prompt` n'existe pas pour ce modèle — mflux refuse explicitement le paramètre. Le serveur renvoie un 400 clair plutôt que de laisser planter.
-- **`flux2-dev` exige une conversion préalable** et n'est pas utilisable tel quel : 32 milliards de paramètres, repo *gated* (token HF nécessaire), et surtout du code que mflux 0.18.0 ne fournit pas. Voir [FLUX.2-dev](#flux2-dev--32b-en-8-bits). Compter ~113 Go de téléchargement unique, un artefact local de ~58 Go, et ~58 Go résidents pendant la génération.
-- **`z-image` et `z-image-turbo` sont quantifiés à 8 bits au chargement.** Les repos sont stockés en bf16 ; la quantization est donc réelle, mais payée une seule fois puisque le modèle reste chaud.
-- **`qwen-image` est déjà quantifié 8 bits** dans ses métadonnées safetensors : y ajouter `quantize` serait sans effet.
-- **L'édition de `qwen-image` est désactivée par défaut** : elle utilise un repo distinct (`Qwen/Qwen-Image-Edit-2509`), soit plusieurs Go à télécharger au premier appel. Active-la avec `"enable_edit": true`. L'édition de `flux2-klein` partage les mêmes poids que la génération, elle est donc active d'office.
-- **Les dimensions sont tronquées au multiple de 16 inférieur** — c'est une contrainte de mflux. `1920x1080` devient `1920x1072`. Le serveur applique l'arrondi lui-même et renvoie la taille effective dans le champ `mflux.size` de la réponse.
+- **`flux2-klein` is distilled.** 4 steps are enough, guidance is fixed at 1.0 and `negative_prompt` does not exist for this model — mflux rejects the parameter outright. The server returns a clear 400 instead of letting it blow up.
+- **`flux2-dev` requires a conversion step** and is not usable as-is: 32 billion parameters, a *gated* repo (HF token needed), and above all code that mflux 0.18.0 does not provide. See [FLUX.2-dev](#flux2-dev--32b-in-8-bit). Expect ~113 GB of one-time download, a ~58 GB local artifact, and ~58 GB resident during generation.
+- **`z-image` and `z-image-turbo` are quantized to 8 bits at load time.** The repos are stored in bf16, so the quantization is real, but paid only once since the model stays warm.
+- **`qwen-image` is already 8-bit quantized** in its safetensors metadata: adding `quantize` would do nothing.
+- **`qwen-image` editing is off by default**: it uses a separate repo (`Qwen/Qwen-Image-Edit-2509`), i.e. several GB to download on first call. Enable it with `"enable_edit": true`. `flux2-klein` editing shares the same weights as generation, so it is on by default.
+- **Dimensions are truncated down to a multiple of 16** — that is an mflux constraint. `1920x1080` becomes `1920x1072`. The server applies the rounding itself and reports the effective size in the response's `mflux.size` field.
 
-`GET /v1/capabilities` renvoie ce tableau au format JSON.
+`GET /v1/capabilities` returns this table as JSON.
 
 ## Endpoints
 
-| Route | Méthode | Note |
+| Route | Method | Note |
 |---|---|---|
-| `/v1/images/generations` | POST | texte → image |
-| `/v1/images/edits` | POST | multipart ; édition instructionnelle ou img2img |
-| `/v1/models` | GET | format OpenAI standard |
-| `/v1/models/{id}` | GET | + capacités du modèle sous la clé `mflux` |
-| `/v1/capabilities` | GET | extension : tout le catalogue |
-| `/v1/progress` | GET | extension : progression en Server-Sent Events |
-| `/v1/cancel` | POST | extension : interrompt la génération en cours |
-| `/v1/unload` | POST | extension : libère les poids résidents sans redémarrer |
-| `/health` | GET | public même avec une clé d'API ; indique le modèle chaud et la mémoire MLX |
-| `/images/{nom}.png` | GET | images servies en `response_format="url"` |
+| `/v1/images/generations` | POST | text → image |
+| `/v1/images/edits` | POST | multipart; instruction editing or img2img |
+| `/v1/models` | GET | standard OpenAI shape |
+| `/v1/models/{id}` | GET | + the model's capabilities under the `mflux` key |
+| `/v1/capabilities` | GET | extension: the whole catalogue |
+| `/v1/progress` | GET | extension: progress as Server-Sent Events |
+| `/v1/cancel` | POST | extension: interrupts the running generation |
+| `/v1/unload` | POST | extension: frees resident weights without restarting |
+| `/health` | GET | public even with an API key set; reports the warm model and MLX memory |
+| `/images/{name}.png` | GET | images served for `response_format="url"` |
 
-### Suivre, annuler, libérer
+### Following, cancelling, freeing
 
-`GET /v1/progress` diffuse un instantané à chaque changement d'état :
+`GET /v1/progress` streams a snapshot on every state change:
 
 ```sh
 curl -N http://127.0.0.1:8765/v1/progress
@@ -115,80 +115,80 @@ curl -N http://127.0.0.1:8765/v1/progress
 # data: {"state":"idle",...}
 ```
 
-`state` vaut `idle`, `loading` ou `generating`. La distinction compte : le chargement d'un modèle prend de quelques secondes à plusieurs minutes selon sa taille, et n'a pas de progression par étapes. Un commentaire `: ping` est émis toutes les 15 s quand rien ne bouge, pour que les déconnexions soient détectées.
+`state` is one of `idle`, `loading` or `generating`. The distinction matters: loading a model takes anywhere from a few seconds to several minutes depending on its size, and has no step-based progress. A `: ping` comment is emitted every 15s when nothing moves, so disconnects get noticed.
 
-`POST /v1/cancel` interrompt la génération en cours. MLX ne se laisse pas annuler de l'extérieur : l'arrêt passe par le callback de progression, donc il prend effet à l'étape de débruitage suivante — pas instantanément. La requête en cours se termine en **499 `generation_stopped`** et le serveur reste utilisable, modèle toujours chaud.
+`POST /v1/cancel` interrupts the running generation. MLX cannot be cancelled from outside: the stop goes through the progress callback, so it takes effect at the next denoising step — not instantly. The in-flight request ends as a **499 `generation_stopped`** and the server stays usable, model still warm.
 
-`POST /v1/unload` libère les poids sans redémarrer — utile pour rendre les dizaines de Go d'un gros modèle à la machine. La route prend le verrou du moteur : si une génération tourne, elle attend qu'elle finisse plutôt que de la casser.
+`POST /v1/unload` frees the weights without restarting — handy for giving a large model's tens of GB back to the machine. The route takes the engine lock: if a generation is running, it waits for it to finish rather than breaking it.
 
 ```sh
 curl -s -X POST http://127.0.0.1:8765/v1/unload
 # {"loaded_model":null,"memory":{"active_gb":0.0,"peak_gb":35.16,"cache_gb":0.0}}
 ```
 
-### Paramètres
+### Parameters
 
-Standards OpenAI : `prompt`, `model`, `n`, `size`, `response_format`. Les paramètres sans équivalent (`quality`, `style`, `user`, `background`, `output_format`) sont acceptés et ignorés, pas rejetés.
+OpenAI standards: `prompt`, `model`, `n`, `size`, `response_format`. Parameters with no equivalent (`quality`, `style`, `user`, `background`, `output_format`) are accepted and ignored rather than rejected.
 
-Extensions — champs additionnels que les SDK OpenAI ignorent :
+Extensions — additional fields that the OpenAI SDKs ignore:
 
-| champ | effet |
+| field | effect |
 |---|---|
-| `steps` | nombre d'étapes de débruitage |
-| `seed` | graine ; avec `n > 1`, incrémentée à chaque image |
-| `guidance` | échelle CFG, refusée sur les modèles distillés |
-| `negative_prompt` | refusé sur `flux2-klein` |
-| `strength` | *(edits uniquement)* force l'img2img au lieu de l'édition |
-| `response_format: "raw"` | renvoie les octets PNG directement, `n=1` seulement |
+| `steps` | number of denoising steps |
+| `seed` | seed; with `n > 1`, incremented per image |
+| `guidance` | CFG scale, rejected on distilled models |
+| `negative_prompt` | rejected on `flux2-klein` |
+| `strength` | *(edits only)* forces img2img instead of editing |
+| `response_format: "raw"` | returns the PNG bytes directly, `n=1` only |
 
-`size` accepte `"auto"` (taille par défaut du modèle) et le format `"LxH"`.
+`size` accepts `"auto"` (the model's default size) and the `"WxH"` form.
 
-### `/v1/images/edits` : édition ou img2img ?
+### `/v1/images/edits`: editing or img2img?
 
-Deux mécaniques réellement différentes, et le serveur choisit selon ce que tu envoies :
+Two genuinely different mechanics, and the server picks based on what you send:
 
-- **`strength` fourni** → img2img : l'image est encodée puis bruitée, la boucle démarre à une étape intermédiaire. Le résultat est une variation de l'image source.
-- **`strength` absent, modèle avec variante d'édition** → édition instructionnelle : la boucle part du bruit pur et l'image sert de tokens de conditionnement. C'est ce qu'il faut pour « ajoute un chapeau à cette personne ».
-- **`strength` absent, pas de variante d'édition** → img2img avec `strength = 0.4`.
+- **`strength` provided** → img2img: the image is encoded then noised, and the loop starts at an intermediate step. The result is a variation on the source image.
+- **`strength` absent, model has an edit variant** → instruction editing: the loop starts from pure noise and the image serves as conditioning tokens. This is what you want for "add a hat to this person".
+- **`strength` absent, no edit variant** → img2img with `strength = 0.4`.
 
-Le paramètre `mask` d'OpenAI est refusé en 400 : aucun modèle du catalogue ne fait d'inpainting.
+OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does inpainting.
 
 ## Configuration
 
-`server-config.json` (JSON). Toute clé de la section `server` est surchargeable par `MFLUX_SERVER_<CLÉ>` en majuscules — `MFLUX_SERVER_PORT=9000`, `MFLUX_SERVER_API_KEY=…`, `MFLUX_SERVER_CORS_ORIGINS=https://a.example,https://b.example`. `MFLUX_SERVER_CONFIG` pointe vers un autre fichier de config.
+`server-config.json` (JSON). Every key in the `server` section can be overridden by `MFLUX_SERVER_<KEY>` in upper case — `MFLUX_SERVER_PORT=9000`, `MFLUX_SERVER_API_KEY=…`, `MFLUX_SERVER_CORS_ORIGINS=https://a.example,https://b.example`. `MFLUX_SERVER_CONFIG` points at a different config file.
 
-### Section `server`
+### The `server` section
 
-| clé | défaut | rôle |
+| key | default | role |
 |---|---|---|
 | `host` / `port` | `127.0.0.1` / `8765` | binding |
-| `api_key` | `null` | si renseignée, `Authorization: Bearer` exigé. **Obligatoire dès que `host` n'est pas local** |
-| `cors_origins` | `["*"]` | origines autorisées |
-| `max_n` | `4` | borne le `n` d'OpenAI (générations séquentielles) |
-| `request_timeout_s` | `900` | interrompt la boucle de débruitage au-delà |
-| `image_store` / `image_ttl_s` | `images` / `3600` | dossier et durée de vie des images servies en `url` |
-| `max_upload_mb` | `25` | taille maximale d'une image envoyée à `/v1/images/edits` |
-| `default_response_format` | `url` | valeur retenue si le client n'en envoie pas. `url` est le défaut d'OpenAI : le changer casse les SDK |
-| `log_level` / `log_file` | `INFO` / `mflux.log` | `log_file: null` désactive le fichier. Chemin rendu absolu, dossiers parents créés |
-| `log_json` | `false` | une ligne = un objet JSON, **sur stdout**. Voir ci-dessous |
-| `progress_log_every` | `1` | log de progression toutes les N étapes ; `0` pour couper |
-| `shutdown_grace_s` | `10` | borne l'arrêt gracieux ; sans ça un SIGTERM en pleine génération attendrait `request_timeout_s` |
+| `api_key` | `null` | when set, `Authorization: Bearer` is required. **Mandatory as soon as `host` is not local** |
+| `cors_origins` | `["*"]` | allowed origins |
+| `max_n` | `4` | bounds OpenAI's `n` (generations are sequential) |
+| `request_timeout_s` | `900` | interrupts the denoising loop past this point |
+| `image_store` / `image_ttl_s` | `images` / `3600` | directory and lifetime of images served as `url` |
+| `max_upload_mb` | `25` | maximum size of an image sent to `/v1/images/edits` |
+| `default_response_format` | `url` | value used when the client sends none. `url` is OpenAI's default: changing it breaks the SDKs |
+| `log_level` / `log_file` | `INFO` / `mflux.log` | `log_file: null` disables the file. The path is made absolute and parent directories are created |
+| `log_json` | `false` | one line, one JSON object, **on stdout**. See below |
+| `progress_log_every` | `1` | a progress log every N steps; `0` to turn it off |
+| `shutdown_grace_s` | `10` | bounds the graceful shutdown; without it a SIGTERM mid-generation would wait for `request_timeout_s` |
 
-### Section `models` — par modèle
+### The `models` section — per model
 
-Chaque entrée peut contenir ces clés (toutes optionnelles, `null` = défaut du catalogue) :
+Each entry may contain these keys (all optional, `null` = the catalogue default):
 
-| clé | valeurs | rôle |
+| key | values | role |
 |---|---|---|
-| `enabled` | `true` / `false` | active ou retire le modèle du catalogue exposé |
-| `default_size` | `"WxH"` ou `null` | résolution par défaut (ex: `"1024x1024"`). Troncée au multiple de 16. |
-| `default_steps` | entier ≥ 1 ou `null` | nombre d'étapes de débruitage par défaut |
-| `default_guidance` | float ≥ 0 ou `null` | échelle CFG par défaut. Refusée sur les modèles distillés (`flux2-klein`, `z-image-turbo`). |
-| `quantize` | 3/4/5/6/8, 0 ou `null` | quantification au chargement. `0` = aucune (bf16). `null` = défaut du catalogue. |
-| `model_path` | chemin, repo HF ou `null` | source des poids, à la place de celle du catalogue. Sert surtout à `flux2-dev`, dont l'artefact pré-quantifié est propre à la machine. |
-| `enable_edit` | `true` / `false` ou `null` | active la variante d'édition instructionnelle. `null` = défaut du catalogue. |
+| `enabled` | `true` / `false` | adds or removes the model from the exposed catalogue |
+| `default_size` | `"WxH"` or `null` | default resolution (e.g. `"1024x1024"`). Truncated to a multiple of 16. |
+| `default_steps` | integer ≥ 1 or `null` | default number of denoising steps |
+| `default_guidance` | float ≥ 0 or `null` | default CFG scale. Rejected on distilled models (`flux2-klein`, `z-image-turbo`). |
+| `quantize` | 3/4/5/6/8, 0 or `null` | quantization at load time. `0` = none (bf16). `null` = the catalogue default. |
+| `model_path` | path, HF repo or `null` | weight source, in place of the catalogue's. Mostly useful for `flux2-dev`, whose pre-quantized artifact is machine-specific. |
+| `enable_edit` | `true` / `false` or `null` | enables the instruction-editing variant. `null` = the catalogue default. |
 
-Exemple complet :
+A full example:
 
 ```json
 {
@@ -255,18 +255,18 @@ Exemple complet :
 }
 ```
 
-#### Surcharge de `steps` et `size` — à la volée ou dans la config
+#### Overriding `steps` and `size` — per request or in the config
 
-Les deux paramètres sont surchargeables **à chaque requête** (priorité absolue), puis dans la config, puis par le catalogue :
+Both parameters can be overridden **on every request** (highest priority), then in the config, then by the catalogue:
 
 ```bash
-# À la volée — ignore les défauts de config et du catalogue
+# Per request — ignores both the config and catalogue defaults
 curl http://127.0.0.1:8765/v1/images/generations \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "un renard roux dans la neige", "size": "1024x1024", "steps": 30}'
+  -d '{"prompt": "a red fox in the snow", "size": "1024x1024", "steps": 30}'
 ```
 
-Dans la config, pour changer le comportement par défaut d'un modèle :
+In the config, to change a model's default behaviour:
 
 ```json
 {
@@ -280,15 +280,15 @@ Dans la config, pour changer le comportement par défaut d'un modèle :
 }
 ```
 
-#### Quantification — pourquoi `z-image` en 8-bit ?
+#### Quantization — why `z-image` at 8-bit?
 
-Les repos `Z-Image-bf16` et `Z-Image-Turbo-bf16` sont stockés en bf16 (précision complète), mais le serveur les quantifie à 8 bits au chargement. Raisons :
+The `Z-Image-bf16` and `Z-Image-Turbo-bf16` repos are stored in bf16 (full precision), but the server quantizes them to 8 bits at load time. Reasons:
 
-- **Mémoire** : un modèle ~9B en bf16 prend ~18 Go. En int8, ~9 Go. Sur mémoire unifiée (Mac), ça fait la différence entre pouvoir ou non garder le modèle chaud + faire tourner autre chose.
-- **Coût amorti** : la quantification est payée une seule fois au premier chargement, puis le modèle reste en mémoire.
-- **Qualité** : la perte visuelle est négligeable pour de l'image générative.
+- **Memory**: a ~9B model in bf16 takes ~18 GB. In int8, ~9 GB. On unified memory (Mac), that is the difference between being able to keep the model warm plus run something else, or not.
+- **Amortized cost**: quantization is paid once, on the first load, and then the model stays in memory.
+- **Quality**: the visual loss is negligible for generative imagery.
 
-Pour désactiver la quantification et lancer en bf16 :
+To disable quantization and run in bf16:
 
 ```json
 {
@@ -298,39 +298,39 @@ Pour désactiver la quantification et lancer en bf16 :
 }
 ```
 
-## FLUX.2-dev — 32B en 8 bits
+## FLUX.2-dev — 32B in 8-bit
 
-`flux2-dev` est le seul modèle du catalogue qui demande une préparation, pour deux raisons cumulées.
+`flux2-dev` is the only model in the catalogue that requires preparation, for two compounding reasons.
 
-**mflux 0.18.0 ne sait pas charger FLUX.2-dev.** Sa famille FLUX.2 est *klein-only* : `AVAILABLE_MODELS` ne contient que les variantes klein, et `Flux2Initializer` câble `Qwen3TextEncoder` et `Flux2KleinWeightDefinition` en dur. Mais l'écart réel est mince — vérifié tenseur par tenseur contre les index de poids du repo :
+**mflux 0.18.0 cannot load FLUX.2-dev.** Its FLUX.2 family is *klein-only*: `AVAILABLE_MODELS` holds nothing but the klein variants, and `Flux2Initializer` hardwires `Qwen3TextEncoder` and `Flux2KleinWeightDefinition`. But the actual gap is narrow — verified tensor by tensor against the repo's weight indexes:
 
-| composant | verdict |
+| component | verdict |
 |---|---|
-| transformer | l'architecture est celle de klein en plus grand ; chaque clé de `transformer/config.json` est un kwarg de `Flux2Transformer`. Le mapping de poids de mflux couvre **329 des 331** tenseurs. |
-| poids manquants | `time_guidance_embed.guidance_embedder.linear_{1,2}` — FLUX.2-dev est *guidance-distilled*, klein non. Deux `WeightTarget` ajoutés. |
-| VAE | identique (`AutoencoderKLFlux2`, 32 canaux latents) : le mapping de mflux s'applique tel quel. |
-| scheduler | les défauts `sigma_*` de `ModelConfig` correspondent déjà au `scheduler_config.json` du repo. |
-| encodeur texte | **le seul vrai écart.** FLUX.2-dev empile trois états cachés d'un `Mistral3ForConditionalGeneration` (40 couches, hidden 5120 → 3 × 5120 = `joint_attention_dim` = 15360), là où klein utilise Qwen3. |
+| transformer | the architecture is klein's, just bigger; every key of `transformer/config.json` is a kwarg of `Flux2Transformer`. mflux's weight mapping covers **329 of the 331** tensors. |
+| missing weights | `time_guidance_embed.guidance_embedder.linear_{1,2}` — FLUX.2-dev is *guidance-distilled*, klein is not. Two `WeightTarget` entries added. |
+| VAE | identical (`AutoencoderKLFlux2`, 32 latent channels): mflux's mapping applies unchanged. |
+| scheduler | `ModelConfig`'s `sigma_*` defaults already match the repo's `scheduler_config.json`. |
+| text encoder | **the only real gap.** FLUX.2-dev stacks three hidden states of a `Mistral3ForConditionalGeneration` (40 layers, hidden 5120 → 3 × 5120 = `joint_attention_dim` = 15360), where klein uses Qwen3. |
 
-L'encodeur est donc porté en MLX dans [`mflux_server/flux2_dev/mistral3.py`](mflux_server/flux2_dev/mistral3.py). Le décodeur Mistral est du dense standard et *la seule* différence structurelle avec `Qwen3VLAttention` de mflux est l'absence de `q_norm`/`k_norm` par tête — le RMSNorm, le MLP SwiGLU, le RoPE et les helpers GQA sont réutilisés tels quels. Le résultat est validé contre `MistralModel` de transformers : mêmes poids, mêmes états cachés à 7e-7 près, sur les trois configurations de padding.
+So the encoder is ported to MLX in [`mflux_server/flux2_dev/mistral3.py`](mflux_server/flux2_dev/mistral3.py). The Mistral decoder is standard dense and *the only* structural difference from mflux's `Qwen3VLAttention` is the absence of per-head `q_norm`/`k_norm` — the RMSNorm, the SwiGLU MLP, the RoPE and the GQA helpers are reused as-is. The result is validated against transformers' `MistralModel`: same weights, same hidden states to within 7e-7, across all three padding configurations.
 
-Conséquence agréable : **aucun Torch à l'inférence**. Tout tient en MLX, l'encodeur reste chaud avec le transformer, et il n'y a rien à recharger entre deux prompts.
+A pleasant consequence: **no Torch at inference**. Everything stays in MLX, the encoder stays warm alongside the transformer, and there is nothing to reload between prompts.
 
-**Le repo est en bf16, et ça ne rentre pas.** Transformer 64,5 Go + encodeur 45,8 Go + VAE, soit ~111 Go de poids résidents. En 8 bits on tombe à ~58 Go, confortable sur 96 Go de mémoire unifiée — mais quantifier au chargement suppose justement de tenir le bf16 en mémoire d'abord. D'où une conversion préalable, une fois :
+**The repo ships bf16, and it does not fit.** A 64.5 GB transformer plus a 45.8 GB encoder plus the VAE, i.e. ~111 GB of resident weights. At 8 bits we drop to ~58 GB, comfortable on 96 GB of unified memory — but quantizing at load time requires holding the bf16 in memory first. Hence a one-time conversion up front:
 
 ```bash
 uv run mflux-server-prequantize            # → ~/.cache/mflux-server/flux2-dev-mlx-8bit
 ```
 
-Le repo est *gated* : il faut un token Hugging Face avec l'accès accordé (`hf auth login`). Compter ~113 Go de téléchargement et ~58 Go écrits. Le script travaille **composant par composant**, et quantifie le transformer **bloc par bloc** : sans ça le pic mémoire atteindrait ~96 Go, contre ~66 Go ainsi. L'ordre par défaut (transformer, encodeur, VAE) permet de purger le bf16 du cache HF entre deux étapes — le pic disque passe de ~169 Go à ~97 Go, et le script rappelle quoi supprimer.
+The repo is *gated*: you need a HuggingFace token that has been granted access (`hf auth login`). Expect ~113 GB of download and ~58 GB written. The script works **one component at a time**, and quantizes the transformer **block by block**: without that the memory peak would reach ~96 GB, against ~66 GB this way. The default order (transformer, encoder, VAE) lets you purge the bf16 from the HF cache between steps — the disk peak falls from ~169 GB to ~97 GB, and the script reminds you what to delete.
 
-Pour convertir un seul composant, par exemple pour valider l'encodeur avant d'engager les 64 Go du transformer :
+To convert a single component, for instance to validate the encoder before committing to the transformer's 64 GB:
 
 ```bash
 uv run mflux-server-prequantize --components text_encoder
 ```
 
-Le rechargement ne demande aucune configuration : mflux détecte le `quantization_level` inscrit dans les métadonnées safetensors et quantifie la structure avant de poser les poids. Si l'artefact est ailleurs, renseigne `model_path` :
+Reloading needs no configuration at all: mflux detects the `quantization_level` written into the safetensors metadata and quantizes the structure before applying the weights. If the artifact lives elsewhere, set `model_path`:
 
 ```json
 {
@@ -340,82 +340,82 @@ Le rechargement ne demande aucune configuration : mflux détecte le `quantizatio
 }
 ```
 
-Sans artefact, le serveur refuse le chargement avec un message qui rappelle la commande — plutôt que de retomber silencieusement sur le repo bf16 et de tenter une quantification de 111 Go.
+With no artifact, the server refuses to load and says so with a message that repeats the command — rather than silently falling back to the bf16 repo and attempting a 111 GB quantization.
 
-Deux limites à connaître :
+Two limitations worth knowing:
 
-- **Pas de `negative_prompt`.** FLUX.2-dev est guidance-distilled : la guidance est un scalaire embarqué dans le transformer, pas un CFG. Une seule passe par étape (deux fois plus rapide que du CFG), mais aucun prompt négatif possible. La guidance reste réglable, défaut 4.0.
-- **Pas d'édition multi-images.** `/v1/images/edits` fonctionne en img2img, mais le conditionnement par tokens d'images de référence n'est pas implémenté.
+- **No `negative_prompt`.** FLUX.2-dev is guidance-distilled: guidance is a scalar embedded in the transformer, not CFG. One pass per step (twice as fast as CFG), but no negative prompt is possible. Guidance stays adjustable, defaulting to 4.0.
+- **No multi-image editing.** `/v1/images/edits` works in img2img mode, but conditioning on reference-image tokens is not implemented.
 
-Enfin, `request_timeout_s` passe à `2400` : 50 étapes sur un 32B dépassent largement les 900 s d'origine.
+Finally, `request_timeout_s` goes to `2400`: 50 steps on a 32B model far exceed the original 900s.
 
-### Logs JSON pour un superviseur
+### JSON logs for a supervisor
 
-`"log_json": true` (ou `MFLUX_SERVER_LOG_JSON=1`) fait passer les logs en JSON Lines, une ligne par objet :
-
-```json
-{"ts":"2026-07-27T14:19:02","level":"INFO","logger":"mflux_server","message":"z-image-turbo seed=42 1280x720 — étape 3/9","event":"generation_step","fields":{"step":3,"total":9}}
-```
-
-`event` vaut `model_loading`, `model_ready`, `model_unload`, `generation_start`, `generation_step`, `generation_done`, `generation_cancel_requested`, ou côté conversion `prequantize_component_start`, `prequantize_progress`, `prequantize_component_done`. Le `message` humain reste présent à côté des champs structurés.
-
-**Dans ce mode les logs sortent sur stdout, pas sur stderr**, et l'access log d'uvicorn est coupé. La raison est concrète : mflux affiche sa barre de débruitage avec tqdm (`Config.time_steps`), qui écrit sur stderr des fragments terminés par `\r` **sans retour à la ligne**. Les objets JSON s'y collaient sur le même segment — `\r 0%| | 0/40 [00:00<?, ?it/s]{"ts": …}` — et un consommateur qui découpe sur `\n` les manquait tous. tqdm n'offre aucune variable d'environnement pour se taire, d'où la séparation des canaux :
-
-- **stdout** : les événements structurés, une ligne = un JSON valide, rien d'autre ;
-- **stderr** : le texte destiné aux humains, les barres de progression, et les logs de démarrage d'uvicorn.
-
-`mflux-server-prequantize --json-logs` applique la même configuration à la conversion.
-
-### Accès depuis le réseau local
+`"log_json": true` (or `MFLUX_SERVER_LOG_JSON=1`) switches the logs to JSON Lines, one object per line:
 
 ```json
-{"server": {"host": "0.0.0.0", "api_key": "une-clé-longue-et-aléatoire"}}
+{"ts":"2026-07-27T14:19:02","level":"INFO","logger":"mflux_server","message":"z-image-turbo seed=42 1280x720 — step 3/9","event":"generation_step","fields":{"step":3,"total":9}}
 ```
 
-Le serveur refuse de démarrer avec un host non local sans clé d'API.
+`event` is one of `model_loading`, `model_ready`, `model_unload`, `generation_start`, `generation_step`, `generation_done`, `generation_cancel_requested`, or on the conversion side `prequantize_component_start`, `prequantize_progress`, `prequantize_component_done`. The human-readable `message` stays alongside the structured fields.
 
-## Limites connues
+**In this mode the logs go to stdout, not stderr**, and uvicorn's access log is disabled. The reason is concrete: mflux renders its denoising bar with tqdm (`Config.time_steps`), which writes carriage-return-terminated fragments to stderr **with no newline**. The JSON objects ended up glued to them on the same segment — `\r 0%| | 0/40 [00:00<?, ?it/s]{"ts": …}` — and a consumer splitting on `\n` missed all of them. tqdm offers no environment variable to silence itself, hence the channel split:
 
-- **Une génération à la fois.** C'est volontaire : sur mémoire unifiée, deux modèles vivants saturent la machine. Les requêtes concurrentes sont mises en file, pas rejetées.
-- **`n > 1` est séquentiel.** Le modèle reste chaud, mais les images sortent l'une après l'autre.
-- **Le timeout ne couvre pas le chargement des poids.** Il n'est vérifié qu'entre deux étapes de débruitage — c'est le seul point d'interruption qu'offre mflux. Un premier appel qui télécharge 30 Go peut donc dépasser `request_timeout_s`.
-- **Pas de progression côté client** (ni SSE ni `partial_images`). Elle est journalisée côté serveur ; la barre `tqdm` de mflux reste visible dans le terminal.
-- **Pas de LoRA, ControlNet, inpainting, upscale.** mflux les propose, ils ne sont pas exposés ici.
+- **stdout**: the structured events, one line one valid JSON object, nothing else;
+- **stderr**: the human-readable text, the progress bars, and uvicorn's startup logs.
 
-## Développement
+`mflux-server-prequantize --json-logs` applies the same configuration to the conversion.
+
+### Access from the local network
+
+```json
+{"server": {"host": "0.0.0.0", "api_key": "a-long-random-key"}}
+```
+
+The server refuses to start with a non-local host and no API key.
+
+## Known limitations
+
+- **One generation at a time.** That is deliberate: on unified memory, two live models saturate the machine. Concurrent requests are queued, not rejected.
+- **`n > 1` is sequential.** The model stays warm, but the images come out one after another.
+- **The timeout does not cover weight loading.** It is only checked between denoising steps — the only interruption point mflux offers. So a first call that downloads 30 GB can exceed `request_timeout_s`.
+- **No `partial_images`.** Step progress is available over `/v1/progress` (see above), but there is no preview of the image being denoised.
+- **No LoRA, ControlNet, inpainting or upscaling.** mflux offers them; they are not exposed here.
+
+## Development
 
 ```sh
-uv run pytest        # aucun poids n'est chargé
+uv run pytest        # no weights are loaded
 uv run ruff check .
 uv run ruff format .
 ```
 
-Les tests couvrent le registre, la conformité OpenAI et le moteur (cache, sérialisation, déchargement) avec un modèle factice. **L'inférence réelle se vérifie à la main** :
+The tests cover the registry, OpenAI conformance and the engine (caching, serialization, unloading) with a fake model. **Real inference is verified by hand**:
 
 1. `uv run mflux-server`
-2. une première génération sur `flux2-klein` — chronométrer, chargement inclus ;
-3. **la relancer à l'identique : elle doit être nettement plus rapide.** C'est le test qui valide le cache ;
-4. `negative_prompt` sur `flux2-klein` → 400 explicite ;
-5. deux requêtes simultanées → sérialisées, mémoire stable dans `/health` ;
-6. changer de modèle → déchargement visible dans les logs ;
-7. une dizaine de prompts différents sur `qwen-image` → la mémoire ne doit pas dériver ;
-8. brancher le frontend et vérifier qu'aucune erreur CORS n'apparaît dans la console du navigateur.
+2. a first generation on `flux2-klein` — time it, loading included;
+3. **run it again identically: it must be noticeably faster.** That is the test that validates the cache;
+4. `negative_prompt` on `flux2-klein` → an explicit 400;
+5. two simultaneous requests → serialized, memory stable in `/health`;
+6. switch models → the unload shows up in the logs;
+7. a dozen different prompts on `qwen-image` → memory must not drift;
+8. point the frontend at it and check no CORS error appears in the browser console.
 
-### Notes d'intégration mflux
+### mflux integration notes
 
-Points non évidents, vérifiés dans le code de mflux 0.18.0, qui expliquent certains choix :
+Non-obvious points, verified in the mflux 0.18.0 source, that explain some of the choices:
 
-- **`ModelConfig.from_name()` est évité.** Sa résolution perd `sigma_*` et `text_encoder_overrides` (`config_resolution.py:112-128`), ce qui changerait le scheduler de Qwen. On passe la factory canonique + `model_path`.
-- **`CallbackManager.register_callbacks` n'est jamais appelé.** Il installe un `MemorySaver` qui détruit `text_encoder` dès la première génération quand `num_seeds <= 1` (`memory_saver.py:45-47`) : la deuxième requête planterait. Il installe aussi un `BatterySaver` qui lance `pmset` avant chaque génération.
-- **Un seul callback est enregistré, au chargement.** `CallbackRegistry` n'a pas d'`unregister` (`callback_registry.py:12-27`).
-- **Le `prompt_cache` de Qwen est purgé** au-delà de 16 entrées : il est indexé par prompt et n'a aucune borne.
-- **Le déchargement est manuel** — mflux n'expose aucune méthode de teardown. On remet les sous-modules à `None`, puis `gc.collect()` + `mx.clear_cache()`.
+- **`ModelConfig.from_name()` is avoided.** Its resolution loses `sigma_*` and `text_encoder_overrides` (`config_resolution.py:112-128`), which would change Qwen's scheduler. We pass the canonical factory plus `model_path`.
+- **`CallbackManager.register_callbacks` is never called.** It installs a `MemorySaver` that destroys `text_encoder` on the very first generation when `num_seeds <= 1` (`memory_saver.py:45-47`): the second request would crash. It also installs a `BatterySaver` that runs `pmset` before every generation.
+- **A single callback is registered, at load time.** `CallbackRegistry` has no `unregister` (`callback_registry.py:12-27`).
+- **Qwen's `prompt_cache` is purged** past 16 entries: it is keyed by prompt and has no bound at all.
+- **Unloading is manual** — mflux exposes no teardown method. We set the submodules back to `None`, then `gc.collect()` + `mx.clear_cache()`.
 
-Spécifiques à `flux2-dev`, où l'on sort du chemin balisé :
+Specific to `flux2-dev`, where we leave the beaten path:
 
-- **`ModelConfig.from_name("black-forest-labs/FLUX.2-dev")` ne lève même pas.** `can_infer_substring` trouve l'alias `"dev"` dans le nom et fabrique silencieusement une config **FLUX.1**-dev (`config_resolution.py:57-64`). La config est donc construite à la main, et `registry._LOCAL_MODEL_CONFIGS` la résout à côté des factories de `ModelConfig`.
-- **La guidance est pré-multipliée par 1000.** `Flux2Transformer.__call__` ne met la guidance à l'échelle que si elle vaut 1.0 ou moins (`flux2/…/transformer.py:91`), alors que le chemin FLUX.1 — le seul exercé en amont avec `guidance_embeds=True` — multiplie toujours par `num_train_steps` (`flux/…/transformer.py:155`). Aucun modèle livré par mflux n'active `guidance_embeds` sur le transformer FLUX.2, donc ce chemin n'y est pas testé. `test_la_guidance_doit_etre_premultipliee_par_mille` sert de vigie : si mflux corrige l'heuristique, il casse et il faudra retirer la compensation.
-- **Le tokenizer complète à gauche, ce qui produisait des NaN.** Sous masque causal, une requête de padding en tête de séquence n'a qu'elle-même à regarder — et elle est masquée. Le softmax renvoie NaN, et la ligne suivante le propage (`0 × NaN = NaN`) : dès la deuxième couche, *toutes* les positions sont contaminées et le prompt entier part en NaN, sans aucune exception levée. Les lignes entièrement fermées sont donc rouvertes, comme le fait `AttentionMaskConverter._unmask_unattended` de transformers.
-- **`LanguageTokenizer` de mflux ne convient pas.** Avec `use_chat_template=True` il envoie `[{"role": "user", …}]` et `add_generation_prompt=True` (`tokenizer.py:86-92`), là où FLUX.2-dev attend une conversation system + user, des contenus en listes de parts typées, et `add_generation_prompt=False`. Un tokenizer maison est branché via `TokenizerDefinition.encoder_class`.
-- **Pas de `mx.compile` sur la boucle de débruitage**, contrairement à `Flux2Klein` qui l'active hors M1/M2 : sur 32B le graphe compilé peut dépasser le watchdog GPU de Metal.
-- **Les composants sont quantifiés un par un**, parce que `WeightApplier.apply_and_quantize` charge tout le bf16 avant de quantifier. Le rechargement, en revanche, ne demande rien : `WeightLoader._load_component` essaie `_try_load_mflux_format` en premier (`weight_loader.py:89-92`) et lit le `quantization_level` écrit par `ModelSaver`.
+- **`ModelConfig.from_name("black-forest-labs/FLUX.2-dev")` does not even raise.** `can_infer_substring` finds the `"dev"` alias inside that name and silently fabricates a **FLUX.1**-dev config (`config_resolution.py:57-64`). So the config is built by hand, and `registry._LOCAL_MODEL_CONFIGS` resolves it alongside `ModelConfig`'s factories.
+- **Guidance is pre-multiplied by 1000.** `Flux2Transformer.__call__` only scales guidance when it is 1.0 or less (`flux2/…/transformer.py:91`), whereas the FLUX.1 path — the only one exercised upstream with `guidance_embeds=True` — always multiplies by `num_train_steps` (`flux/…/transformer.py:155`). No model shipped by mflux enables `guidance_embeds` on the FLUX.2 transformer, so that path is untested there. `test_guidance_must_be_premultiplied_by_a_thousand` acts as the canary: if mflux fixes the heuristic, it breaks and the compensation must be removed.
+- **The tokenizer pads on the left, which produced NaN.** Under a causal mask, a padding query at the head of the sequence has only itself to look at — and it is masked. Softmax returns NaN, and the next row propagates it (`0 × NaN = NaN`): by the second layer *every* position is contaminated and the whole prompt goes to NaN, without a single exception raised. Fully closed rows are therefore reopened, the way transformers' `AttentionMaskConverter._unmask_unattended` does it.
+- **mflux's `LanguageTokenizer` does not fit.** With `use_chat_template=True` it sends `[{"role": "user", …}]` and `add_generation_prompt=True` (`tokenizer.py:86-92`), where FLUX.2-dev expects a system + user conversation, contents as lists of typed parts, and `add_generation_prompt=False`. A custom tokenizer is plugged in through `TokenizerDefinition.encoder_class`.
+- **No `mx.compile` on the denoising loop**, unlike `Flux2Klein` which enables it outside M1/M2: at 32B the compiled graph can exceed Metal's GPU watchdog.
+- **Components are quantized one at a time**, because `WeightApplier.apply_and_quantize` loads all the bf16 before quantizing anything. Reloading, by contrast, needs nothing: `WeightLoader._load_component` tries `_try_load_mflux_format` first (`weight_loader.py:89-92`) and reads the `quantization_level` written by `ModelSaver`.

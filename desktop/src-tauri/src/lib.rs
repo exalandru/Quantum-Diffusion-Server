@@ -1,11 +1,10 @@
-//! Panneau de contrôle macOS pour mflux-server.
+//! macOS control panel for mflux-server.
 //!
-//! Le Rust ne fait que trois choses : installer l'environnement Python avec
-//! `uv`, surveiller le processus serveur, et posséder son fichier de
-//! configuration. Tout le reste — état, progression, génération — passe par
-//! l'API HTTP du serveur, que React interroge directement ; y compris
-//! `/v1/progress` en Server-Sent Events, qu'il serait absurde de faire transiter
-//! par le pont IPC.
+//! The Rust side does only three things: install the Python environment with
+//! `uv`, supervise the server process, and own its configuration file.
+//! Everything else — status, progress, generation — goes through the server's
+//! HTTP API, which React queries directly; including `/v1/progress` over
+//! Server-Sent Events, which it would be absurd to funnel across the IPC bridge.
 
 mod bootstrap;
 mod config;
@@ -21,19 +20,19 @@ use tauri::{AppHandle, Manager, RunEvent, State};
 use paths::Paths;
 use supervisor::{SharedSupervisor, ServerStatus, Supervisor};
 
-/// Vue d'ensemble affichée par le tableau de bord.
+/// Overview rendered by the dashboard.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Overview {
     server: ServerStatus,
     bootstrap: bootstrap::BootstrapStatus,
-    /// Les dépôts `black-forest-labs/*` sont *gated* : sans token, le premier
-    /// téléchargement échoue en 401.
+    /// The `black-forest-labs/*` repos are *gated*: with no token, the first
+    /// download fails with a 401.
     hf_token_present: bool,
     hf_home: String,
     data_dir: String,
     config_path: String,
-    /// Présence de l'artefact pré-quantifié de `flux2-dev`.
+    /// Whether `flux2-dev`'s pre-quantized artifact is present.
     flux2_dev_ready: bool,
 }
 
@@ -57,8 +56,8 @@ fn overview(app: AppHandle, state: State<'_, SharedSupervisor>) -> Result<Overvi
     })
 }
 
-/// Chemin de l'artefact `flux2-dev` s'il existe, en tenant compte d'une
-/// surcharge `model_path` dans la configuration.
+/// Path of the `flux2-dev` artifact when it exists, honouring a `model_path`
+/// override from the configuration.
 fn flux2_dev_artifact(paths: &Paths) -> Option<std::path::PathBuf> {
     let configured = config::read(paths)
         .ok()
@@ -92,7 +91,7 @@ async fn server_start(app: AppHandle, state: State<'_, SharedSupervisor>) -> Res
         let mut guard = state.lock().await;
         guard.start(&app, &paths).await?
     };
-    // Le serveur ne charge aucun poids au démarrage : il écoute en une seconde.
+    // The server loads no weights at startup: it listens within a second.
     supervisor::wait_healthy(port, Duration::from_secs(30)).await?;
     Ok(port)
 }
@@ -123,21 +122,20 @@ fn config_write(app: AppHandle, value: Value) -> Result<(), String> {
 
 #[tauri::command]
 fn hf_token_write(app: AppHandle, token: String) -> Result<(), String> {
-    // On écrit là où `hf auth login` écrit, plutôt que d'ouvrir un second
-    // magasin de secrets : le token y serait de toute façon en clair juste à
-    // côté.
+    // We write where `hf auth login` writes, rather than opening a second
+    // secret store: the token would sit in plaintext right next to it anyway.
     let _ = app;
     let hf_home = Paths::default_hf_home();
     std::fs::create_dir_all(&hf_home)
-        .map_err(|error| format!("impossible de créer {} : {error}", hf_home.display()))?;
+        .map_err(|error| format!("could not create {}: {error}", hf_home.display()))?;
     let file = Paths::hf_token_file(&hf_home);
     std::fs::write(&file, token.trim())
-        .map_err(|error| format!("écriture de {} impossible : {error}", file.display()))?;
+        .map_err(|error| format!("could not write {}: {error}", file.display()))?;
     restrict_permissions(&file);
     Ok(())
 }
 
-/// 0600 sur le fichier de token, comme le fait la CLI HuggingFace.
+/// 0600 on the token file, the way the HuggingFace CLI does.
 fn restrict_permissions(file: &std::path::Path) {
     use std::os::unix::fs::PermissionsExt;
     let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
@@ -172,10 +170,10 @@ pub fn run() {
             prequantize_run,
         ])
         .build(tauri::generate_context!())
-        .expect("initialisation de Tauri impossible")
+        .expect("could not initialize Tauri")
         .run(|app, event| {
-            // Quitter l'app ne doit jamais laisser un serveur derrière : il tient
-            // potentiellement des dizaines de Go de poids en mémoire.
+            // Quitting the app must never leave a server behind: it may be
+            // holding tens of GB of weights in memory.
             if let RunEvent::Exit = event {
                 if let Some(state) = app.try_state::<SharedSupervisor>() {
                     if let Ok(mut guard) = state.try_lock() {
@@ -186,7 +184,7 @@ pub fn run() {
         });
 }
 
-// Rend `Supervisor` utilisable comme état Tauri partagé.
+// Makes `Supervisor` usable as shared Tauri state.
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}
     assert_send_sync::<Supervisor>();

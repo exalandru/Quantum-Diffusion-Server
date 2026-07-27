@@ -5,13 +5,13 @@ import { messageOf, type ServerClient } from "../api";
 import type { Capabilities } from "../types";
 
 /**
- * Formulaire sur `server-config.json`.
+ * A form over `server-config.json`.
  *
- * On édite un clone du JSON plutôt qu'un modèle typé en TypeScript : le schéma
- * fait autorité côté Python, et le dupliquer ici le laisserait dériver. Les
- * capacités du serveur (`/v1/capabilities`) servent en revanche à griser ce qui
- * n'a pas de sens pour un modèle donné — le serveur refuse déjà ces valeurs par
- * un 400, autant ne pas les proposer.
+ * We edit a clone of the JSON rather than a TypeScript-typed model: the schema is
+ * authoritative on the Python side, and duplicating it here would let it drift.
+ * The server's capabilities (`/v1/capabilities`), on the other hand, are used to
+ * grey out what makes no sense for a given model — the server already rejects
+ * those values with a 400, so there is no point offering them.
  */
 type Json = Record<string, any>;
 
@@ -45,7 +45,7 @@ export function Configuration({
     void client.capabilities().then(setCapabilities).catch(() => setCapabilities(null));
   }, [client]);
 
-  if (!draft) return <p className="center-note">Chargement de la configuration…</p>;
+  if (!draft) return <p className="center-note">Loading the configuration…</p>;
 
   const server: Json = draft.server ?? {};
   const models: Json = draft.models ?? {};
@@ -80,21 +80,24 @@ export function Configuration({
     <>
       <div className="card">
         <div className="row spread">
-          <h2 style={{ margin: 0 }}>Serveur</h2>
+          <h2 style={{ margin: 0 }}>Server</h2>
           <div className="row">
-            {saved && <span className="badge ok">enregistré</span>}
+            {saved && <span className="badge ok">saved</span>}
             <button className="primary" onClick={() => void save()} disabled={saving}>
-              {saving ? "Enregistrement…" : "Enregistrer"}
+              {saving ? "Saving…" : "Save"}
             </button>
           </div>
         </div>
         <p className="hint">
-          La configuration n'est lue qu'au démarrage : après enregistrement,{" "}
-          {serverRunning ? "redémarre le serveur depuis le tableau de bord" : "elle s'appliquera au prochain démarrage"}.
+          The configuration is only read at startup, so once saved{" "}
+          {serverRunning
+            ? "restart the server from the dashboard"
+            : "it will apply on the next start"}
+          .
         </p>
 
         <label className="field">
-          <span>Modèle par défaut</span>
+          <span>Default model</span>
           <select
             value={String(draft.default_model ?? "")}
             onChange={(event) => {
@@ -111,7 +114,7 @@ export function Configuration({
         </label>
 
         <label className="field">
-          <span>Nombre d'images maximal (n)</span>
+          <span>Maximum images (n)</span>
           <input
             type="number"
             min={1}
@@ -122,7 +125,7 @@ export function Configuration({
         </label>
 
         <label className="field">
-          <span>Délai maximal (s)</span>
+          <span>Request timeout (s)</span>
           <input
             type="number"
             min={1}
@@ -132,7 +135,7 @@ export function Configuration({
         </label>
 
         <label className="field">
-          <span>Arrêt gracieux (s)</span>
+          <span>Graceful shutdown (s)</span>
           <input
             type="number"
             min={1}
@@ -142,17 +145,17 @@ export function Configuration({
         </label>
 
         <label className="field">
-          <span>Clé d'API</span>
+          <span>API key</span>
           <input
             type="password"
-            placeholder="aucune"
+            placeholder="none"
             value={String(server.api_key ?? "")}
             onChange={(event) => patchServer("api_key", event.target.value || null)}
           />
         </label>
 
         <label className="field">
-          <span>Durée de vie des images (s)</span>
+          <span>Image lifetime (s)</span>
           <input
             type="number"
             min={0}
@@ -162,7 +165,7 @@ export function Configuration({
         </label>
 
         <label className="field">
-          <span>Niveau de log</span>
+          <span>Log level</span>
           <select
             value={String(server.log_level ?? "INFO")}
             onChange={(event) => patchServer("log_level", event.target.value)}
@@ -176,25 +179,25 @@ export function Configuration({
         </label>
 
         <p className="hint" style={{ marginTop: 12, marginBottom: 0 }}>
-          L'app impose elle-même l'hôte, le port, le dossier d'images et le format des logs : ces
-          valeurs sont propres à son fonctionnement et ne sont donc pas éditables ici.
+          The app sets the host, port, image directory and log format itself: those values belong
+          to how it operates, so they are not editable here.
         </p>
       </div>
 
       <div className="card">
-        <h2>Modèles</h2>
+        <h2>Models</h2>
         <p className="hint">
-          Les contrôles inapplicables sont désactivés d'après les capacités déclarées par le serveur.
+          Controls that do not apply are disabled based on the capabilities the server declares.
         </p>
         <table className="models">
           <thead>
             <tr>
-              <th>Modèle</th>
-              <th>Actif</th>
-              <th>Quantification</th>
-              <th>Étapes</th>
+              <th>Model</th>
+              <th>On</th>
+              <th>Quant.</th>
+              <th>Steps</th>
               <th>Guidance</th>
-              <th>Édition</th>
+              <th>Editing</th>
             </tr>
           </thead>
           <tbody>
@@ -223,7 +226,7 @@ export function Configuration({
                     >
                       {QUANTIZE_CHOICES.map((bits) => (
                         <option key={String(bits)} value={bits === null ? "" : String(bits)}>
-                          {bits === null ? "défaut" : bits === 0 ? "aucune (bf16)" : `${bits} bits`}
+                          {bits === null ? "default" : bits === 0 ? "none (bf16)" : `${bits} bits`}
                         </option>
                       ))}
                     </select>
@@ -233,7 +236,7 @@ export function Configuration({
                       type="number"
                       min={1}
                       style={{ width: 74 }}
-                      placeholder={caps ? String(caps.default_steps) : "défaut"}
+                      placeholder={caps ? String(caps.default_steps) : "default"}
                       value={entry.default_steps ?? ""}
                       onChange={(event) =>
                         patchModel(key, "default_steps", event.target.value === "" ? null : Number(event.target.value))
@@ -246,14 +249,14 @@ export function Configuration({
                       min={0}
                       step={0.5}
                       style={{ width: 74 }}
-                      // Modèle distillé : le serveur refuse toute valeur.
+                      // Distilled model: the server rejects any value.
                       disabled={caps ? !caps.supports_guidance : false}
                       placeholder={
                         caps?.supports_guidance === false
-                          ? `figée ${caps.default_guidance ?? 0}`
+                          ? `fixed ${caps.default_guidance ?? 0}`
                           : caps
                             ? String(caps.default_guidance ?? "")
-                            : "défaut"
+                            : "default"
                       }
                       value={entry.default_guidance ?? ""}
                       onChange={(event) =>

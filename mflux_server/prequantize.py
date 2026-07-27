@@ -1,27 +1,27 @@
-"""Pré-quantification de FLUX.2-dev vers un artefact MLX local.
+"""Pre-quantization of FLUX.2-dev into a local MLX artifact.
 
-Le repo amont est en bf16 : transformer 64,5 Go + encodeur texte 45,8 Go + VAE.
-Soit ~111 Go de poids résidents, impossible sur 96 Go de mémoire unifiée. En
-8 bits on tombe à ~58 Go, largement tenable — mais quantifier à la volée exige
-justement de tenir le bf16 en mémoire d'abord. D'où cette conversion, à faire
-une fois.
+The upstream repo ships bf16: a 64.5 GB transformer plus a 45.8 GB text encoder
+plus the VAE. That is ~111 GB of resident weights, impossible on 96 GB of
+unified memory. At 8 bits we drop to ~58 GB, comfortably within reach — but
+quantizing on the fly requires holding the bf16 in memory first. Hence this
+one-time conversion.
 
-Deux précautions, chacune bornant une ressource :
+Two precautions, each bounding a different resource:
 
-* **un composant à la fois.** `WeightApplier.apply_and_quantize` charge tous les
-  composants en bf16 avant de quantifier. On passe donc par les API « single »
-  de mflux, en libérant entre chaque.
-* **quantification bloc par bloc.** Un `nn.quantize` sur tout le transformer
-  fait cohabiter 64,5 Go de bf16 et 34 Go de 8 bits, soit ~96 Go. En traitant
-  chaque bloc puis en évaluant, le pic retombe autour de 66 Go.
+* **one component at a time.** `WeightApplier.apply_and_quantize` loads every
+  component in bf16 before quantizing anything, so we go through mflux's
+  "single" APIs and release between each.
+* **block-by-block quantization.** A single `nn.quantize` over the whole
+  transformer makes 64.5 GB of bf16 coexist with 34 GB of 8-bit, i.e. ~96 GB.
+  Handling one block at a time and evaluating brings the peak down to ~66 GB.
 
-L'ordre par défaut (transformer, puis encodeur, puis VAE) permet de purger le
-cache HF entre deux composants : le pic disque passe de ~169 Go à ~97 Go.
+The default order (transformer, then encoder, then VAE) lets you purge the HF
+cache between components: the disk peak falls from ~169 GB to ~97 GB.
 
-Le rechargement ne demande aucun code : `WeightLoader._load_component` essaie
-`_try_load_mflux_format` en premier, lit le `quantization_level` écrit ici dans
-les métadonnées safetensors, et `WeightApplier` quantifie la structure avant de
-poser les poids.
+Reloading needs no code at all: `WeightLoader._load_component` tries
+`_try_load_mflux_format` first, reads the `quantization_level` written here into
+the safetensors metadata, and `WeightApplier` quantizes the structure before
+applying the weights.
 """
 
 from __future__ import annotations
@@ -37,8 +37,8 @@ from mflux_server.settings import ENV_PREFIX
 
 logger = logging.getLogger(f"{SERVER_LOGGER}.prequantize")
 
-#: Ordre imposé : le plus gros d'abord, pour pouvoir purger le cache HF entre
-#: les étapes et borner le pic disque.
+#: Enforced order: biggest first, so the HF cache can be purged between steps
+#: and the disk peak stays bounded.
 COMPONENT_ORDER = ("transformer", "text_encoder", "vae")
 
 
@@ -54,15 +54,15 @@ def _build_module(name: str, model_config):
         return Mistral3TextEncoder(**model_config.text_encoder_overrides)
     if name == "vae":
         return Flux2VAE()
-    raise ValueError(f"Composant inconnu : {name!r}")
+    raise ValueError(f"Unknown component: {name!r}")
 
 
 def _quantization_units(module) -> list:
-    """Sous-modules à quantifier séparément pour borner le pic mémoire.
+    """Submodules to quantize separately, to bound the memory peak.
 
-    `transformer_blocks` / `single_transformer_blocks` pour le transformer,
-    `layers` pour l'encodeur texte. Le VAE n'en a pas : il est assez petit pour
-    la passe globale.
+    `transformer_blocks` / `single_transformer_blocks` for the transformer,
+    `layers` for the text encoder. The VAE has none: it is small enough for the
+    global pass.
     """
     units: list = []
     for attr in ("transformer_blocks", "single_transformer_blocks", "layers"):
@@ -81,7 +81,7 @@ def _quantize_incrementally(module, *, bits: int, predicate) -> None:
         mx.clear_cache()
         if index % 8 == 0 or index == len(units):
             logger.info(
-                "  quantification %d/%d blocs — %s",
+                "  quantized %d/%d blocks — %s",
                 index,
                 len(units),
                 _memory(),
@@ -91,10 +91,9 @@ def _quantize_incrementally(module, *, bits: int, predicate) -> None:
                 },
             )
 
-    # Passe finale pour les couches de tête (embeddings, projections, normes
-    # modulées). Sans effet sur ce qui est déjà quantifié : les modules
-    # `Quantized*` de MLX n'exposent pas `to_quantized`, donc le prédicat de
-    # mflux les ignore.
+    # Final pass for the head layers (embeddings, projections, modulated
+    # norms). No effect on what is already quantized: MLX's `Quantized*` modules
+    # do not expose `to_quantized`, so mflux's predicate skips them.
     nn.quantize(module, class_predicate=predicate, bits=bits)
     mx.eval(module.parameters())
     mx.clear_cache()
@@ -103,7 +102,7 @@ def _quantize_incrementally(module, *, bits: int, predicate) -> None:
 def _memory() -> str:
     import mlx.core as mx
 
-    return f"mlx actif {mx.get_active_memory() / 1e9:.1f} Go, pic {mx.get_peak_memory() / 1e9:.1f} Go"
+    return f"mlx active {mx.get_active_memory() / 1e9:.1f} GB, peak {mx.get_peak_memory() / 1e9:.1f} GB"
 
 
 def _directory_size_gb(path: Path) -> float:
@@ -128,7 +127,7 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
 
     logger.info("── %s ──────────────────────────────────────", name)
     logger.info(
-        "Téléchargement / lecture de %s/%s",
+        "Downloading / reading %s/%s",
         repo,
         component.hf_subdir,
         extra={
@@ -136,9 +135,9 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
             "fields": {"component": name, "repo": repo, "bits": bits},
         },
     )
-    # `load` plutôt que `load_single` : il passe par `PathResolution`, donc
-    # `--repo` accepte aussi un dossier local, et les patterns viennent de la
-    # définition mono-composant — seul le sous-dossier voulu est téléchargé.
+    # `load` rather than `load_single`: it goes through `PathResolution`, so
+    # `--repo` also accepts a local directory, and the patterns come from the
+    # single-component definition — only the intended subfolder is downloaded.
     weights = WeightLoader.load(weight_definition=definition, model_path=repo)
 
     resolved_bits, warning = QuantizationResolution.resolve(
@@ -148,24 +147,24 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
     if warning:
         logger.warning(warning)
     if resolved_bits is None:
-        raise ValueError(f"Aucune quantification résolue pour {name} (bits={bits!r})")
+        raise ValueError(f"No quantization resolved for {name} (bits={bits!r})")
 
     module = _build_module(name, model_config)
     module.update(weights.components[component.name], strict=False)
-    # On lâche la référence du loader avant de quantifier : sans ça les tableaux
-    # bf16 restent vivants pendant toute la conversion.
+    # Drop the loader's reference before quantizing: otherwise the bf16 arrays
+    # stay alive for the whole conversion.
     weights.components.clear()
     del weights
     gc.collect()
     mx.eval(module.parameters())
-    logger.info("Poids bf16 posés — %s", _memory())
+    logger.info("bf16 weights applied — %s", _memory())
 
     _quantize_incrementally(
         module,
         bits=resolved_bits,
         predicate=Flux2DevWeightDefinition.quantization_predicate,
     )
-    logger.info("Quantifié en %d bits — %s", resolved_bits, _memory())
+    logger.info("Quantized to %d bits — %s", resolved_bits, _memory())
 
     shim = _ComponentShim(name, module)
     if definition.get_tokenizers():
@@ -183,7 +182,7 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
 
     written = _directory_size_gb(dest / component.hf_subdir)
     logger.info(
-        "Écrit dans %s (%.1f Go)",
+        "Written to %s (%.1f GB)",
         dest / component.hf_subdir,
         written,
         extra={
@@ -195,14 +194,14 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
     del shim, module
     gc.collect()
     mx.clear_cache()
-    logger.info("Libéré — %s", _memory())
+    logger.info("Released — %s", _memory())
 
 
 class _ComponentShim:
-    """Porteur d'attribut minimal pour `ModelSaver.save_model`.
+    """Minimal attribute holder for `ModelSaver.save_model`.
 
-    Le saver lit `getattr(model, component.name)` et, si présent,
-    `model.tokenizers` — pas besoin du modèle complet.
+    The saver reads `getattr(model, component.name)` and, when present,
+    `model.tokenizers` — no need for the full model.
     """
 
     def __init__(self, name: str, module) -> None:
@@ -215,35 +214,35 @@ def main() -> int:
 
     parser = argparse.ArgumentParser(
         prog="mflux-server-prequantize",
-        description="Convertit black-forest-labs/FLUX.2-dev en artefact MLX quantifié, "
-        "composant par composant pour tenir dans la mémoire unifiée.",
+        description="Convert black-forest-labs/FLUX.2-dev into a quantized MLX artifact, "
+        "one component at a time so it fits in unified memory.",
     )
-    parser.add_argument("--dest", default=DEFAULT_MODEL_PATH, help="dossier de sortie")
-    parser.add_argument("--repo", default=REPO, help="repo source")
+    parser.add_argument("--dest", default=DEFAULT_MODEL_PATH, help="output directory")
+    parser.add_argument("--repo", default=REPO, help="source repo")
     parser.add_argument(
         "--bits",
         type=int,
         default=8,
         choices=QUANTIZE_CHOICES,
-        help="bits de quantification",
+        help="quantization bit width",
     )
     parser.add_argument(
         "--components",
         nargs="+",
         default=list(COMPONENT_ORDER),
         choices=list(COMPONENT_ORDER),
-        help="composants à convertir, dans l'ordre donné (défaut : tous, du plus gros au plus petit)",
+        help="components to convert, in the given order (default: all, largest first)",
     )
     parser.add_argument(
         "--json-logs",
         action="store_true",
         default=os.environ.get(f"{ENV_PREFIX}LOG_JSON", "").lower() in {"1", "true", "yes"},
-        help="une ligne = un objet JSON, pour être suivi par un superviseur",
+        help="one line, one JSON object, so a supervisor can follow along",
     )
     args = parser.parse_args()
 
-    # Même configuration que le serveur, pour que l'app de bureau suive la
-    # conversion exactement comme elle suit une génération.
+    # Same configuration as the server, so the desktop app follows the
+    # conversion exactly as it follows a generation.
     setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
     dest = Path(args.dest).expanduser()
     dest.mkdir(parents=True, exist_ok=True)
@@ -251,15 +250,15 @@ def main() -> int:
     for name in args.components:
         convert_component(name, repo=args.repo, dest=dest, bits=args.bits)
         logger.info(
-            "Le bf16 de '%s' n'est plus utile : purgez-le du cache HF avant le composant suivant "
-            "(`hf cache delete`, ou supprimez %s/ dans le snapshot) pour borner le pic disque.\n",
+            "The bf16 for '%s' is no longer needed: purge it from the HF cache before the next "
+            "component (`hf cache delete`, or delete %s/ inside the snapshot) to bound the disk peak.\n",
             name,
             name,
         )
 
-    logger.info("Terminé — %s : %.1f Go", dest, _directory_size_gb(dest))
+    logger.info("Done — %s: %.1f GB", dest, _directory_size_gb(dest))
     logger.info(
-        "Si ce chemin diffère du défaut, renseignez-le dans server-config.json (models.flux2-dev.model_path)."
+        "If this path differs from the default, set it in server-config.json (models.flux2-dev.model_path)."
     )
     return 0
 

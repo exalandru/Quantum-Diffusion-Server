@@ -1,10 +1,10 @@
 # Quantum Diffusion Server
 
-Panneau de contrôle macOS pour [mflux-server](../README.md) : une app double-cliquable qui installe son propre Python, démarre et surveille le serveur, expose sa configuration dans un formulaire, et pilote la préparation des modèles.
+A macOS control panel for [mflux-server](../README.md): a double-clickable app that installs its own Python, starts and supervises the server, exposes its configuration as a form, and drives model preparation.
 
-Tauri 2 (Rust) + React 19 + Vite. **Apple Silicon uniquement** — mlx l'est par construction.
+Tauri 2 (Rust) + React 19 + Vite. **Apple Silicon only** — mlx is, by construction.
 
-## Construire
+## Building
 
 ```sh
 cd desktop
@@ -12,102 +12,102 @@ npm install
 npm run app:build     # → src-tauri/target/release/bundle/
 ```
 
-Prérequis : Node, Rust, et `uv` dans le `PATH` (il est copié dans le bundle comme sidecar).
+Prerequisites: Node, Rust, and `uv` on the `PATH` (it gets copied into the bundle as a sidecar).
 
-Résultat : `Quantum Diffusion Server.app` (**57 Mo**) et un `.dmg` (**25 Mo**), signés en ad-hoc (`signingIdentity: "-"`). Ni certificat Developer ID ni notarisation : c'est un usage personnel. Après un transfert d'une machine à l'autre, `xattr -d com.apple.quarantine "Quantum Diffusion Server.app"` peut être nécessaire (les guillemets comptent : le nom contient des espaces).
+The result: `Quantum Diffusion Server.app` (**57 MB**) and a `.dmg` (**25 MB**), ad-hoc signed (`signingIdentity: "-"`). No Developer ID certificate, no notarization: this is for personal use. After moving it between machines, `xattr -d com.apple.quarantine "Quantum Diffusion Server.app"` may be needed (the quotes matter: the name contains spaces).
 
-En développement : `npm run app:dev`. Attention, `tauri dev` hérite d'un dossier courant confortable et masque donc les problèmes de chemins relatifs — les vérifications sérieuses se font sur le `.app` construit.
+For development: `npm run app:dev`. Beware that `tauri dev` inherits a comfortable working directory and therefore hides relative-path problems — serious checks happen on the built `.app`.
 
-## Pourquoi pas PyInstaller
+## Why not PyInstaller
 
-Le venv du serveur pèse **1,1 Go** : torch 501 Mo (dépendance dure de mflux, importée au niveau module dans `weight_loader.py`), mlx 178 Mo dont un `mlx.metallib` de **150 Mo** de shaders Metal, opencv et matplotlib 142 Mo tirés par mflux sans qu'on s'en serve. Au total **186 binaires natifs** `.so`/`.dylib`. Ce metallib et ces 186 binaires sont exactement ce qui rend le gel fragile, et il faudrait tous les signer avec hardened runtime.
+The server's venv weighs **1.1 GB**: torch 501 MB (a hard mflux dependency, imported at module level in `weight_loader.py`), mlx 178 MB including a **150 MB** `mlx.metallib` of Metal shaders, opencv and matplotlib 142 MB pulled in by mflux without us ever using them. That is **186 native binaries** in total. That metallib and those 186 binaries are exactly what makes freezing fragile, and every one of them would need signing with the hardened runtime.
 
-`uv`, lui, est un binaire unique de 50 Mo qui sait télécharger CPython et reconstituer l'environnement depuis `uv.lock` — 86 paquets, à l'identique. L'app reste donc à 57 Mo, aucun binaire natif tiers n'entre dans le bundle signé, et l'environnement s'installe dans l'espace de données au premier lancement.
+`uv`, by contrast, is a single 50 MB binary that can download CPython and rebuild the environment from `uv.lock` — 86 packages, identically. So the app stays at 57 MB, no third-party native binary enters the signed bundle, and the environment installs into the data directory on first launch.
 
-## Ce que fait l'app
+## What the app does
 
 ```
 ~/Library/Application Support/com.exalandru.qds/
-├── server/               copie inscriptible du projet Python (source de uv sync)
-├── env/                  environnement virtuel, ~1,0 Go
-├── python/               CPython 3.12 géré par uv, ~67 Mo
-├── uv-cache/             purgé après installation (1,5 Go récupérés)
-├── images/               images servies en response_format="url"
-└── server-config.json    piloté par l'onglet Configuration
+├── server/               writable copy of the Python project (source for uv sync)
+├── env/                  virtual environment, ~1.0 GB
+├── python/               uv-managed CPython 3.12, ~67 MB
+├── uv-cache/             pruned after installation (1.5 GB reclaimed)
+├── images/               images served for response_format="url"
+└── server-config.json    driven by the Configuration tab
 ```
 
-**Premier lancement.** L'app copie les ressources du bundle vers `server/` — le bundle est en lecture seule — puis lance :
+**First launch.** The app copies the bundle's resources into `server/` — the bundle is read-only — then runs:
 
 ```sh
 uv sync --frozen --no-dev --no-editable --managed-python --python 3.12 --project <appdata>/server
 ```
 
-Environ 1,1 Go de téléchargement. `--no-editable` importe : sans lui le paquet installé pointerait vers la copie du projet. `--python 3.12` aussi, voir plus bas.
+Roughly 1.1 GB of download. `--no-editable` matters: without it the installed package would point back at the project copy. So does `--python 3.12`, see below.
 
-**Démarrage du serveur.** Le Rust choisit un port libre, crée les dossiers d'écriture, puis lance `<appdata>/env/bin/mflux-server` avec tout en absolu :
+**Starting the server.** The Rust side picks a free port, creates the write directories, then launches `<appdata>/env/bin/mflux-server` with everything absolute:
 
-| variable | valeur |
+| variable | value |
 |---|---|
 | `MFLUX_SERVER_CONFIG` | `<appdata>/server-config.json` |
-| `MFLUX_SERVER_HOST` / `PORT` | `127.0.0.1` / port choisi en Rust |
+| `MFLUX_SERVER_HOST` / `PORT` | `127.0.0.1` / the port picked in Rust |
 | `MFLUX_SERVER_IMAGE_STORE` | `<appdata>/images` |
-| `MFLUX_SERVER_LOG_FILE` | `""` — c'est l'app qui capture |
+| `MFLUX_SERVER_LOG_FILE` | `""` — the app captures instead |
 | `MFLUX_SERVER_LOG_JSON` | `1` |
 | `HF_HOME`, `HF_HUB_DISABLE_PROGRESS_BARS`, `PYTHONUNBUFFERED` | |
 
-**Arrêt.** SIGTERM au groupe de processus, attente bornée à `shutdown_grace_s + 8 s`, puis SIGKILL. Le groupe et non le seul pid, sinon quitter l'app laisserait le serveur orphelin : macOS ne récolte pas les petits-enfants.
+**Stopping.** SIGTERM to the process group, a wait bounded at `shutdown_grace_s + 8s`, then SIGKILL. The group rather than the pid alone, otherwise quitting the app would orphan the server: macOS does not reap grandchildren.
 
-## Quatre pièges rencontrés, et leur correctif
+## Four traps we hit, and their fixes
 
-Chacun a été trouvé en exécutant la chaîne pour de vrai, pas en la relisant.
+Each was found by actually running the chain, not by reading it.
 
-**Le serveur ne démarrait pas depuis un `.app`.** `image_store` et `log_file` étaient relatifs au dossier courant et créés pendant `create_app`, avant même le bind. Lancé par le Finder, le dossier courant est `/`, en lecture seule → échec immédiat. Corrigé côté serveur : les deux chemins sont désormais rendus absolus à la validation, et `setup_logging` crée les dossiers parents. L'app pose en plus un `current_dir` explicite, en ceinture et bretelles.
+**The server would not start from a `.app`.** `image_store` and `log_file` were relative to the current directory and created during `create_app`, before the bind. Launched by Finder, the current directory is `/`, read-only → immediate failure. Fixed on the server side: both paths are now made absolute at validation time, and `setup_logging` creates the parent directories. The app additionally sets an explicit `current_dir`, belt and braces.
 
-**`server-config.json` était silencieusement ignoré.** Son chemin par défaut est relatif au *paquet* Python, donc `site-packages/` dans une installation par wheel, où le fichier n'existe pas — et une configuration absente n'est pas une erreur. Tous les réglages seraient partis à la poubelle sans un mot. D'où `MFLUX_SERVER_CONFIG` toujours explicite, et un `warning` côté serveur quand aucun fichier n'est trouvé.
+**`server-config.json` was silently ignored.** Its default path is relative to the Python *package*, so `site-packages/` in a wheel install, where the file does not exist — and a missing configuration is not an error. Every setting would have gone in the bin without a word. Hence `MFLUX_SERVER_CONFIG` always being explicit, plus a `warning` on the server side when no file is found.
 
-**hatchling refusait de construire le wheel.** `pyproject.toml` déclare `readme = "README.md"` : sans ce fichier dans les ressources, `uv sync` échoue à l'étape de build. `README.md` fait donc partie de la charge embarquée — ce n'est pas de la documentation ici, c'est une dépendance de build.
+**hatchling refused to build the wheel.** `pyproject.toml` declares `readme = "README.md"`: without that file in the resources, `uv sync` fails at the build step. So `README.md` is part of the embedded payload — it is not documentation here, it is a build dependency.
 
-**uv installait Python 3.13 au lieu de 3.12.** La découverte de `.python-version` dépend du dossier courant, imprévisible pour un sidecar. Comme `requires-python` autorise `>=3.12,<3.14`, uv prenait le plus récent — et `uv.lock`, dont les marqueurs distinguent 3.12 de 3.13 (`torch>=2.8`, `tokenizers`), résolvait un autre jeu de paquets que celui qui avait été testé. Le bootstrap lit maintenant `.python-version` dans la copie du projet et le passe en `--python`, ce qui supprime toute ambiguïté. Au passage, le glob `resources/server/**/*` de Tauri **ignore les fichiers cachés** : `.python-version` doit être listé explicitement dans `tauri.conf.json`.
+**uv installed Python 3.13 instead of 3.12.** Discovery of `.python-version` depends on the current directory, which is unpredictable for a sidecar. Since `requires-python` allows `>=3.12,<3.14`, uv took the newest — and `uv.lock`, whose markers tell 3.12 and 3.13 apart (`torch>=2.8`, `tokenizers`), resolved a different package set from the one that had been tested. The bootstrap now reads `.python-version` from the project copy and passes it as `--python`, which removes the ambiguity entirely. Incidentally, Tauri's `resources/server/**/*` glob **ignores dotfiles**: `.python-version` has to be listed explicitly in `tauri.conf.json`.
 
 ## Architecture
 
-Le Rust ne fait que ce que le navigateur ne peut pas : installer l'environnement, surveiller un processus, écrire un fichier.
+The Rust side does only what the browser cannot: install the environment, supervise a process, write a file.
 
-| fichier | rôle |
+| file | role |
 |---|---|
-| [src-tauri/src/paths.rs](src-tauri/src/paths.rs) | emplacements de travail, tous absolus |
-| [src-tauri/src/bootstrap.rs](src-tauri/src/bootstrap.rs) | copie des ressources, `uv sync`, purge du cache |
-| [src-tauri/src/supervisor.rs](src-tauri/src/supervisor.rs) | cycle de vie du serveur, échelle SIGTERM → SIGKILL, relais des sorties |
-| [src-tauri/src/config.rs](src-tauri/src/config.rs) | `server-config.json`, écriture atomique |
-| [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | commandes exposées à React |
+| [src-tauri/src/paths.rs](src-tauri/src/paths.rs) | working locations, all absolute |
+| [src-tauri/src/bootstrap.rs](src-tauri/src/bootstrap.rs) | resource copy, `uv sync`, cache pruning |
+| [src-tauri/src/supervisor.rs](src-tauri/src/supervisor.rs) | server lifecycle, SIGTERM → SIGKILL ladder, output relay |
+| [src-tauri/src/config.rs](src-tauri/src/config.rs) | `server-config.json`, atomic writes |
+| [src-tauri/src/lib.rs](src-tauri/src/lib.rs) | commands exposed to React |
 
-Tout le reste passe par l'API HTTP du serveur, que React interroge directement — y compris `/v1/progress` en Server-Sent Events, qu'il serait absurde de faire transiter par le pont IPC. Aucun schéma n'est dupliqué en Rust ni en TypeScript : le serveur valide déjà sa configuration et refuse ce qui n'a pas de sens par un 400.
+Everything else goes through the server's HTTP API, which React queries directly — including `/v1/progress` over Server-Sent Events, which it would be absurd to funnel across the IPC bridge. No schema is duplicated in Rust or TypeScript: the server already validates its configuration and rejects what makes no sense with a 400.
 
-La progression utilise `fetch` et non `EventSource`, parce que ce dernier ne permet pas d'en-tête `Authorization` et que `/v1/progress` est protégé comme le reste de `/v1`.
+Progress uses `fetch` rather than `EventSource`, because the latter allows no `Authorization` header and `/v1/progress` is protected like the rest of `/v1`.
 
-### Les deux canaux de sortie
+### The two output channels
 
-Le serveur tourne avec `MFLUX_SERVER_LOG_JSON=1`, ce qui sépare :
+The server runs with `MFLUX_SERVER_LOG_JSON=1`, which separates:
 
-- **stdout** : les événements structurés, une ligne = un JSON valide, rien d'autre ;
-- **stderr** : le texte pour les humains, les barres tqdm, les logs de démarrage d'uvicorn.
+- **stdout**: the structured events, one line one valid JSON object, nothing else;
+- **stderr**: the human-readable text, the tqdm bars, uvicorn's startup logs.
 
-Cette séparation n'est pas cosmétique. mflux affiche sa barre de débruitage avec tqdm, qui écrit sur stderr des fragments terminés par un retour chariot **sans saut de ligne** : les objets JSON s'y collaient sur le même segment (`\r 0%| | 0/40 [...]{"ts": …}`) et un consommateur qui découpe sur `\n` les manquait tous. tqdm n'offre aucune variable d'environnement pour se taire, d'où le déplacement du JSON sur stdout et la coupure de l'access log d'uvicorn qui l'aurait pollué.
+That separation is not cosmetic. mflux renders its denoising bar with tqdm, which writes carriage-return-terminated fragments to stderr **with no newline**: the JSON objects ended up glued to them on the same segment (`\r 0%| | 0/40 [...]{"ts": …}`) and a consumer splitting on `\n` missed all of them. tqdm offers no environment variable to silence itself, hence moving the JSON to stdout and disabling uvicorn's access log, which would have polluted it in turn.
 
-L'onglet Logs affiche les deux : filtrage par niveau sur les événements structurés, texte brut affiché tel quel.
+The Logs tab shows both: level filtering on the structured events, raw text displayed as-is.
 
-## Écrans
+## Screens
 
-- **Installation** — s'affiche seul tant que l'environnement n'est pas prêt ou qu'il a été construit par une version antérieure de l'app. Sortie d'uv en direct : c'est un téléchargement d'un gigaoctet, un indicateur indéterminé ne suffirait pas.
-- **Tableau de bord** — état, modèle chaud, mémoire MLX, démarrer/arrêter/redémarrer, barre de progression alimentée par SSE, annuler, libérer la mémoire, ouvrir `/docs`. « Serveur prêt » et « modèle chaud » sont deux états distincts : le serveur répond en une seconde mais ne charge aucun poids au démarrage.
-- **Configuration** — formulaire sur `server-config.json`. Les contrôles sont grisés d'après `/v1/capabilities` : la guidance d'un modèle distillé est figée, le serveur refuse déjà toute valeur par un 400. Un rappel indique que la configuration n'est lue qu'au démarrage.
-- **Modèles** — token HuggingFace (écrit là où `hf auth login` l'écrit, pour ne pas dupliquer un secret déjà en clair à côté), assistant de conversion de `flux2-dev` composant par composant, et le catalogue avec les capacités déclarées.
-- **Logs** — les deux canaux, filtrables.
+- **Installation** — shown on its own as long as the environment is not ready, or was built by an earlier version of the app. uv's output goes by live: this is a gigabyte-scale download, an indeterminate spinner would not do.
+- **Dashboard** — status, warm model, MLX memory, start/stop/restart, a progress bar fed by SSE, cancel, free memory, open `/docs`. "Server ready" and "model warm" are two distinct states: the server answers within a second but loads no weights at startup.
+- **Configuration** — a form over `server-config.json`. Controls are greyed out based on `/v1/capabilities`: a distilled model's guidance is fixed, and the server already rejects any value with a 400. A note points out that the configuration is only read at startup.
+- **Models** — the HuggingFace token (written where `hf auth login` writes it, so as not to duplicate a secret already sitting in plaintext next to it), the `flux2-dev` conversion wizard component by component, and the catalogue with the declared capabilities.
+- **Logs** — both channels, filterable.
 
-## Limites
+## Limitations
 
-- Pas de playground de génération : le serveur reste piloté par un frontend compatible OpenAI.
-- Pas de mise à jour automatique (`tauri-plugin-updater`).
-- Pas de rechargement à chaud de la configuration : l'app redémarre le processus.
-- La sélection du port a une fenêtre de course inévitable — `mflux-server` n'accepte pas de socket préouverte et n'annonce pas le port obtenu.
-- Les interactions de l'interface n'ont pas été cliquées automatiquement : capture d'écran et pilotage AppleScript demandent des autorisations qui ne s'accordent qu'à la main. Ce qui est vérifié, c'est la chaîne sous l'interface — bootstrap, environnement produit, serveur opérationnel, absence d'orphelins.
+- No generation playground: the server is still driven by an OpenAI-compatible frontend.
+- No automatic updates (`tauri-plugin-updater`).
+- No hot reload of the configuration: the app restarts the process.
+- Port selection has an unavoidable race window — `mflux-server` accepts no pre-opened socket and does not announce the port it got.
+- The interface interactions were not clicked through automatically: screenshots and AppleScript automation require permissions that can only be granted by hand. What *is* verified is the chain beneath the interface — bootstrap, resulting environment, working server, no orphan processes.

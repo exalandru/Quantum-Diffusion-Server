@@ -1,9 +1,8 @@
-"""Tests du moteur : cache, sérialisation, déchargement, callbacks.
+"""Engine tests: caching, serialization, unloading, callbacks.
 
-Aucun poids n'est chargé — `load_model` est remplacé par un double. Les
-objets mflux réellement utilisés (`CallbackRegistry`,
-`StopImageGenerationException`) le sont pour de vrai : c'est justement leur
-comportement qu'on veut verrouiller.
+No weights are loaded — `load_model` is replaced by a double. The mflux objects
+actually used (`CallbackRegistry`, `StopImageGenerationException`) are the real
+ones: pinning down their behaviour is exactly the point.
 """
 
 from __future__ import annotations
@@ -26,7 +25,7 @@ class FakeGenerated:
 
 
 class FakeModel:
-    """Imite juste ce que le moteur touche sur un modèle mflux."""
+    """Imitates only what the engine touches on an mflux model."""
 
     def __init__(self, key: str, kind: str):
         from mflux.callbacks.callback_registry import CallbackRegistry
@@ -40,8 +39,8 @@ class FakeModel:
         self.prompt_cache: dict[str, object] = {}
         self.calls: list[dict] = []
         self.delay = 0.0
-        #: Appelé après chaque étape, avec l'indice de l'étape. Permet de
-        #: déclencher une annulation à un moment déterministe.
+        #: Called after each step, with the step index. Lets a test trigger a
+        #: cancellation at a deterministic moment.
         self.step_hook = None
 
     def generate_image(self, **kwargs):
@@ -50,7 +49,7 @@ class FakeModel:
         self.calls.append(kwargs)
         if self.delay:
             time.sleep(self.delay)
-        # Le vrai modèle notifie ses callbacks à chaque étape de débruitage.
+        # The real model notifies its callbacks on every denoising step.
         config = _FakeConfig(kwargs["num_inference_steps"])
         for t in range(kwargs["num_inference_steps"]):
             for callback in self.callbacks.in_loop_callbacks():
@@ -98,7 +97,7 @@ def job(key: str = "flux2-klein", kind: str = "txt2img", **kwargs) -> Generation
     return GenerationJob(spec=spec, kind=kind, **defaults)
 
 
-def test_le_modele_reste_chaud_entre_deux_generations(loaded):
+def test_model_stays_warm_between_generations(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job())
@@ -106,12 +105,12 @@ def test_le_modele_reste_chaud_entre_deux_generations(loaded):
         return eng
 
     eng = asyncio.run(scenario())
-    assert len(loaded) == 1, "les poids ont été rechargés"
+    assert len(loaded) == 1, "the weights were reloaded"
     assert eng.loaded_model == "flux2-klein:txt2img"
     eng.shutdown()
 
 
-def test_changer_de_modele_decharge_le_precedent(loaded):
+def test_switching_model_unloads_the_previous_one(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job("flux2-klein"))
@@ -122,14 +121,14 @@ def test_changer_de_modele_decharge_le_precedent(loaded):
     eng, first = asyncio.run(scenario())
     assert len(loaded) == 2
     assert eng.loaded_model == "z-image-turbo:txt2img"
-    # Les sous-modules du premier modèle ont bien été libérés.
+    # The first model's submodules were indeed released.
     assert first.transformer is None
     assert first.text_encoder is None
     assert first.vae is None
     eng.shutdown()
 
 
-def test_variante_edition_est_un_chargement_distinct(loaded):
+def test_edit_variant_is_a_separate_load(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job("flux2-klein", kind="txt2img"))
@@ -141,9 +140,9 @@ def test_variante_edition_est_un_chargement_distinct(loaded):
     eng.shutdown()
 
 
-def test_le_callback_nest_enregistre_quune_fois(loaded):
-    """`CallbackRegistry` n'a pas d'unregister : enregistrer par requête
-    ferait grossir la liste indéfiniment."""
+def test_callback_is_registered_only_once(loaded):
+    """`CallbackRegistry` has no unregister: registering per request would grow
+    the list without bound."""
 
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
@@ -156,16 +155,16 @@ def test_le_callback_nest_enregistre_quune_fois(loaded):
     eng.shutdown()
 
 
-def test_les_generations_sont_serialisees(loaded):
-    """Deux requêtes concurrentes ne doivent jamais se chevaucher : sur
-    mémoire unifiée, deux modèles vivants saturent la machine."""
+def test_generations_are_serialized(loaded):
+    """Two concurrent requests must never overlap: on unified memory, two live
+    models saturate the machine."""
     overlaps = 0
     running = 0
 
     async def scenario():
         nonlocal overlaps, running
         eng = ModelEngine(progress_log_every=0)
-        await eng.generate(job())  # charge le modèle
+        await eng.generate(job())  # loads the model
         original = loaded[0].generate_image
 
         def instrumented(**kwargs):
@@ -188,7 +187,7 @@ def test_les_generations_sont_serialisees(loaded):
     eng.shutdown()
 
 
-def test_le_prompt_cache_de_qwen_est_purge(loaded):
+def test_qwen_prompt_cache_is_purged(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job("qwen-image"))
@@ -202,14 +201,14 @@ def test_le_prompt_cache_de_qwen_est_purge(loaded):
     eng.shutdown()
 
 
-def test_le_timeout_interrompt_la_boucle_de_debruitage(loaded):
-    """Seul le callback in-loop peut arrêter une génération : ni asyncio ni
-    un thread ne savent annuler une opération MLX en cours."""
+def test_timeout_interrupts_the_denoising_loop(loaded):
+    """Only the in-loop callback can stop a generation: neither asyncio nor a
+    thread can cancel an in-flight MLX operation."""
 
     async def scenario():
         eng = ModelEngine(request_timeout_s=0.05, progress_log_every=0)
-        await eng.generate(job())  # charge le modèle, sous le délai
-        loaded[0].delay = 0.2  # la prochaine étape arrivera après l'échéance
+        await eng.generate(job())  # loads the model, within the deadline
+        loaded[0].delay = 0.2  # the next step will land past the deadline
         with pytest.raises(APIError) as excinfo:
             await eng.generate(job(seed=1))
         return eng, excinfo.value
@@ -220,7 +219,7 @@ def test_le_timeout_interrompt_la_boucle_de_debruitage(loaded):
     eng.shutdown()
 
 
-def test_les_erreurs_mflux_sont_traduites(loaded, monkeypatch):
+def test_mflux_errors_are_translated(loaded, monkeypatch):
     from mflux.utils.exceptions import ModelConfigError
 
     def exploding_load(spec, *, kind="txt2img"):
@@ -240,7 +239,7 @@ def test_les_erreurs_mflux_sont_traduites(loaded, monkeypatch):
     assert error.param == "model"
 
 
-def test_le_png_est_produit_en_memoire(loaded):
+def test_png_is_produced_in_memory(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         data = await eng.generate(job())
@@ -251,9 +250,9 @@ def test_le_png_est_produit_en_memoire(loaded):
     assert Image.open(io.BytesIO(data)).format == "PNG"
 
 
-def test_arguments_passes_a_mflux(loaded):
-    """Vérifie le câblage par famille : negative_prompt et guidance ne sont
-    transmis que si le modèle les accepte."""
+def test_arguments_passed_to_mflux(loaded):
+    """Checks the per-family wiring: negative_prompt and guidance are only
+    forwarded when the model accepts them."""
 
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
@@ -270,7 +269,7 @@ def test_arguments_passes_a_mflux(loaded):
 
     flux_kwargs, z_kwargs, edit_kwargs, img2img_kwargs = asyncio.run(scenario())
 
-    # FLUX.2 Klein n'a pas de paramètre negative_prompt et sa guidance est figée.
+    # FLUX.2 Klein has no negative_prompt parameter and its guidance is fixed.
     assert "negative_prompt" not in flux_kwargs
     assert flux_kwargs["guidance"] == 1.0
     assert flux_kwargs["scheduler"] == "flow_match_euler_discrete"
@@ -278,19 +277,19 @@ def test_arguments_passes_a_mflux(loaded):
     assert z_kwargs["negative_prompt"] == "flou"
     assert z_kwargs["guidance"] == 6.0
 
-    # Édition : liste d'images de conditionnement, pas d'image_strength.
+    # Editing: a list of conditioning images, no image_strength.
     assert edit_kwargs["image_paths"] == ["/tmp/in.png"]
     assert "image_strength" not in edit_kwargs
 
-    # img2img : latent de départ bruité.
+    # img2img: a noised starting latent.
     assert img2img_kwargs["image_path"] == "/tmp/in.png"
     assert img2img_kwargs["image_strength"] == 0.6
 
 
-# ── Progression et annulation ──────────────────────────────────────────────
+# ── Progress and cancellation ──────────────────────────────────────────────
 
 
-def test_le_moteur_est_idle_au_repos():
+def test_engine_is_idle_when_at_rest():
     eng = ModelEngine(progress_log_every=0)
     snapshot = eng.progress()
     assert snapshot["state"] == "idle"
@@ -300,13 +299,13 @@ def test_le_moteur_est_idle_au_repos():
     eng.shutdown()
 
 
-def test_la_progression_suit_les_etapes(loaded):
-    """L'instantané est écrit depuis le thread worker et lu sans verrou."""
+def test_progress_tracks_the_steps(loaded):
+    """The snapshot is written from the worker thread and read without a lock."""
     seen: list[tuple[str, int, int]] = []
 
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
-        await eng.generate(job())  # charge le modèle
+        await eng.generate(job())  # loads the model
         loaded[0].step_hook = lambda _: seen.append(
             (eng.progress()["state"], eng.progress()["step"], eng.progress()["total"])
         )
@@ -314,28 +313,28 @@ def test_la_progression_suit_les_etapes(loaded):
         return eng
 
     eng = asyncio.run(scenario())
-    # flux2-klein est distillé : 4 étapes.
+    # flux2-klein is distilled: 4 steps.
     assert seen == [("generating", 1, 4), ("generating", 2, 4), ("generating", 3, 4), ("generating", 4, 4)]
-    # Retour au repos, mais le modèle reste chaud.
+    # Back to idle, but the model stays warm.
     assert eng.progress()["state"] == "idle"
     assert eng.loaded_model == "flux2-klein:txt2img"
     eng.shutdown()
 
 
-def test_annuler_au_repos_ne_fait_rien():
+def test_cancelling_at_rest_does_nothing():
     eng = ModelEngine(progress_log_every=0)
     assert eng.request_cancel() is False
     eng.shutdown()
 
 
-def test_lannulation_interrompt_la_boucle(loaded):
-    """Même chemin que le timeout : le callback in-loop est la seule prise."""
+def test_cancellation_interrupts_the_loop(loaded):
+    """Same path as the timeout: the in-loop callback is the only handle."""
 
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
-        await eng.generate(job("z-image"))  # 50 étapes, chargé
-        # Demande l'annulation depuis la première étape ; elle prend effet à la
-        # suivante, comme en production.
+        await eng.generate(job("z-image"))  # 50 steps, loaded
+        # Request cancellation from the first step; it takes effect on the next
+        # one, as in production.
         loaded[0].step_hook = lambda t: eng.request_cancel() if t == 0 else None
         with pytest.raises(APIError) as excinfo:
             await eng.generate(job("z-image", seed=1))
@@ -344,21 +343,21 @@ def test_lannulation_interrompt_la_boucle(loaded):
     eng, error = asyncio.run(scenario())
     assert error.status_code == 499
     assert error.code == "generation_stopped"
-    # Le moteur reste utilisable et le modèle chaud.
+    # The engine stays usable and the model warm.
     assert eng.progress()["state"] == "idle"
     assert eng.loaded_model == "z-image:txt2img"
     eng.shutdown()
 
 
-def test_le_moteur_reste_utilisable_apres_une_annulation(loaded):
+def test_engine_stays_usable_after_a_cancellation(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job("z-image"))
         loaded[0].step_hook = lambda t: eng.request_cancel() if t == 0 else None
         with pytest.raises(APIError):
             await eng.generate(job("z-image", seed=1))
-        # Le drapeau doit être remis à zéro par `arm()`, sinon la génération
-        # suivante serait annulée elle aussi.
+        # The flag must be reset by `arm()`, otherwise the next generation would
+        # be cancelled too.
         loaded[0].step_hook = None
         data = await eng.generate(job("z-image", seed=2))
         eng.shutdown()
@@ -368,7 +367,7 @@ def test_le_moteur_reste_utilisable_apres_une_annulation(loaded):
     assert Image.open(io.BytesIO(data)).format == "PNG"
 
 
-def test_unload_libere_le_modele(loaded):
+def test_unload_releases_the_model(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
         await eng.generate(job())

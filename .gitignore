@@ -2,7 +2,7 @@
 mflux.log
 *.log
 
-# Images générées servies en response_format="url"
+# Generated images served for response_format="url"
 images/
 
 # Python
@@ -14,7 +14,7 @@ venv/
 dist/
 build/
 
-# Outils
+# Tooling
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/

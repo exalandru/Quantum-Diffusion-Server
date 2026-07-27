@@ -1,10 +1,10 @@
 /**
- * Deux canaux, volontairement distincts.
+ * Two channels, deliberately distinct.
  *
- * Le Rust ne gère que ce que le navigateur ne peut pas faire : installer
- * l'environnement, surveiller un processus, écrire un fichier. Tout le reste
- * passe par l'API HTTP du serveur, interrogée directement — la faire transiter
- * par le pont IPC n'ajouterait qu'une couche à déboguer.
+ * The Rust side handles only what the browser cannot: installing the
+ * environment, supervising a process, writing a file. Everything else goes
+ * through the server's HTTP API, queried directly — funnelling it across the IPC
+ * bridge would only add a layer to debug.
  */
 import { invoke } from "@tauri-apps/api/core";
 
@@ -15,7 +15,7 @@ import type {
   Progress,
 } from "./types";
 
-// ── Commandes Rust ─────────────────────────────────────────────────────────
+// ── Rust commands ──────────────────────────────────────────────────────────
 
 export const overview = () => invoke<Overview>("overview");
 export const bootstrapRun = () => invoke<void>("bootstrap_run");
@@ -28,7 +28,7 @@ export const hfTokenWrite = (token: string) => invoke<void>("hf_token_write", { 
 export const prequantizeRun = (components: string[], dest?: string) =>
   invoke<void>("prequantize_run", { components, dest: dest ?? null });
 
-// ── Client HTTP du serveur ─────────────────────────────────────────────────
+// ── Server HTTP client ─────────────────────────────────────────────────────
 
 export class ServerClient {
   constructor(
@@ -56,7 +56,7 @@ export class ServerClient {
     return (await response.json()) as T;
   }
 
-  /** Non authentifié : sonde disponible même avec une clé configurée. */
+  /** Unauthenticated: a probe available even with a key configured. */
   health = () => this.get<Health>("/health");
   capabilities = () => this.get<Capabilities>("/v1/capabilities");
   cancel = () => this.post<{ cancelled: boolean; state: string }>("/v1/cancel");
@@ -65,11 +65,11 @@ export class ServerClient {
   docsUrl = () => this.url("/docs");
 
   /**
-   * S'abonne à `/v1/progress`.
+   * Subscribe to `/v1/progress`.
    *
-   * `fetch` plutôt qu'`EventSource` : ce dernier ne permet pas d'en-tête
-   * `Authorization`, et la route est protégée comme le reste de `/v1`. Le
-   * découpage SSE est assez simple pour être fait à la main.
+   * `fetch` rather than `EventSource`: the latter allows no `Authorization`
+   * header, and the route is protected like the rest of `/v1`. SSE framing is
+   * simple enough to parse by hand.
    */
   subscribeProgress(
     onProgress: (progress: Progress) => void,
@@ -92,7 +92,7 @@ export class ServerClient {
           const { done, value } = await reader.read();
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
-          // Les trames SSE sont séparées par une ligne vide.
+          // SSE frames are separated by a blank line.
           let boundary = buffer.indexOf("\n\n");
           while (boundary !== -1) {
             const frame = buffer.slice(0, boundary);
@@ -102,7 +102,7 @@ export class ServerClient {
               .filter((line) => line.startsWith("data:"))
               .map((line) => line.slice(5).trim())
               .join("");
-            // Les `: ping` de maintien n'ont pas de `data:` : rien à faire.
+            // Keep-alive `: ping` frames have no `data:`: nothing to do.
             if (payload) onProgress(JSON.parse(payload) as Progress);
             boundary = buffer.indexOf("\n\n");
           }
@@ -121,7 +121,7 @@ async function describe(response: Response): Promise<Error> {
     const body = (await response.json()) as { error?: { message?: string } };
     if (body.error?.message) return new Error(body.error.message);
   } catch {
-    // Corps non-JSON : on se rabat sur le statut.
+    // Non-JSON body: fall back to the status.
   }
   return new Error(`HTTP ${response.status}`);
 }
@@ -132,7 +132,7 @@ export function messageOf(error: unknown): string {
   return JSON.stringify(error);
 }
 
-/** Extrait la clé d'API de la configuration, pour authentifier les appels. */
+/** Pull the API key out of the configuration, to authenticate calls. */
 export function apiKeyOf(config: unknown): string | null {
   const server = (config as { server?: { api_key?: unknown } } | null)?.server;
   const key = server?.api_key;

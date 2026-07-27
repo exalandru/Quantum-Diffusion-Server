@@ -1,15 +1,14 @@
-//! Emplacements de travail de l'app.
+//! Where the app does its work.
 //!
-//! Tout vit sous `app_data_dir()`, c'est-à-dire
-//! `~/Library/Application Support/com.exalandru.qds/`. Rien n'est écrit
-//! dans le bundle : il est en lecture seule et remplacé à chaque mise à jour.
+//! Everything lives under `app_data_dir()`, that is
+//! `~/Library/Application Support/com.exalandru.qds/`. Nothing is written inside
+//! the bundle: it is read-only and gets replaced on every update.
 //!
-//! Ces chemins ne sont pas un détail de confort : `mflux_server` crée son
-//! dossier d'images et son fichier de log pendant l'initialisation de
-//! l'application, avant même que le serveur n'écoute. Comme un processus lancé
-//! par le Finder hérite de `/` comme dossier courant, tout chemin relatif
-//! ferait échouer le démarrage. On passe donc au serveur des chemins absolus
-//! dont les dossiers parents existent déjà.
+//! These paths are not a matter of convenience: `mflux_server` creates its image
+//! directory and its log file while the application initializes, before the
+//! server even listens. Since a process launched by Finder inherits `/` as its
+//! current directory, any relative path would make startup fail. So we hand the
+//! server absolute paths whose parent directories already exist.
 
 use std::path::{Path, PathBuf};
 
@@ -17,21 +16,21 @@ use tauri::{AppHandle, Manager};
 
 #[derive(Debug, Clone)]
 pub struct Paths {
-    /// Racine de travail, sous `~/Library/Application Support/`.
+    /// Working root, under `~/Library/Application Support/`.
     pub data: PathBuf,
-    /// Copie inscriptible du projet Python, source de `uv sync`.
+    /// Writable copy of the Python project, the source for `uv sync`.
     pub server: PathBuf,
-    /// Environnement virtuel construit par uv.
+    /// Virtual environment built by uv.
     pub env: PathBuf,
-    /// CPython géré par uv (python-build-standalone).
+    /// uv-managed CPython (python-build-standalone).
     pub python: PathBuf,
-    /// Cache de téléchargement d'uv.
+    /// uv's download cache.
     pub uv_cache: PathBuf,
-    /// Images servies en `response_format="url"`.
+    /// Images served for `response_format="url"`.
     pub images: PathBuf,
-    /// `server-config.json` piloté par le formulaire de configuration.
+    /// `server-config.json`, driven by the configuration form.
     pub config: PathBuf,
-    /// Version de l'app ayant produit `server/`, pour savoir quand resynchroniser.
+    /// App version that produced `server/`, so we know when to re-sync.
     pub stamp: PathBuf,
 }
 
@@ -40,7 +39,7 @@ impl Paths {
         let data = app
             .path()
             .app_data_dir()
-            .map_err(|error| format!("dossier de données introuvable : {error}"))?;
+            .map_err(|error| format!("data directory not found: {error}"))?;
         Ok(Self {
             server: data.join("server"),
             env: data.join("env"),
@@ -53,48 +52,48 @@ impl Paths {
         })
     }
 
-    /// Crée tout ce dans quoi on écrira. Appelé avant chaque démarrage : le
-    /// serveur, lui, ne crée pas les dossiers parents de son fichier de log.
+    /// Create everything we will write into. Called before every start: the
+    /// server, for its part, does not create the parents of its log file.
     pub fn ensure(&self) -> Result<(), String> {
         for directory in [&self.data, &self.images] {
             std::fs::create_dir_all(directory)
-                .map_err(|error| format!("impossible de créer {} : {error}", directory.display()))?;
+                .map_err(|error| format!("could not create {}: {error}", directory.display()))?;
         }
         Ok(())
     }
 
-    /// Le point d'entrée console installé par `uv sync`.
+    /// The console entry point installed by `uv sync`.
     pub fn server_bin(&self) -> PathBuf {
         self.env.join("bin").join("mflux-server")
     }
 
-    /// L'outil de pré-quantification, installé par le même wheel.
+    /// The pre-quantization tool, installed by the same wheel.
     pub fn prequantize_bin(&self) -> PathBuf {
         self.env.join("bin").join("mflux-server-prequantize")
     }
 
-    /// `true` si `uv sync` a déjà produit un environnement exploitable.
+    /// `true` once `uv sync` has produced a usable environment.
     pub fn env_ready(&self) -> bool {
         self.server_bin().is_file()
     }
 
-    /// Version de l'app ayant produit la copie du projet, si elle existe.
+    /// App version that produced the project copy, when there is one.
     pub fn stamped_version(&self) -> Option<String> {
         std::fs::read_to_string(&self.stamp)
             .ok()
             .map(|value| value.trim().to_owned())
     }
 
-    /// Emplacement du token HuggingFace, tel que `huggingface_hub` le résout.
+    /// Location of the HuggingFace token, the way `huggingface_hub` resolves it.
     ///
-    /// On réutilise le fichier écrit par `hf auth login` au lieu d'un second
-    /// magasin de secrets : dupliquer le token dans le Keychain alors que le
-    /// même se trouve en clair juste à côté n'apporterait rien.
+    /// We reuse the file `hf auth login` writes rather than opening a second
+    /// secret store: duplicating the token into the Keychain while the very same
+    /// one sits in plaintext right next to it would buy nothing.
     pub fn hf_token_file(hf_home: &Path) -> PathBuf {
         hf_home.join("token")
     }
 
-    /// `HF_HOME` par défaut, celui de `huggingface_hub`.
+    /// Default `HF_HOME`, matching `huggingface_hub`'s own.
     pub fn default_hf_home() -> PathBuf {
         std::env::var_os("HF_HOME")
             .map(PathBuf::from)

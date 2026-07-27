@@ -6,11 +6,11 @@ import { messageOf } from "../api";
 import type { BootstrapEvent, Overview } from "../types";
 
 /**
- * Premier lancement : installation de l'environnement Python.
+ * First launch: installing the Python environment.
  *
- * C'est un téléchargement d'environ 1,1 Go — torch pèse 501 Mo à lui seul, et
- * mlx 178 dont 150 de shaders Metal. D'où la sortie d'uv en direct plutôt qu'un
- * indicateur d'attente indéterminé.
+ * This is roughly a 1.1 GB download — torch alone is 501 MB, and mlx 178 of
+ * which 150 are Metal shaders. Hence uv's live output rather than an
+ * indeterminate spinner.
  */
 export function Setup({ state, onDone }: { state: Overview; onDone: () => void }) {
   const [running, setRunning] = useState(false);
@@ -65,19 +65,19 @@ export function Setup({ state, onDone }: { state: Overview; onDone: () => void }
 
   return (
     <div className="card">
-      <h2>{upgrade ? "Mise à jour de l'environnement" : "Installation"}</h2>
+      <h2>{upgrade ? "Updating the environment" : "Installation"}</h2>
       <p className="hint">
         {upgrade ? (
           <>
-            L'environnement présent a été installé par la version{" "}
-            <strong>{state.bootstrap.installedVersion}</strong>, l'app tourne en{" "}
-            <strong>{state.bootstrap.appVersion}</strong>. Il faut le reconstruire.
+            The environment currently installed was built by version{" "}
+            <strong>{state.bootstrap.installedVersion}</strong>, while the app runs{" "}
+            <strong>{state.bootstrap.appVersion}</strong>. It has to be rebuilt.
           </>
         ) : (
           <>
-            L'app installe son propre Python et ses dépendances, sans rien exiger de la machine.
-            Compter environ <strong>1,1 Go</strong> de téléchargement et quelques minutes. Les poids
-            des modèles, eux, viendront plus tard et à la demande.
+            The app installs its own Python and dependencies, requiring nothing from the machine.
+            Expect about <strong>1.1 GB</strong> of download and a few minutes. The model weights
+            themselves come later, on demand.
           </>
         )}
       </p>
@@ -88,14 +88,14 @@ export function Setup({ state, onDone }: { state: Overview; onDone: () => void }
           <dd className="path">{state.bootstrap.envPath}</dd>
         </div>
         <div className="stat">
-          <dt>Espace de travail</dt>
+          <dt>Working directory</dt>
           <dd className="path">{state.dataDir}</dd>
         </div>
       </dl>
 
       <div className="row" style={{ marginTop: 14 }}>
         <button className="primary" onClick={install} disabled={running}>
-          {running ? "Installation…" : upgrade ? "Reconstruire" : "Installer"}
+          {running ? "Installing…" : upgrade ? "Rebuild" : "Install"}
         </button>
         {step && <span className="badge">{step}</span>}
       </div>

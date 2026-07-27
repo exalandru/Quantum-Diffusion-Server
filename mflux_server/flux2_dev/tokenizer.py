@@ -1,14 +1,14 @@
-"""Tokenisation des prompts FLUX.2-dev.
+"""Tokenization of FLUX.2-dev prompts.
 
-`LanguageTokenizer` de mflux ne convient pas : avec `use_chat_template=True` il
-envoie `[{"role": "user", "content": prompt}]` et `add_generation_prompt=True`
-(mflux/models/common/tokenizer/tokenizer.py:86-92), alors que FLUX.2-dev attend
-une conversation **system + user**, des contenus en listes de parts typées, et
-`add_generation_prompt=False`. Un décalage ici ne casse rien visiblement : le
-modèle génère simplement des images qui ignorent le prompt.
+mflux's `LanguageTokenizer` does not fit: with `use_chat_template=True` it sends
+`[{"role": "user", "content": prompt}]` and `add_generation_prompt=True`
+(mflux/models/common/tokenizer/tokenizer.py:86-92), whereas FLUX.2-dev expects a
+**system + user** conversation, contents as lists of typed parts, and
+`add_generation_prompt=False`. A mismatch here breaks nothing visibly: the model
+simply generates images that ignore the prompt.
 
-`TokenizerDefinition.encoder_class` permet de brancher une classe maison, que
-`TokenizerLoader._create_tokenizer` instancie en `(tokenizer=…, max_length=…)`.
+`TokenizerDefinition.encoder_class` lets us plug in a custom class, which
+`TokenizerLoader._create_tokenizer` instantiates as `(tokenizer=…, max_length=…)`.
 """
 
 from __future__ import annotations
@@ -16,10 +16,10 @@ from __future__ import annotations
 import mlx.core as mx
 from mflux.models.common.tokenizer import BaseTokenizer, TokenizerOutput
 
-#: Repris à l'identique de diffusers
-#: (src/diffusers/pipelines/flux2/system_messages.py), lui-même repris de
-#: black-forest-labs/flux2. Le retour à la ligne après « object » est dans la
-#: source : il change la tokenisation, donc on le conserve tel quel.
+#: Copied verbatim from diffusers
+#: (src/diffusers/pipelines/flux2/system_messages.py), itself taken from
+#: black-forest-labs/flux2. The line break after "object" is in the source: it
+#: changes tokenization, so it is preserved exactly.
 SYSTEM_MESSAGE = (
     "You are an AI that reasons about image descriptions. You give structured "
     "responses focusing on object relationships, object\nattribution and "
@@ -28,11 +28,11 @@ SYSTEM_MESSAGE = (
 
 
 def format_messages(prompt: str, system_message: str = SYSTEM_MESSAGE) -> list[dict]:
-    """Reproduit le `format_input` de `Flux2Pipeline`."""
+    """Mirror `Flux2Pipeline`'s `format_input`."""
     return [
         {"role": "system", "content": [{"type": "text", "text": system_message}]},
-        # `[IMG]` est le token d'image du template : le laisser dans un prompt
-        # texte décalerait les positions.
+        # `[IMG]` is the template's image token: leaving it in a text prompt
+        # would shift the positions.
         {"role": "user", "content": [{"type": "text", "text": prompt.replace("[IMG]", "")}]},
     ]
 

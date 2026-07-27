@@ -1,8 +1,8 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Port fixe et strict : `tauri.conf.json` pointe dessus via devUrl, donc un
-// repli silencieux sur un autre port ferait démarrer l'app sur du vide.
+// Fixed, strict port: `tauri.conf.json` points at it through devUrl, so a silent
+// fallback to another port would start the app on nothing at all.
 export default defineConfig({
   plugins: [react()],
   clearScreen: false,

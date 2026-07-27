@@ -1,5 +1,5 @@
-/* Apparence macOS : police système, densité de panneau de préférences, et les
-   deux thèmes puisque l'app suit celui du système. */
+/* macOS look: system font, preference-pane density, and both themes since the
+   app follows the system's. */
 
 :root {
   --bg: #f4f4f6;
@@ -52,7 +52,7 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ── Coque ──────────────────────────────────────────────────────────────── */
+/* ── Shell ──────────────────────────────────────────────────────────────── */
 
 .shell {
   display: flex;
@@ -60,8 +60,7 @@ body {
   height: 100%;
 }
 
-/* La barre de titre est transparente : cette zone est aussi la poignée de
-   déplacement de la fenêtre. */
+/* The title bar is transparent: this area doubles as the window drag handle. */
 .titlebar {
   height: 38px;
   flex: none;
@@ -115,7 +114,7 @@ main {
   padding: 18px;
 }
 
-/* ── Cartes et grilles ──────────────────────────────────────────────────── */
+/* ── Cards and grids ────────────────────────────────────────────────────── */
 
 .card {
   background: var(--panel);
@@ -176,7 +175,7 @@ p.hint {
   font-weight: 600;
 }
 
-/* ── Contrôles ──────────────────────────────────────────────────────────── */
+/* ── Controls ───────────────────────────────────────────────────────────── */
 
 button {
   appearance: none;
@@ -260,7 +259,7 @@ legend {
   padding: 0 5px;
 }
 
-/* ── Divers ─────────────────────────────────────────────────────────────── */
+/* ── Misc ───────────────────────────────────────────────────────────────── */
 
 .badge {
   display: inline-flex;

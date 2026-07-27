@@ -7,17 +7,16 @@ const RANK: Record<string, number> = { DEBUG: 0, INFO: 1, WARNING: 2, ERROR: 3, 
 
 type Entry =
   | { kind: "event"; event: LogEvent }
-  /** Texte brut de stderr : barres tqdm, démarrage d'uvicorn, tracebacks. */
+  /** Raw stderr text: tqdm bars, uvicorn startup, tracebacks. */
   | { kind: "raw"; line: string };
 
 /**
- * Visionneuse des deux canaux du serveur.
+ * Viewer for the server's two channels.
  *
- * stdout ne porte que du JSON Lines — d'où le filtrage par niveau — et stderr le
- * texte destiné aux humains. Cette séparation n'est pas cosmétique : mflux
- * affiche sa barre de débruitage avec tqdm, en fragments terminés par un retour
- * chariot sans saut de ligne, qui rendaient le JSON impossible à parser quand
- * les deux partageaient stderr.
+ * stdout carries only JSON Lines — hence the level filtering — and stderr the
+ * human-readable text. That separation is not cosmetic: mflux renders its
+ * denoising bar with tqdm, as fragments terminated by a carriage return with no
+ * newline, which made the JSON impossible to parse when the two shared stderr.
  */
 export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => void }) {
   const [minLevel, setMinLevel] = useState<(typeof LEVELS)[number]>("INFO");
@@ -33,7 +32,7 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
           result.push({ kind: "event", event: JSON.parse(line) as LogEvent });
           continue;
         } catch {
-          // Une ligne de stdout qui ne parse pas reste affichable telle quelle.
+          // A stdout line that fails to parse stays displayable as-is.
         }
       }
       result.push({ kind: "raw", line });
@@ -63,7 +62,7 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
           <select value={minLevel} onChange={(event) => setMinLevel(event.target.value as never)}>
             {LEVELS.map((level) => (
               <option key={level} value={level}>
-                {level} et plus
+                {level} and above
               </option>
             ))}
           </select>
@@ -73,7 +72,7 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
               checked={showRaw}
               onChange={(event) => setShowRaw(event.target.checked)}
             />
-            <span>texte brut</span>
+            <span>raw text</span>
           </label>
           <label className="check">
             <input
@@ -81,17 +80,17 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
               checked={follow}
               onChange={(event) => setFollow(event.target.checked)}
             />
-            <span>suivre</span>
+            <span>follow</span>
           </label>
           <button onClick={onClear} disabled={lines.length === 0}>
-            Vider
+            Clear
           </button>
         </div>
       </div>
 
       {visible.length === 0 ? (
         <p className="center-note">
-          Rien pour l'instant. Les sorties du serveur et de la conversion apparaissent ici.
+          Nothing yet. Server and conversion output appears here.
         </p>
       ) : (
         <div className="console" ref={container} style={{ maxHeight: "calc(100vh - 230px)" }}>

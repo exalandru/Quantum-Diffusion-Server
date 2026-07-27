@@ -1,7 +1,7 @@
 [project]
 name = "mflux-server"
 version = "0.1.0"
-description = "Serveur local exposant mflux via une API compatible OpenAI Images"
+description = "Local server exposing mflux behind an OpenAI-Images-compatible API"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [

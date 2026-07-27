@@ -1,8 +1,8 @@
-"""Fixtures partagées.
+"""Shared fixtures.
 
-Aucun test ne charge de poids : le moteur est remplacé par un double qui
-renvoie un PNG minuscule. Les tests valident la couche HTTP et le registre,
-pas l'inférence — celle-ci se vérifie à la main (voir le README).
+No test loads weights: the engine is replaced by a double that returns a tiny
+PNG. The tests validate the HTTP layer and the registry, not inference — that is
+verified by hand (see the README).
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ def tiny_png(color: str = "red") -> bytes:
 
 
 class FakeEngine:
-    """Remplace `ModelEngine` : enregistre les jobs, ne charge rien."""
+    """Stands in for `ModelEngine`: records jobs, loads nothing."""
 
     def __init__(self) -> None:
         self.jobs: list[GenerationJob] = []
         self.loaded_model: str | None = None
         self.shutdown_called = False
         self.unload_called = False
-        #: Simule une génération en cours, pour tester `/v1/cancel`.
+        #: Simulates a running generation, to exercise `/v1/cancel`.
         self.busy = False
         self.cancel_requested = False
 

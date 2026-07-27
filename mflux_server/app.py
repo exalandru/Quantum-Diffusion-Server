@@ -1,10 +1,10 @@
-"""API HTTP compatible OpenAI Images.
+"""OpenAI-Images-compatible HTTP API.
 
-Endpoints standards : `/v1/models`, `/v1/models/{id}`,
-`/v1/images/generations`, `/v1/images/edits`.
-Extensions maison : `/health`, `/v1/capabilities`, et les champs `steps`,
-`seed`, `guidance`, `negative_prompt`, `strength` dans les requêtes — champs
-additionnels que les SDK OpenAI ignorent.
+Standard endpoints: `/v1/models`, `/v1/models/{id}`, `/v1/images/generations`,
+`/v1/images/edits`. Local extensions: `/health`, `/v1/capabilities`,
+`/v1/progress`, `/v1/cancel`, `/v1/unload`, plus the `steps`, `seed`,
+`guidance`, `negative_prompt` and `strength` request fields — extra fields that
+the OpenAI SDKs simply ignore.
 """
 
 from __future__ import annotations
@@ -42,20 +42,20 @@ from mflux_server.store import ImageStore
 logger = logging.getLogger(SERVER_LOGGER)
 
 MAX_SEED = 2**32 - 1
-#: Valeur utilisée quand `/v1/images/edits` fait de l'img2img sans que le
-#: client ait précisé `strength` (mflux/cli/defaults/defaults.py:14).
+#: Value used when `/v1/images/edits` falls back to img2img without the client
+#: specifying `strength` (mflux/cli/defaults/defaults.py:14).
 DEFAULT_IMAGE_STRENGTH = 0.4
-#: Cadence de sondage de `/v1/progress`. Une étape de débruitage dure au mieux
-#: quelques centaines de millisecondes : inutile d'aller plus vite.
+#: Polling cadence of `/v1/progress`. A denoising step takes a few hundred
+#: milliseconds at best, so there is no point going faster.
 PROGRESS_POLL_S = 0.25
-#: Battement de cœur quand rien ne change, pour détecter les clients partis.
+#: Heartbeat when nothing changes, so departed clients get noticed.
 PROGRESS_PING_S = 15.0
 
 
 class ImageGenerationRequest(BaseModel):
-    # `extra="ignore"` : quality, style, user, background, output_format,
-    # moderation… sont acceptés et ignorés plutôt que de faire échouer la
-    # requête d'un client OpenAI standard.
+    # `extra="ignore"`: quality, style, user, background, output_format,
+    # moderation… are accepted and ignored rather than failing a standard
+    # OpenAI client's request.
     model_config = ConfigDict(extra="ignore")
 
     prompt: str = Field(min_length=1)
@@ -64,7 +64,7 @@ class ImageGenerationRequest(BaseModel):
     size: str | None = None
     response_format: str | None = None
 
-    # Extensions mflux
+    # mflux extensions
     steps: int | None = Field(default=None, ge=1)
     seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
     guidance: float | None = Field(default=None, ge=0)
@@ -77,12 +77,12 @@ async def progress_events(
     poll_s: float = PROGRESS_POLL_S,
     ping_s: float = PROGRESS_PING_S,
 ) -> AsyncIterator[str]:
-    """Trames SSE de progression, jusqu'à ce que le consommateur se retire.
+    """Progress SSE frames, until the consumer goes away.
 
-    Générateur infini par conception : c'est la déconnexion du client qui
-    l'annule, via le groupe de tâches de `StreamingResponse`. Sorti de la route
-    pour être testable sans HTTP — `TestClient` ne propage pas les déconnexions,
-    donc le lire à travers lui bloquerait indéfiniment.
+    An infinite generator by design: it is the client disconnecting that
+    cancels it, through `StreamingResponse`'s task group. Pulled out of the route
+    so it can be tested without HTTP — `TestClient` does not propagate
+    disconnects, so reading it through that would block forever.
     """
     last: str | None = None
     last_emit = time.monotonic()
@@ -94,8 +94,8 @@ async def progress_events(
             last = payload
             last_emit = now
         elif now - last_emit >= ping_s:
-            # Commentaire SSE : sans trafic, une déconnexion cliente resterait
-            # invisible jusqu'à la prochaine génération.
+            # An SSE comment: with no traffic, a client disconnect would stay
+            # invisible until the next generation.
             yield ": ping\n\n"
             last_emit = now
         await asyncio.sleep(poll_s)
@@ -106,14 +106,14 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     setup_logging(settings.server.log_level, settings.server.log_file, settings.server.log_json)
     if mflux_settings.missing_config_path is not None:
         logger.warning(
-            "Aucun fichier de configuration à %s : tous les défauts s'appliquent. "
-            "Pointe MFLUX_SERVER_CONFIG sur ton server-config.json.",
+            "No configuration file at %s: every default applies. "
+            "Point MFLUX_SERVER_CONFIG at your server-config.json.",
             mflux_settings.missing_config_path,
         )
 
     registry = settings.registry()
     if not registry:
-        raise ValueError("Aucun modèle activé : vérifie la section 'models' de server-config.json.")
+        raise ValueError("No model enabled: check the 'models' section of server-config.json.")
 
     engine = engine or ModelEngine(
         request_timeout_s=settings.server.request_timeout_s,
@@ -130,18 +130,18 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     async def lifespan(_: FastAPI):
         store.purge()
         logger.info(
-            "mflux-server %s — %d modèle(s) : %s | défaut : %s",
+            "mflux-server %s — %d model(s): %s | default: %s",
             __version__,
             len(registry),
             ", ".join(sorted(registry)),
             settings.default_model,
         )
         if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
-            logger.warning("Serveur exposé sans clé d'API")
+            logger.warning("Server exposed without an API key")
         yield
         engine.shutdown()
         shutil.rmtree(scratch_dir, ignore_errors=True)
-        logger.info("Serveur arrêté")
+        logger.info("Server stopped")
 
     app = FastAPI(
         title="mflux OpenAI-compatible server",
@@ -158,19 +158,19 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     install_exception_handlers(app)
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
 
-    # ── Authentification ───────────────────────────────────────────────────
+    # ── Authentication ─────────────────────────────────────────────────────
 
     async def require_auth(authorization: Annotated[str | None, Header()] = None) -> None:
         expected = settings.server.api_key
         if not expected:
             return
         scheme, _, token = (authorization or "").partition(" ")
-        # compare_digest refuse les str non-ASCII : on compare les octets.
+        # compare_digest rejects non-ASCII str, so we compare bytes.
         if scheme.lower() != "bearer" or not secrets.compare_digest(
             token.encode("utf-8"), expected.encode("utf-8")
         ):
             raise APIError(
-                "Clé d'API manquante ou invalide.",
+                "Missing or invalid API key.",
                 status_code=401,
                 error_type="invalid_request_error",
                 code="invalid_api_key",
@@ -185,7 +185,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         spec = registry.get(key)
         if spec is None:
             raise APIError(
-                f"Modèle inconnu : {key!r}. Modèles disponibles : {sorted(registry)}",
+                f"Unknown model: {key!r}. Available models: {sorted(registry)}",
                 param="model",
                 code="model_not_found",
             )
@@ -203,7 +203,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         fmt = value or settings.server.default_response_format
         if fmt not in RESPONSE_FORMATS:
             raise APIError(
-                f"response_format doit valoir l'un de {sorted(RESPONSE_FORMATS)}, reçu : {fmt!r}",
+                f"response_format must be one of {sorted(RESPONSE_FORMATS)}, got {fmt!r}",
                 param="response_format",
                 code="invalid_response_format",
             )
@@ -212,17 +212,17 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     def check_capabilities(spec: ModelSpec, *, negative_prompt: str | None, guidance: float | None) -> None:
         if negative_prompt and not spec.supports_negative_prompt:
             raise APIError(
-                f"Le modèle '{spec.key}' ne supporte pas negative_prompt. "
-                f"Décris plutôt ce que tu veux obtenir dans le prompt.",
+                f"Model '{spec.key}' does not support negative_prompt. "
+                f"Describe what you want in the prompt instead.",
                 param="negative_prompt",
                 code="unsupported_parameter",
             )
         if guidance is not None and not spec.supports_guidance:
             fixed = spec.default_guidance
             raise APIError(
-                f"Le modèle '{spec.key}' est distillé : sa guidance est figée"
-                + (f" à {fixed}." if fixed is not None else ".")
-                + " Retire le paramètre guidance.",
+                f"Model '{spec.key}' is distilled, so its guidance is fixed"
+                + (f" at {fixed}." if fixed is not None else ".")
+                + " Drop the guidance parameter.",
                 param="guidance",
                 code="unsupported_parameter",
             )
@@ -230,8 +230,8 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     def check_n(n: int) -> None:
         if n > settings.server.max_n:
             raise APIError(
-                f"n={n} dépasse la limite du serveur ({settings.server.max_n}). "
-                f"Les images sont générées séquentiellement.",
+                f"n={n} exceeds the server limit ({settings.server.max_n}). "
+                f"Images are generated one at a time.",
                 param="n",
                 code="n_too_large",
             )
@@ -261,8 +261,8 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
             {
                 "created": int(time.time()),
                 "data": data,
-                # Extension : la taille effective peut différer de la taille
-                # demandée (mflux tronque au multiple de 16).
+                # Extension: the effective size may differ from the requested
+                # one (mflux truncates to a multiple of 16).
                 "mflux": {
                     "model": spec.key,
                     "size": f"{width}x{height}",
@@ -352,13 +352,12 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
     @app.get("/v1/progress")
     async def progress_stream(_: None = auth) -> StreamingResponse:
-        """Progression en Server-Sent Events.
+        """Progress as Server-Sent Events.
 
-        On sonde `engine.progress()` plutôt que de pousser depuis le worker : la
-        progression est produite dans le thread d'inférence, et un instantané
-        sondé évite toute file inter-threads, tout risque de backpressure et
-        toute fuite si un consommateur disparaît. Plusieurs clients peuvent
-        écouter en parallèle sans coordination.
+        We poll `engine.progress()` rather than push from the worker: progress is
+        produced on the inference thread, and a polled snapshot avoids any
+        cross-thread queue, any backpressure risk and any leak when a consumer
+        vanishes. Several clients can listen in parallel with no coordination.
         """
         return StreamingResponse(
             progress_events(engine),
@@ -368,21 +367,21 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
     @app.post("/v1/cancel")
     async def cancel_generation(_: None = auth) -> dict:
-        """Interrompt la génération en cours, à la prochaine étape de débruitage.
+        """Interrupt the running generation at the next denoising step.
 
-        MLX ne se laisse pas annuler de l'extérieur : l'arrêt passe par le
-        callback de progression, donc il prend effet à l'étape suivante. La
-        requête en cours se termine en 499 `generation_stopped`.
+        MLX cannot be cancelled from outside: the stop goes through the progress
+        callback, so it takes effect on the following step. The in-flight request
+        ends as a 499 `generation_stopped`.
         """
         cancelled = engine.request_cancel()
         return {"cancelled": cancelled, "state": engine.progress()["state"]}
 
     @app.post("/v1/unload")
     async def unload_model(_: None = auth) -> dict:
-        """Libère les poids résidents sans redémarrer le serveur.
+        """Release the resident weights without restarting the server.
 
-        Prend le verrou du moteur : si une génération tourne, on attend qu'elle
-        finisse plutôt que de la casser.
+        Takes the engine lock: if a generation is running we wait for it to
+        finish rather than breaking it.
         """
         await engine.unload()
         return {"loaded_model": engine.loaded_model, "memory": engine.memory_stats()}
@@ -395,8 +394,8 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         response_format = resolve_response_format(body.response_format)
         if response_format == "raw" and body.n > 1:
             raise APIError(
-                "response_format='raw' ne peut renvoyer qu'une seule image ; utilise n=1 "
-                "ou response_format='b64_json'.",
+                "response_format='raw' can only return a single image; use n=1 "
+                "or response_format='b64_json'.",
                 param="response_format",
                 code="invalid_response_format",
             )
@@ -440,7 +439,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     ):
         if mask is not None:
             raise APIError(
-                "Aucun modèle de ce serveur ne fait d'inpainting : le paramètre mask n'est pas supporté.",
+                "No model on this server does inpainting: the mask parameter is not supported.",
                 param="mask",
                 code="unsupported_parameter",
             )
@@ -451,14 +450,14 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         fmt = resolve_response_format(response_format)
         if fmt == "raw" and n > 1:
             raise APIError(
-                "response_format='raw' ne peut renvoyer qu'une seule image.",
+                "response_format='raw' can only return a single image.",
                 param="response_format",
                 code="invalid_response_format",
             )
 
-        # img2img (bruitage du latent de départ) et édition instructionnelle
-        # (images en tokens de conditionnement) sont deux mécaniques
-        # différentes. `strength` explicite tranche pour la première.
+        # img2img (noising the starting latent) and instruction editing
+        # (images as conditioning tokens) are two different mechanics. An
+        # explicit `strength` settles it in favour of the former.
         if strength is not None:
             kind, image_strength = "img2img", strength
         elif edit_enabled(spec):
@@ -468,7 +467,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
         if kind == "img2img" and not spec.supports_image_to_image:
             raise APIError(
-                f"Le modèle '{spec.key}' ne supporte ni l'édition ni l'image-to-image.",
+                f"Model '{spec.key}' supports neither editing nor image-to-image.",
                 param="model",
                 code="unsupported_parameter",
             )
@@ -519,7 +518,7 @@ def _capabilities(spec: ModelSpec) -> dict:
 
 
 async def _save_upload(upload: UploadFile, destination: Path, max_mb: float) -> None:
-    """Écrit l'upload par blocs, en refusant au-delà de la limite."""
+    """Write the upload in chunks, rejecting anything past the limit."""
     limit = int(max_mb * 1024 * 1024)
     written = 0
     with destination.open("wb") as handle:
@@ -529,7 +528,7 @@ async def _save_upload(upload: UploadFile, destination: Path, max_mb: float) -> 
                 handle.close()
                 destination.unlink(missing_ok=True)
                 raise APIError(
-                    f"Image trop volumineuse (limite : {max_mb:g} Mo).",
+                    f"Image too large (limit: {max_mb:g} MB).",
                     status_code=413,
                     param="image",
                     code="file_too_large",
@@ -537,10 +536,10 @@ async def _save_upload(upload: UploadFile, destination: Path, max_mb: float) -> 
             handle.write(chunk)
     if written == 0:
         destination.unlink(missing_ok=True)
-        raise APIError("Le fichier image est vide.", param="image", code="invalid_image")
+        raise APIError("The image file is empty.", param="image", code="invalid_image")
 
 
-def main() -> None:  # pragma: no cover - point d'entrée
+def main() -> None:  # pragma: no cover - entry point
     import uvicorn
 
     settings = load_settings()
@@ -549,15 +548,14 @@ def main() -> None:  # pragma: no cover - point d'entrée
         host=settings.server.host,
         port=settings.server.port,
         log_level=settings.server.log_level.lower(),
-        # Sans ça, uvicorn attend indéfiniment les connexions en vol : un
-        # SIGTERM pendant une génération bloquerait jusqu'à `request_timeout_s`
-        # (40 min dans la config livrée). Un superviseur doit malgré tout garder
-        # une échelle SIGTERM → SIGKILL, car un second SIGTERM ne force pas la
-        # sortie côté uvicorn — seul SIGINT le fait.
+        # Without this, uvicorn waits forever on in-flight connections: a
+        # SIGTERM during a generation would block for up to `request_timeout_s`
+        # (40 min in the shipped config). A supervisor should still keep a
+        # SIGTERM → SIGKILL ladder, because a second SIGTERM does not force the
+        # exit on uvicorn's side — only SIGINT does.
         timeout_graceful_shutdown=settings.server.shutdown_grace_s,
-        # En mode JSON, stdout est le canal des événements structurés : l'access
-        # log d'uvicorn, qui y écrit du texte brut, le rendrait impossible à
-        # parser.
+        # In JSON mode, stdout is the structured-event channel: uvicorn's access
+        # log, which writes plain text there, would make it unparsable.
         access_log=not settings.server.log_json,
     )
 

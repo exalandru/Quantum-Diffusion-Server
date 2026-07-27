@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "Panneau de contrôle macOS pour Quantum Diffusion Server",
+  "description": "macOS control panel for Quantum Diffusion Server",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

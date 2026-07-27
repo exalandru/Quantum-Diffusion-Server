@@ -1,10 +1,10 @@
-"""Configuration du logging.
+"""Logging configuration.
 
-Deux namespaces distincts, et c'est important : `"mflux"` est le logger
-*de la librairie* (elle n'appelle jamais `basicConfig`, donc y poser un
-handler suffit à capturer ses messages), `"mflux_server"` est le nôtre. Le
-prototype utilisait `"mflux"` pour ses propres logs, ce qui aurait mélangé
-les deux une fois mflux importé en process.
+Two distinct namespaces, and the distinction matters: `"mflux"` is the
+*library's* logger (it never calls `basicConfig`, so attaching a handler is
+enough to capture its messages), `"mflux_server"` is ours. The prototype used
+`"mflux"` for its own logs, which would have mixed the two together once mflux
+was imported in-process.
 """
 
 from __future__ import annotations
@@ -25,13 +25,14 @@ logger = logging.getLogger(SERVER_LOGGER)
 
 
 class JsonFormatter(logging.Formatter):
-    """Une ligne = un objet JSON, pour un superviseur qui lit stderr.
+    """One line, one JSON object, for a supervisor reading stdout.
 
-    Les événements de cycle de vie portent en plus un `event` et les champs de
-    `fields`, posés par `extra=` à l'appel — le message humain reste inchangé à
-    côté. Attention côté consommateur : tqdm écrit sur stderr sans passer par
-    le logging (cf. `capture_stdout`), donc toute ligne qui ne parse pas en
-    JSON doit être ignorée plutôt que traitée comme une erreur.
+    Lifecycle events additionally carry an `event` name and the contents of
+    `fields`, attached through `extra=` at the call site — the human-readable
+    message stays alongside them. One caveat for consumers: tqdm writes to
+    stderr without going through logging (see `capture_stdout`), so any line
+    that fails to parse as JSON should be ignored rather than treated as an
+    error.
     """
 
     def format(self, record: logging.LogRecord) -> str:
@@ -57,15 +58,15 @@ def setup_logging(
     log_file: str | Path | None = "mflux.log",
     json_lines: bool = False,
 ) -> None:
-    # En mode JSON, on sort sur **stdout** et pas stderr : mflux affiche sa barre
-    # de progression de débruitage avec tqdm (`Config.time_steps`), qui écrit sur
-    # stderr des fragments terminés par `\r` sans retour à la ligne. Nos objets
-    # JSON s'y colleraient — `{"ts": …}` précédé de `\r 0%| | 0/40` sur le même
-    # segment — et un consommateur raisonnable les manquerait tous. tqdm n'offre
-    # aucune variable d'environnement pour se taire, d'où la séparation des
-    # canaux : stdout porte les événements structurés, stderr le texte humain et
-    # les barres. `main()` coupe l'access log d'uvicorn en conséquence, sinon il
-    # polluerait stdout à son tour.
+    # In JSON mode we write to **stdout** rather than stderr: mflux renders its
+    # denoising progress with tqdm (`Config.time_steps`), which emits
+    # carriage-return-terminated fragments to stderr with no newline. Our JSON
+    # objects would end up glued to them — `{"ts": …}` preceded by
+    # `\r 0%| | 0/40` on the same segment — and any reasonable consumer would
+    # miss all of them. tqdm offers no environment variable to silence itself,
+    # hence the channel split: stdout carries structured events, stderr carries
+    # human-readable text and progress bars. `main()` disables uvicorn's access
+    # log accordingly, since it would otherwise pollute stdout in turn.
     console = logging.StreamHandler(sys.stdout if json_lines else sys.stderr)
     console.setFormatter(
         JsonFormatter()
@@ -75,10 +76,10 @@ def setup_logging(
 
     handlers: list[logging.Handler] = [console]
     if log_file:
-        # `FileHandler` n'expanse pas `~` et ne crée pas les dossiers parents :
-        # sans ça, un chemin type `~/Library/Logs/mflux-server/mflux.log`
-        # échouerait en créant un dossier littéral `~`, ou lèverait un
-        # FileNotFoundError au démarrage.
+        # `FileHandler` neither expands `~` nor creates parent directories:
+        # without this, a path like `~/Library/Logs/mflux-server/mflux.log`
+        # would create a directory literally named `~`, or raise
+        # FileNotFoundError at startup.
         path = Path(log_file).expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(path, encoding="utf-8")
@@ -99,13 +100,13 @@ def setup_logging(
         for handler in handlers:
             target.addHandler(handler)
         target.setLevel(level)
-        # Sans ça, les messages remonteraient aussi au handler racine
-        # d'uvicorn et seraient affichés en double.
+        # Without this, messages would also reach uvicorn's root handler and be
+        # printed twice.
         target.propagate = False
 
 
 class _LoggerWriter(io.TextIOBase):
-    """Fichier-like qui réémet chaque ligne complète vers un logger."""
+    """File-like object that re-emits each complete line to a logger."""
 
     def __init__(self, target: logging.Logger, level: int = logging.INFO):
         self._logger = target
@@ -128,15 +129,15 @@ class _LoggerWriter(io.TextIOBase):
 
 @contextlib.contextmanager
 def capture_stdout() -> Iterator[None]:
-    """Redirige les `print()` de mflux vers le logger de la librairie.
+    """Redirect mflux's `print()` calls to the library logger.
 
-    mflux en émet quelques-uns sur le chemin chaud (warning de quantization,
-    « Downloading model from HuggingFace… »). La barre tqdm, elle, écrit sur
-    stderr et reste volontairement visible dans le terminal : c'est la seule
-    progression lisible en direct pour qui regarde la console.
+    mflux emits a few on the hot path (quantization warnings, "Downloading
+    model from HuggingFace…"). Its tqdm bar, however, writes to stderr and is
+    deliberately left visible in the terminal: it is the only live progress
+    readout for someone watching the console.
 
-    Sûr malgré la mutation globale de `sys.stdout` : le moteur sérialise les
-    générations sur un unique worker.
+    Safe despite mutating the global `sys.stdout`: the engine serializes
+    generations onto a single worker.
     """
     writer = _LoggerWriter(logging.getLogger(LIBRARY_LOGGER))
     previous = sys.stdout

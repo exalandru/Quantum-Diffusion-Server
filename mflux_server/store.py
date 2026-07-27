@@ -1,8 +1,8 @@
-"""Stockage éphémère des images servies en `response_format="url"`.
+"""Ephemeral storage for images served with `response_format="url"`.
 
-L'API OpenAI renvoie par défaut une URL, pas du base64 : il faut donc
-persister l'image quelque part. Les fichiers sont purgés au-delà de leur
-TTL, au démarrage et après chaque écriture.
+The OpenAI API returns a URL by default, not base64, so the image has to be
+persisted somewhere. Files are purged once past their TTL, at startup and after
+every write.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ class ImageStore:
         return name
 
     def purge(self) -> int:
-        """Supprime les images expirées. `ttl_s = 0` désactive la purge."""
+        """Delete expired images. `ttl_s = 0` disables purging."""
         if not self.ttl_s:
             return 0
         cutoff = time.time() - self.ttl_s
@@ -40,8 +40,8 @@ class ImageStore:
                 if path.stat().st_mtime < cutoff:
                     path.unlink(missing_ok=True)
                     removed += 1
-            except OSError:  # pragma: no cover - course avec une autre purge
-                logger.debug("Purge impossible pour %s", path, exc_info=True)
+            except OSError:  # pragma: no cover - race with a concurrent purge
+                logger.debug("Could not purge %s", path, exc_info=True)
         if removed:
-            logger.info("%d image(s) expirée(s) supprimée(s)", removed)
+            logger.info("Removed %d expired image(s)", removed)
         return removed

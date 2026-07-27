@@ -1,4 +1,4 @@
-"""Conformité de la couche HTTP à ce qu'attend un client OpenAI."""
+"""Conformance of the HTTP layer to what an OpenAI client expects."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ def generate(client: TestClient, **body):
 # ── /v1/models ─────────────────────────────────────────────────────────────
 
 
-def test_liste_des_modeles_conforme(client):
+def test_model_list_is_conformant(client):
     payload = client.get("/v1/models").json()
     assert payload["object"] == "list"
     assert {entry["id"] for entry in payload["data"]} == {
@@ -37,14 +37,14 @@ def test_liste_des_modeles_conforme(client):
         assert entry["owned_by"] == "mflux"
 
 
-def test_recuperation_dun_modele(client):
+def test_retrieving_a_model(client):
     payload = client.get("/v1/models/z-image-turbo").json()
     assert payload["id"] == "z-image-turbo"
     assert payload["mflux"]["default_size"] == "1280x720"
     assert payload["mflux"]["supports_guidance"] is False
 
 
-def test_modele_inconnu_renvoie_une_erreur_openai(client):
+def test_unknown_model_returns_an_openai_error(client):
     response = client.get("/v1/models/sdxl")
     assert response.status_code == 400
     error = response.json()["error"]
@@ -56,8 +56,8 @@ def test_modele_inconnu_renvoie_une_erreur_openai(client):
 # ── response_format ────────────────────────────────────────────────────────
 
 
-def test_url_est_le_defaut_et_est_servie(client):
-    """Le bug n°1 du prototype : `url` était silencieusement ignoré."""
+def test_url_is_the_default_and_is_served(client):
+    """Prototype bug #1: `url` was silently ignored."""
     payload = generate(client).json()
     url = payload["data"][0]["url"]
     assert url.endswith(".png")
@@ -73,50 +73,50 @@ def test_b64_json(client):
     assert base64.b64decode(payload["data"][0]["b64_json"]) == tiny_png()
 
 
-def test_raw_renvoie_le_png(client):
+def test_raw_returns_the_png(client):
     response = generate(client, response_format="raw")
     assert response.headers["content-type"] == "image/png"
     assert response.content == tiny_png()
 
 
-def test_raw_avec_n_superieur_a_1_est_refuse(client):
-    # Le prototype retombait silencieusement sur du b64.
+def test_raw_with_n_above_one_is_rejected(client):
+    # The prototype silently fell back to b64.
     response = generate(client, response_format="raw", n=2)
     assert response.status_code == 400
     assert response.json()["error"]["param"] == "response_format"
 
 
-def test_response_format_inconnu(client):
+def test_unknown_response_format(client):
     response = generate(client, response_format="jpeg")
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "invalid_response_format"
 
 
-# ── Paramètres ─────────────────────────────────────────────────────────────
+# ── Parameters ─────────────────────────────────────────────────────────────
 
 
-def test_taille_par_defaut_du_modele(client):
+def test_model_default_size(client):
     payload = generate(client, size="auto").json()
     assert payload["mflux"]["size"] == "1920x1072"
 
 
-def test_taille_arrondie_au_multiple_de_16_et_annoncee(client):
+def test_size_rounded_to_multiple_of_16_and_reported(client):
     payload = generate(client, size="1920x1080").json()
     assert payload["mflux"]["size"] == "1920x1072"
 
 
-def test_taille_invalide(client):
+def test_invalid_size(client):
     response = generate(client, size="grand")
     assert response.status_code == 400
     assert response.json()["error"]["param"] == "size"
 
 
-def test_parametres_openai_non_supportes_sont_ignores(client):
+def test_unsupported_openai_parameters_are_ignored(client):
     response = generate(client, quality="hd", style="vivid", user="corin", background="opaque")
     assert response.status_code == 200
 
 
-def test_n_borne_par_la_config(client, engine):
+def test_n_is_bounded_by_the_config(client, engine):
     assert generate(client, n=4).status_code == 200
     assert len(engine.jobs) == 4
 
@@ -125,29 +125,29 @@ def test_n_borne_par_la_config(client, engine):
     assert response.json()["error"]["code"] == "n_too_large"
 
 
-def test_seed_incremente_par_image(client, engine):
+def test_seed_increments_per_image(client, engine):
     generate(client, n=3, seed=100)
     assert [job.seed for job in engine.jobs] == [100, 101, 102]
 
 
-def test_seed_absent_est_tire_au_hasard_mais_reste_consecutif(client, engine):
+def test_missing_seed_is_random_but_stays_consecutive(client, engine):
     generate(client, n=2)
     first, second = (job.seed for job in engine.jobs)
     assert second == first + 1
 
 
-def test_steps_par_defaut_du_modele(client, engine):
+def test_model_default_steps(client, engine):
     generate(client, model="flux2-klein")
-    assert engine.jobs[0].steps == 4  # et non les 20 du prototype
+    assert engine.jobs[0].steps == 4  # not the prototype's 20
     generate(client, model="z-image-turbo")
     assert engine.jobs[1].steps == 9
 
 
-# ── Capacités des modèles ──────────────────────────────────────────────────
+# ── Model capabilities ─────────────────────────────────────────────────────
 
 
-def test_negative_prompt_refuse_sur_flux2_klein(client):
-    """Le bug n°2 : un 500 systématique sur le modèle par défaut."""
+def test_negative_prompt_rejected_on_flux2_klein(client):
+    """Prototype bug #2: a systematic 500 on the default model."""
     response = generate(client, negative_prompt="flou")
     assert response.status_code == 400
     error = response.json()["error"]
@@ -155,18 +155,18 @@ def test_negative_prompt_refuse_sur_flux2_klein(client):
     assert error["code"] == "unsupported_parameter"
 
 
-def test_negative_prompt_accepte_sur_qwen(client, engine):
+def test_negative_prompt_accepted_on_qwen(client, engine):
     assert generate(client, model="qwen-image", negative_prompt="flou").status_code == 200
     assert engine.jobs[0].negative_prompt == "flou"
 
 
-def test_guidance_refusee_sur_un_modele_distille(client):
+def test_guidance_rejected_on_a_distilled_model(client):
     response = generate(client, guidance=3.5)
     assert response.status_code == 400
     assert response.json()["error"]["param"] == "guidance"
 
 
-def test_guidance_acceptee_sur_z_image(client, engine):
+def test_guidance_accepted_on_z_image(client, engine):
     assert generate(client, model="z-image", guidance=5.0).status_code == 200
     assert engine.jobs[0].guidance == 5.0
 
@@ -182,31 +182,31 @@ def edit(client: TestClient, **data):
     )
 
 
-def test_edits_utilise_la_variante_edition_quand_elle_existe(client, engine):
+def test_edits_uses_the_edit_variant_when_available(client, engine):
     assert edit(client).status_code == 200
     job = engine.jobs[0]
     assert job.kind == "edit"
     assert job.image_strength is None
 
 
-def test_edits_bascule_en_img2img_si_strength_est_fourni(client, engine):
+def test_edits_switches_to_img2img_when_strength_is_given(client, engine):
     assert edit(client, strength=0.7).status_code == 200
     job = engine.jobs[0]
     assert job.kind == "txt2img"
     assert job.image_strength == 0.7
 
 
-def test_edits_sans_variante_edition_fait_de_limg2img(client, engine):
+def test_edits_falls_back_to_img2img_without_an_edit_variant(client, engine):
     assert edit(client, model="z-image").status_code == 200
     job = engine.jobs[0]
     assert job.kind == "txt2img"
     assert job.image_strength == 0.4
 
 
-def test_mask_est_refuse_explicitement(client):
+def test_mask_is_explicitly_rejected(client):
     response = client.post(
         "/v1/images/edits",
-        data={"prompt": "efface le fond"},
+        data={"prompt": "remove the background"},
         files={
             "image": ("source.png", tiny_png(), "image/png"),
             "mask": ("mask.png", tiny_png("black"), "image/png"),
@@ -216,7 +216,7 @@ def test_mask_est_refuse_explicitement(client):
     assert response.json()["error"]["param"] == "mask"
 
 
-def test_image_vide_refusee(client):
+def test_empty_image_is_rejected(client):
     response = client.post(
         "/v1/images/edits",
         data={"prompt": "x"},
@@ -226,7 +226,7 @@ def test_image_vide_refusee(client):
     assert response.json()["error"]["code"] == "invalid_image"
 
 
-def test_upload_trop_gros_refuse(tmp_path, engine):
+def test_oversized_upload_is_rejected(tmp_path, engine):
     settings = Settings.model_validate(
         {
             "server": {
@@ -249,7 +249,7 @@ def test_upload_trop_gros_refuse(tmp_path, engine):
 # ── Transport : CORS, auth, health ─────────────────────────────────────────
 
 
-def test_preflight_cors_autorise(client):
+def test_cors_preflight_is_allowed(client):
     response = client.options(
         "/v1/images/generations",
         headers={
@@ -281,7 +281,7 @@ def secured_client(tmp_path, engine):
         yield test_client
 
 
-def test_auth_requise_quand_une_cle_est_configuree(secured_client):
+def test_auth_required_when_a_key_is_configured(secured_client):
     assert secured_client.get("/v1/models").status_code == 401
     assert secured_client.get("/v1/models", headers={"Authorization": "Bearer mauvaise"}).status_code == 401
     assert secured_client.get("/v1/models", headers={"Authorization": "Basic cle-secrete"}).status_code == 401
@@ -290,21 +290,26 @@ def test_auth_requise_quand_une_cle_est_configuree(secured_client):
     )
 
 
-def test_cle_non_ascii_refuse_sans_planter(tmp_path, engine):
-    """Une telle clé est inatteignable (les en-têtes HTTP sont latin-1),
-    mais elle ne doit pas faire remonter un 500 depuis compare_digest."""
-    with TestClient(secured_app(tmp_path, engine, "clé-secrète")) as test_client:
+def test_non_ascii_key_is_rejected_without_crashing(tmp_path, engine):
+    """Such a key is unreachable (HTTP headers are latin-1), but it must not
+    surface a 500 out of compare_digest.
+
+    The non-ASCII key is the fixture, not an oversight: `secrets.compare_digest`
+    rejects non-ASCII `str` outright, which is why the comparison is done on
+    bytes.
+    """
+    with TestClient(secured_app(tmp_path, engine, "secret-\u65e5\u672c")) as test_client:
         assert test_client.get("/v1/models", headers={"Authorization": "Bearer x"}).status_code == 401
 
 
-def test_health_reste_public(secured_client):
+def test_health_stays_public(secured_client):
     payload = secured_client.get("/health").json()
     assert payload["status"] == "ok"
     assert payload["default_model"] == "flux2-klein"
     assert payload["loaded_model"] is None
 
 
-def test_health_expose_le_modele_chaud(client):
+def test_health_exposes_the_warm_model(client):
     generate(client, model="z-image")
     assert client.get("/health").json()["loaded_model"] == "z-image:txt2img"
 
@@ -316,20 +321,20 @@ def test_capabilities(client):
     assert payload["models"]["z-image"]["supports_edit"] is False
 
 
-def test_prompt_vide_renvoie_une_erreur_formatee(client):
+def test_empty_prompt_returns_a_formatted_error(client):
     response = client.post("/v1/images/generations", json={"prompt": ""})
     assert response.status_code == 422
     error = response.json()["error"]
     assert error["param"] == "prompt"
 
 
-def test_shutdown_libere_le_moteur(settings, engine):
+def test_shutdown_releases_the_engine(settings, engine):
     with TestClient(create_app(settings, engine)):
         pass
     assert engine.shutdown_called is True
 
 
-# ── Progression, annulation, déchargement ──────────────────────────────────
+# ── Progress, cancellation, unloading ──────────────────────────────────────
 
 
 async def _take(generator, count: int) -> list[str]:
@@ -344,10 +349,10 @@ async def _take(generator, count: int) -> list[str]:
     return frames
 
 
-def test_progress_emet_une_trame_sse_puis_se_tait(engine):
-    # Testé sur le générateur, pas via HTTP : le flux est infini par conception
-    # et `TestClient` ne propage pas la déconnexion, donc le lire à travers lui
-    # bloquerait indéfiniment.
+def test_progress_emits_one_sse_frame_then_goes_quiet(engine):
+    # Tested on the generator, not over HTTP: the stream is infinite by design
+    # and `TestClient` does not propagate the disconnect, so reading it through
+    # that would block forever.
     engine.busy = True
     frames = asyncio.run(_take(progress_events(engine, poll_s=0, ping_s=0.05), 2))
 
@@ -357,12 +362,12 @@ def test_progress_emet_une_trame_sse_puis_se_tait(engine):
     assert (payload["step"], payload["total"]) == (3, 9)
     assert payload["memory"]["active_gb"] == 0.0
 
-    # L'état n'a pas changé entre-temps : la deuxième trame est un battement de
-    # cœur, pas une répétition de l'instantané.
+    # The state has not changed meanwhile: the second frame is a heartbeat, not
+    # a repeat of the snapshot.
     assert frames[1] == ": ping\n\n"
 
 
-def test_progress_reemet_quand_letat_change(engine):
+def test_progress_re_emits_when_state_changes(engine):
     async def scenario():
         generator = progress_events(engine, poll_s=0, ping_s=3600)
         try:
@@ -378,28 +383,28 @@ def test_progress_reemet_quand_letat_change(engine):
     assert json.loads(second.removeprefix("data: ").rstrip())["state"] == "generating"
 
 
-#: Pas de test HTTP du flux SSE établi : `TestClient` bloque à la sortie du
-#: `with client.stream(...)`, même sans lire le corps, parce qu'il attend la fin
-#: d'un générateur infini par conception. Les trames et le battement de cœur sont
-#: couverts ci-dessus sur `progress_events`, le câblage de la route par le test
-#: d'authentification ci-dessous, et le type MIME se vérifie à la main :
+#: No HTTP test of an established SSE stream: `TestClient` blocks on leaving
+#: `with client.stream(...)`, even without reading the body, because it waits for
+#: a generator that is infinite by design to finish. The frames and the heartbeat
+#: are covered above on `progress_events`, the route wiring by the auth test
+#: below, and the MIME type is checked by hand:
 #: `curl -N -i http://127.0.0.1:8765/v1/progress`.
 
 
-def test_cancel_sur_serveur_au_repos_ne_fait_rien(client, engine):
+def test_cancel_on_an_idle_server_does_nothing(client, engine):
     payload = client.post("/v1/cancel").json()
     assert payload == {"cancelled": False, "state": "idle"}
     assert engine.cancel_requested is False
 
 
-def test_cancel_pendant_une_generation(client, engine):
+def test_cancel_during_a_generation(client, engine):
     engine.busy = True
     payload = client.post("/v1/cancel").json()
     assert payload["cancelled"] is True
     assert engine.cancel_requested is True
 
 
-def test_unload_libere_le_modele(client, engine):
+def test_unload_releases_the_model(client, engine):
     generate(client, model="z-image")
     assert client.get("/health").json()["loaded_model"] == "z-image:txt2img"
 
@@ -409,9 +414,9 @@ def test_unload_libere_le_modele(client, engine):
     assert client.get("/health").json()["loaded_model"] is None
 
 
-def test_progress_et_cancel_exigent_la_cle_api(secured_client):
-    # Contrairement à /health, ces routes sont sous /v1 : elles doivent être
-    # protégées comme le reste.
+def test_progress_and_cancel_require_the_api_key(secured_client):
+    # Unlike /health, these routes live under /v1: they must be protected like
+    # the rest.
     assert secured_client.get("/v1/progress").status_code == 401
     assert secured_client.post("/v1/cancel").status_code == 401
     assert secured_client.post("/v1/unload").status_code == 401
