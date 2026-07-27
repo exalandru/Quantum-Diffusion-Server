@@ -51,6 +51,11 @@ class ServerSettings(BaseModel):
     #: Bounds uvicorn's graceful shutdown, whose default is to wait forever on
     #: in-flight connections — which here means up to `request_timeout_s`.
     shutdown_grace_s: float = Field(default=10.0, gt=0)
+    #: Release the warm model after this many seconds without a generation.
+    #: `None` never releases — the historical behaviour. `0` releases as soon as
+    #: the request ends. Meant for sharing unified memory with something else, a
+    #: text LLM typically; the cost is paying the load again on the next image.
+    idle_unload_s: float | None = Field(default=None, ge=0)
 
     @field_validator("image_store", "log_file")
     @classmethod
@@ -147,7 +152,10 @@ class Settings(BaseModel):
 def _coerce_env(raw: str, field_name: str) -> Any:
     if field_name == "cors_origins":
         return [item.strip() for item in raw.split(",") if item.strip()]
-    if raw == "" and field_name in {"api_key", "log_file"}:
+    # An empty variable is how the environment says "leave this unset": the
+    # desktop app already uses it for `log_file`, and `idle_unload_s` needs it to
+    # be able to mean "never" rather than fail validation.
+    if raw == "" and field_name in {"api_key", "log_file", "idle_unload_s"}:
         return None
     return raw
 

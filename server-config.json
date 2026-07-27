@@ -12,7 +12,8 @@
     "default_response_format": "url",
     "log_level": "INFO",
     "log_file": "mflux.log",
-    "progress_log_every": 1
+    "progress_log_every": 1,
+    "idle_unload_s": null
   },
   "default_model": "qwen-image",
   "default_size": "1280x720",

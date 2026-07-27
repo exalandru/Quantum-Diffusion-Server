@@ -42,6 +42,8 @@ export type Health = {
   default_model: string;
   models: string[];
   loaded_model: string | null;
+  /** Seconds of inactivity before the model is released; `null` = never. */
+  idle_unload_s: number | null;
   /** Empty when `mlx.core` is unavailable: treat the keys as optional. */
   memory: { active_gb?: number; peak_gb?: number; cache_gb?: number };
 };

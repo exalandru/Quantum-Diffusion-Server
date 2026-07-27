@@ -30,7 +30,10 @@ fn default_config() -> Value {
             "default_response_format": "url",
             "log_level": "INFO",
             "progress_log_every": 1,
-            "shutdown_grace_s": 10
+            "shutdown_grace_s": 10,
+            // Release the model after this long without a generation. `null`
+            // keeps it warm forever, `0` frees it as soon as a request ends.
+            "idle_unload_s": null
         },
         "default_model": "qwen-image",
         // Config-wide generation resolution; a per-model `default_size` still

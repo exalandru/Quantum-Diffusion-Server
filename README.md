@@ -68,6 +68,14 @@ It is worth knowing where it comes from, because it is not what one would assume
 
 Corollary: memory is the real limiting factor. Running another mflux process alongside the server evicts its pages and triples the time of the next generation.
 
+### Giving the memory back — `idle_unload_s`
+
+Keeping the model warm is what buys the numbers above, but on unified memory it also confiscates the machine: with a text LLM running alongside, one image makes the chat unusable until someone frees the memory by hand.
+
+`idle_unload_s` releases the model on its own after that many seconds without a generation — `0` as soon as the request ends, `null` (the default) never. The countdown is armed **per request, not per image**, so a burst of `n=3` reloads once and releases once, at the end; and a request arriving before the deadline cancels it, so the model stays warm through a working session.
+
+What it costs is the figure in the table above, read the other way: ~16 s of reload on `flux2-klein`, more on a larger model. Worth it when something else needs the memory, wasteful otherwise. The release is logged with the memory before and after, and `/health` reports the policy so that "no warm model" cannot be mistaken for a fault.
+
 ## Models
 
 | key | repo | default size | default steps | guidance | negative_prompt | img2img | editing |
@@ -176,6 +184,7 @@ OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does
 | `log_json` | `false` | one line, one JSON object, **on stdout**. See below |
 | `progress_log_every` | `1` | a progress log every N steps; `0` to turn it off |
 | `shutdown_grace_s` | `10` | bounds the graceful shutdown; without it a SIGTERM mid-generation would wait for `request_timeout_s` |
+| `idle_unload_s` | `null` | releases the warm model after that many seconds without a generation. `null` = never, `0` = as soon as the request ends. See below |
 
 ### Top-level keys
 
@@ -223,7 +232,8 @@ A full example:
     "default_response_format": "url",
     "log_level": "INFO",
     "log_file": "mflux.log",
-    "progress_log_every": 1
+    "progress_log_every": 1,
+    "idle_unload_s": null
   },
   "default_model": "qwen-image",
   "default_size": "1280x720",

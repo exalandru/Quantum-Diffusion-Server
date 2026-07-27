@@ -87,6 +87,15 @@ export function Dashboard({
             ) : (
               running && <span className="badge">no model loaded</span>
             )}
+            {/* Without this, an automatic release reads as a model that failed to
+                stay loaded. */}
+            {running && health?.idle_unload_s !== null && health?.idle_unload_s !== undefined && (
+              <span className="badge">
+                {health.idle_unload_s === 0
+                  ? "frees after each request"
+                  : `frees after ${health.idle_unload_s}s idle`}
+              </span>
+            )}
           </div>
           <div className="row">
             {running ? (

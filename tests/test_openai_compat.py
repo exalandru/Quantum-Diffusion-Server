@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from mflux_server.app import create_app, progress_events
-from mflux_server.settings import Settings
-from tests.conftest import tiny_png
+from mflux_server.settings import Settings, load_settings
+from tests.conftest import tiny_png, wait_until
 
 
 def generate(client: TestClient, **body):
@@ -336,6 +338,55 @@ def test_shutdown_releases_the_engine(settings, engine):
     with TestClient(create_app(settings, engine)):
         pass
     assert engine.shutdown_called is True
+
+
+# ── Automatic release of the warm model ────────────────────────────────────
+
+
+def _client_with(settings_kwargs: dict, engine) -> TestClient:
+    settings = Settings.model_validate(
+        {"server": {"log_file": None, "progress_log_every": 0, **settings_kwargs}}
+    )
+    return TestClient(create_app(settings, engine))
+
+
+def test_a_zero_delay_releases_once_per_request_not_per_image(engine, tmp_path):
+    """The reason the countdown is armed per request.
+
+    Armed inside the engine, which locks per image, an n=2 request would release
+    the model between the two — and reload it for the second.
+    """
+    with _client_with({"image_store": str(tmp_path / "i"), "idle_unload_s": 0}, engine) as client:
+        generate(client, n=2)
+        assert wait_until(lambda: engine.unload_count >= 1), "never released"
+        # Give a second release the chance to show up before ruling it out.
+        time.sleep(0.05)
+        assert engine.unload_count == 1
+        assert client.get("/health").json()["loaded_model"] is None
+
+
+def test_by_default_the_model_stays_warm(client, engine):
+    generate(client)
+    time.sleep(0.05)
+    assert engine.unload_count == 0
+    assert engine.loaded_model is not None
+
+
+def test_health_reports_the_release_policy(engine, tmp_path):
+    with _client_with({"image_store": str(tmp_path / "i"), "idle_unload_s": 30}, engine) as client:
+        assert client.get("/health").json()["idle_unload_s"] == 30
+
+
+def test_the_default_policy_is_never(client):
+    assert client.get("/health").json()["idle_unload_s"] is None
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("", None), ("0", 0.0), ("45", 45.0)])
+def test_the_delay_is_settable_from_the_environment(monkeypatch, raw, expected):
+    # An empty variable means "never", the same convention as log_file: without
+    # it there would be no way to turn the setting back off from the environment.
+    monkeypatch.setenv("MFLUX_SERVER_IDLE_UNLOAD_S", raw)
+    assert load_settings(Path("/nonexistent")).server.idle_unload_s == expected
 
 
 # ── Progress, cancellation, unloading ──────────────────────────────────────
