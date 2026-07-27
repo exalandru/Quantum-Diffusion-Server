@@ -1,13 +1,12 @@
-"""Catalogue des modèles exposés par le serveur.
+"""Catalogue of the models the server exposes.
 
-Chaque entrée décrit la classe mflux à instancier, la factory `ModelConfig`
-canonique, le repo HuggingFace, les défauts de génération et surtout les
-*capacités* du modèle — c'est ce qui permet de renvoyer un 400 explicite
-plutôt que de laisser mflux planter en 500.
+Each entry describes the mflux class to instantiate, the canonical `ModelConfig`
+factory, the HuggingFace repo, the generation defaults and above all the model's
+*capabilities* — that is what lets us return an explicit 400 instead of letting
+mflux blow up with a 500.
 
-Les imports de mflux sont volontairement faits à l'intérieur des loaders :
-importer `mflux` tire torch et transformers (plusieurs secondes), et les
-tests n'en ont pas besoin.
+mflux imports are deliberately kept inside the loaders: importing `mflux` pulls
+in torch and transformers (several seconds), and the tests do not need it.
 """
 
 from __future__ import annotations
@@ -18,20 +17,20 @@ from typing import Any
 
 from mflux_server.flux2_dev import config as flux2_dev_config
 
-#: mflux tronque toute dimension au multiple de 16 inférieur
-#: (mflux/models/common/config/config.py:41-47) sans borne min ni max.
+#: mflux truncates every dimension down to a multiple of 16
+#: (mflux/models/common/config/config.py:41-47), with no lower or upper bound.
 DIMENSION_STEP = 16
 
 
 @dataclass(frozen=True)
 class EditSpec:
-    """Variante « édition instructionnelle » d'un modèle."""
+    """A model's instruction-editing variant."""
 
     family: str
     model_config_name: str
     model_path: str | None
-    #: True si la variante réutilise les poids du modèle txt2img (pas de
-    #: téléchargement supplémentaire au premier appel).
+    #: True when the variant reuses the txt2img model's weights (no extra
+    #: download on first call).
     shares_weights: bool
     enabled_by_default: bool
 
@@ -42,14 +41,14 @@ class ModelSpec:
     family: str
     repo: str
     model_config_name: str
-    #: Passé tel quel à mflux. `None` = repo canonique du `ModelConfig`.
+    #: Passed straight to mflux. `None` = the `ModelConfig`'s canonical repo.
     model_path: str | None
     default_width: int
     default_height: int
     default_steps: int
     default_guidance: float | None
-    #: False pour les modèles distillés : la guidance est figée, toute autre
-    #: valeur est refusée (cf. mflux/models/flux2/cli/flux2_generate.py:29-33).
+    #: False for distilled models: guidance is fixed and any other value is
+    #: rejected (see mflux/models/flux2/cli/flux2_generate.py:29-33).
     supports_guidance: bool
     supports_negative_prompt: bool
     supports_image_to_image: bool
@@ -63,8 +62,8 @@ class ModelSpec:
         return f"{self.default_width}x{self.default_height}"
 
 
-#: Défauts issus de mflux/cli/defaults/defaults.py (MODEL_INFERENCE_STEPS,
-#: GUIDANCE_SCALE) et des README par modèle.
+#: Defaults taken from mflux/cli/defaults/defaults.py (MODEL_INFERENCE_STEPS,
+#: GUIDANCE_SCALE) and from each model's README.
 BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="flux2-klein",
@@ -76,8 +75,8 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         default_height=1072,
         default_steps=4,
         default_guidance=1.0,
-        supports_guidance=False,  # modèle distillé : guidance figée à 1.0
-        supports_negative_prompt=False,  # la CLI refuse explicitement le flag
+        supports_guidance=False,  # distilled model: guidance fixed at 1.0
+        supports_negative_prompt=False,  # the CLI rejects the flag outright
         supports_image_to_image=True,
         scheduler="flow_match_euler_discrete",
         edit=EditSpec(
@@ -92,22 +91,23 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         key="flux2-dev",
         family="flux2-dev",
         repo="black-forest-labs/FLUX.2-dev",
-        # Pas de factory sur `ModelConfig` : mflux 0.18.0 ignore FLUX.2-dev.
-        # Résolu par `_LOCAL_MODEL_CONFIGS`.
+        # No factory on `ModelConfig`: mflux 0.18.0 does not know FLUX.2-dev.
+        # Resolved through `_LOCAL_MODEL_CONFIGS`.
         model_config_name="flux2_dev",
-        # Le repo amont est en bf16 (~111 Go de poids) : seul un artefact déjà
-        # quantifié tient en mémoire unifiée, cf. `mflux-server-prequantize`.
+        # The upstream repo ships bf16 (~111 GB of weights): only an already
+        # quantized artifact fits in unified memory, see
+        # `mflux-server-prequantize`.
         model_path=flux2_dev_config.DEFAULT_MODEL_PATH,
-        # 1024² et non 1920x1072 : 32B sur 50 étapes, la surface coûte cher.
+        # 1024² rather than 1920x1072: 32B over 50 steps, area is expensive.
         default_width=1024,
         default_height=1024,
-        # Modèle de base, non distillé en étapes (cf. mflux
-        # cli/defaults/defaults.py, MODEL_INFERENCE_STEPS des flux2-klein-base).
+        # Base model, not step-distilled (see mflux cli/defaults/defaults.py,
+        # MODEL_INFERENCE_STEPS for the flux2-klein-base entries).
         default_steps=50,
         default_guidance=4.0,
         supports_guidance=True,
-        # Guidance-distilled : le scalaire est embarqué dans le transformer, il
-        # n'y a pas de CFG donc pas de negative prompt.
+        # Guidance-distilled: the scalar is embedded in the transformer, so
+        # there is no CFG and therefore no negative prompt.
         supports_negative_prompt=False,
         supports_image_to_image=True,
         scheduler="flow_match_euler_discrete",
@@ -117,8 +117,8 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         key="qwen-image",
         family="qwen",
         repo="mlx-community/Qwen-Image-2512-8bit",
-        # Surtout pas ModelConfig.from_name() ici : la résolution par nom perd
-        # les paramètres sigma_* du scheduler
+        # Definitely not ModelConfig.from_name() here: resolving by name loses
+        # the scheduler's sigma_* parameters
         # (mflux/models/common/resolution/config_resolution.py:112-128).
         model_config_name="qwen_image",
         model_path="mlx-community/Qwen-Image-2512-8bit",
@@ -130,14 +130,14 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         supports_negative_prompt=True,
         supports_image_to_image=True,
         scheduler="linear",
-        # Le repo est déjà quantifié 8 bits dans ses métadonnées safetensors :
-        # passer quantize serait un no-op.
+        # The repo is already 8-bit quantized in its safetensors metadata, so
+        # passing quantize would be a no-op.
         quantize=None,
         edit=EditSpec(
             family="qwen-edit",
             model_config_name="qwen_image_edit",
             model_path=None,  # Qwen/Qwen-Image-Edit-2509
-            shares_weights=False,  # téléchargement séparé de plusieurs Go
+            shares_weights=False,  # a separate multi-GB download
             enabled_by_default=False,
         ),
     ),
@@ -167,7 +167,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         default_height=720,
         default_steps=9,
         default_guidance=None,
-        supports_guidance=False,  # ModelConfig.supports_guidance=False → forcée à 0
+        supports_guidance=False,  # ModelConfig.supports_guidance=False → forced to 0
         supports_negative_prompt=True,
         supports_image_to_image=True,
         scheduler="linear",
@@ -177,37 +177,37 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
 
 BASE_SPECS_BY_KEY: dict[str, ModelSpec] = {spec.key: spec for spec in BASE_SPECS}
 
-#: Valeurs acceptées par nn.quantize via mflux (cli/defaults/defaults.py:59).
+#: Values accepted by nn.quantize through mflux (cli/defaults/defaults.py:59).
 QUANTIZE_CHOICES = (3, 4, 5, 6, 8)
 
 
 def normalize_dimension(value: int) -> int:
-    """Tronque au multiple de 16 inférieur, comme le fait mflux en interne.
+    """Truncate down to a multiple of 16, the way mflux does internally.
 
-    On le fait ici pour pouvoir refuser explicitement ce que mflux
-    accepterait en produisant un 0 (et un crash obscur plus loin).
+    We do it here so we can explicitly reject what mflux would accept while
+    producing a 0 (and an obscure crash further down).
     """
     if value < DIMENSION_STEP:
-        raise ValueError(f"dimension trop petite : {value} (minimum {DIMENSION_STEP})")
+        raise ValueError(f"Dimension too small: {value} (minimum {DIMENSION_STEP})")
     return DIMENSION_STEP * (value // DIMENSION_STEP)
 
 
 def parse_size(size: str) -> tuple[int, int]:
-    """Parse une taille OpenAI `"WxH"` et la normalise. `"auto"` non géré ici."""
+    """Parse an OpenAI `"WxH"` size and normalize it. `"auto"` is handled elsewhere."""
     try:
         raw_width, raw_height = (int(part) for part in size.lower().split("x"))
     except (ValueError, AttributeError) as exc:
-        raise ValueError(f"size doit être au format 'WxH' (ex: 1024x1024), reçu : {size!r}") from exc
+        raise ValueError(f"size must look like 'WxH' (e.g. 1024x1024), got {size!r}") from exc
     return normalize_dimension(raw_width), normalize_dimension(raw_height)
 
 
 def build_registry(overrides: dict[str, Any] | None = None) -> dict[str, ModelSpec]:
-    """Applique les surcharges de `server-config.json` sur le catalogue de base."""
+    """Apply the `server-config.json` overrides on top of the base catalogue."""
     overrides = overrides or {}
     unknown = set(overrides) - set(BASE_SPECS_BY_KEY)
     if unknown:
         raise ValueError(
-            f"Modèles inconnus dans la config : {sorted(unknown)}. Clés valides : {sorted(BASE_SPECS_BY_KEY)}"
+            f"Unknown models in config: {sorted(unknown)}. Valid keys: {sorted(BASE_SPECS_BY_KEY)}"
         )
 
     registry: dict[str, ModelSpec] = {}
@@ -233,8 +233,8 @@ def _apply_override(spec: ModelSpec, override: Any) -> ModelSpec:
     if override.default_guidance is not None:
         if not spec.supports_guidance:
             raise ValueError(
-                f"Le modèle '{spec.key}' ne supporte pas une guidance configurable "
-                f"(valeur figée : {spec.default_guidance})."
+                f"Model '{spec.key}' does not support configurable guidance "
+                f"(fixed value: {spec.default_guidance})."
             )
         changes["default_guidance"] = override.default_guidance
     if override.quantize is not None:
@@ -252,11 +252,11 @@ def edit_enabled(spec: ModelSpec) -> bool:
     return spec.edit is not None and spec.edit.enabled_by_default
 
 
-# ── Chargement effectif des modèles ────────────────────────────────────────
+# ── Actually loading the models ────────────────────────────────────────────
 
 
-#: Configs que mflux ne connaît pas et qu'on construit nous-mêmes. Ce sont des
-#: factories, pas des instances : elles n'importent `ModelConfig` qu'à l'appel.
+#: Configs mflux does not know about and that we build ourselves. These are
+#: factories, not instances: they only import `ModelConfig` when called.
 _LOCAL_MODEL_CONFIGS: dict[str, Any] = {"flux2_dev": flux2_dev_config.flux2_dev_model_config}
 
 
@@ -271,11 +271,11 @@ def _model_config(name: str):
 
 
 def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
-    """Échoue tôt et clairement si l'artefact pré-quantifié manque.
+    """Fail early and clearly when the pre-quantized artifact is missing.
 
-    Sans ce garde-fou, `PathResolution` retomberait sur le repo HuggingFace en
-    bf16 et lancerait une quantification à la volée de ~111 Go, qui échouerait
-    beaucoup plus loin et beaucoup moins lisiblement.
+    Without this guard, `PathResolution` would fall back to the bf16 HuggingFace
+    repo and start an on-the-fly quantization of ~111 GB, which would fail much
+    later and far less legibly.
     """
     if model_path and Path(model_path).expanduser().exists():
         return
@@ -283,10 +283,10 @@ def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
     from mflux_server.errors import APIError
 
     raise APIError(
-        f"Le modèle '{spec.key}' exige un artefact pré-quantifié, absent de {model_path!r}. "
-        f"Lancez `mflux-server-prequantize --dest {model_path}` (téléchargement unique d'environ "
-        f"113 Go depuis {spec.repo}, artefact final d'environ 58 Go), ou renseignez "
-        f"models.{spec.key}.model_path dans server-config.json.",
+        f"Model '{spec.key}' requires a pre-quantized artifact, missing from {model_path!r}. "
+        f"Run `mflux-server-prequantize --dest {model_path}` (a one-time download of about "
+        f"113 GB from {spec.repo}, yielding an artifact of about 58 GB), or set "
+        f"models.{spec.key}.model_path in server-config.json.",
         status_code=503,
         error_type="server_error",
         param="model",
@@ -295,21 +295,21 @@ def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
 
 
 def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
-    """Instancie le modèle mflux correspondant au spec.
+    """Instantiate the mflux model matching the spec.
 
-    Réplique fidèlement le `main()` de la CLI de chaque famille — c'est la
-    référence à laquelle se comparer en cas de divergence de résultat.
+    Faithfully mirrors each family's CLI `main()` — that is the reference to
+    compare against if results ever diverge.
     """
     if kind == "txt2img":
         family, model_config_name, model_path = spec.family, spec.model_config_name, spec.model_path
     elif kind == "edit":
         if spec.edit is None:
-            raise ValueError(f"Le modèle '{spec.key}' n'a pas de variante d'édition.")
+            raise ValueError(f"Model '{spec.key}' has no editing variant.")
         family = spec.edit.family
         model_config_name = spec.edit.model_config_name
         model_path = spec.edit.model_path
     else:
-        raise ValueError(f"kind inconnu : {kind!r}")
+        raise ValueError(f"Unknown kind: {kind!r}")
 
     model_config = _model_config(model_config_name)
     quantize = spec.quantize
@@ -320,8 +320,9 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
         return Flux2Klein(model_config=model_config, model_path=model_path, quantize=quantize)
 
     if family == "flux2-dev":
-        # Sans artefact local, `PathResolution` retomberait sur le repo bf16 et
-        # tenterait une quantification à la volée de ~111 Go : autant échouer ici.
+        # With no local artifact, `PathResolution` would fall back to the bf16
+        # repo and attempt an on-the-fly quantization of ~111 GB: better to fail
+        # right here.
         _require_local_artifact(spec, model_path)
         from mflux_server.flux2_dev import Flux2Dev
 
@@ -333,7 +334,7 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
         return Flux2KleinEdit(model_config=model_config, model_path=model_path, quantize=quantize)
 
     if family == "qwen":
-        # QwenImage n'est pas ré-exporté par mflux.models.qwen.variants.
+        # QwenImage is not re-exported by mflux.models.qwen.variants.
         from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
 
         return QwenImage(model_config=model_config, model_path=model_path, quantize=quantize)
@@ -344,11 +345,11 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
         return QwenImageEdit(model_config=model_config, model_path=model_path, quantize=quantize)
 
     if family == "z-image":
-        # ZImage sert pour la base et pour le turbo ; c'est le ModelConfig qui
-        # les distingue, et son défaut de constructeur est le turbo — d'où le
-        # passage explicite.
+        # ZImage covers both the base and the turbo model; the ModelConfig is
+        # what tells them apart, and the constructor defaults to turbo — hence
+        # passing it explicitly.
         from mflux.models.z_image import ZImage
 
         return ZImage(model_config=model_config, model_path=model_path, quantize=quantize)
 
-    raise ValueError(f"Famille de modèle inconnue : {family!r}")
+    raise ValueError(f"Unknown model family: {family!r}")

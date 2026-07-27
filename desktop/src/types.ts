@@ -1,6 +1,6 @@
-/** Types partagés avec le Rust et avec l'API HTTP du serveur. */
+/** Types shared with the Rust side and with the server's HTTP API. */
 
-// ── Côté Rust ──────────────────────────────────────────────────────────────
+// ── Rust side ──────────────────────────────────────────────────────────────
 
 export type ServerStatus = {
   running: boolean;
@@ -31,10 +31,10 @@ export type BootstrapEvent =
   | { kind: "done" }
   | { kind: "failed"; message: string };
 
-/** Une ligne de sortie du serveur. `structured` ⇒ stdout, donc du JSON. */
+/** One line of server output. `structured` ⇒ stdout, hence JSON. */
 export type ServerLine = { structured: boolean; line: string };
 
-// ── Côté serveur HTTP ──────────────────────────────────────────────────────
+// ── HTTP server side ───────────────────────────────────────────────────────
 
 export type Health = {
   status: string;
@@ -42,7 +42,7 @@ export type Health = {
   default_model: string;
   models: string[];
   loaded_model: string | null;
-  /** Vide si `mlx.core` est introuvable : traiter les clés comme optionnelles. */
+  /** Empty when `mlx.core` is unavailable: treat the keys as optional. */
   memory: { active_gb?: number; peak_gb?: number; cache_gb?: number };
 };
 
@@ -66,7 +66,7 @@ export type Capabilities = {
   models: Record<string, ModelCapabilities>;
 };
 
-/** Instantané diffusé par `/v1/progress`. */
+/** Snapshot streamed by `/v1/progress`. */
 export type Progress = {
   state: "idle" | "loading" | "generating";
   model: string | null;
@@ -79,7 +79,7 @@ export type Progress = {
   memory: Health["memory"];
 };
 
-/** Événement structuré lu sur stdout du serveur, en mode `log_json`. */
+/** Structured event read from the server's stdout, in `log_json` mode. */
 export type LogEvent = {
   ts: string;
   level: string;
@@ -89,7 +89,7 @@ export type LogEvent = {
   fields?: Record<string, unknown>;
 };
 
-/** Erreur au format OpenAI renvoyée par le serveur. */
+/** OpenAI-shaped error returned by the server. */
 export type ApiError = {
   error: { message: string; type: string; param: string | null; code: string | null };
 };

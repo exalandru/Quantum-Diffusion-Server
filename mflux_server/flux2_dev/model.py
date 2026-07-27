@@ -1,19 +1,19 @@
-"""FLUX.2 [dev] : transformer et VAE de mflux, encodeur texte Mistral3 maison.
+"""FLUX.2 [dev]: mflux's transformer and VAE, with our own Mistral3 text encoder.
 
-`Flux2Initializer` de mflux câble `Qwen3TextEncoder` et
-`Flux2KleinWeightDefinition` en dur, d'où cette classe plutôt qu'un appel à
-`Flux2Klein`. La boucle de débruitage reproduit fidèlement
-`Flux2Klein.generate_image` (mflux 0.18.0) — c'est la référence à laquelle se
-comparer en cas de divergence de résultat.
+mflux's `Flux2Initializer` hardwires `Qwen3TextEncoder` and
+`Flux2KleinWeightDefinition`, hence this class rather than a call to
+`Flux2Klein`. The denoising loop faithfully reproduces
+`Flux2Klein.generate_image` (mflux 0.18.0) — that is the reference to compare
+against if results ever diverge.
 
-Deux différences assumées avec klein :
+Two deliberate differences from klein:
 
-* **guidance embarquée.** FLUX.2-dev est guidance-distilled : le scalaire passe
-  dans `time_guidance_embed`, il n'y a pas de Classifier-Free Guidance et donc
-  qu'une seule passe transformer par étape (klein, lui, passe `guidance=None`
-  au transformer et fait du vrai CFG sur un negative prompt).
-* **pas de `mx.compile`.** Sur 32B le graphe compilé déclenche des timeouts GPU
-  Metal ; le chemin non compilé est plus lent mais fiable.
+* **embedded guidance.** FLUX.2-dev is guidance-distilled: the scalar goes
+  through `time_guidance_embed`, there is no Classifier-Free Guidance and hence
+  only one transformer pass per step (klein passes `guidance=None` to the
+  transformer and does real CFG against a negative prompt).
+* **no `mx.compile`.** At 32B the compiled graph trips Metal GPU timeouts; the
+  uncompiled path is slower but reliable.
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ class Flux2Dev(nn.Module):
         self.prompt_cache: dict[str, tuple[mx.array, mx.array]] = {}
         self.callbacks = CallbackRegistry()
         self.tiling_config = None
-        # LoRA non géré : le serveur ne passe de `lora_paths` pour aucun modèle.
+        # LoRA unsupported: the server passes `lora_paths` for no model.
         self.lora_paths = lora_paths
         self.lora_scales = lora_scales
 
@@ -93,7 +93,7 @@ class Flux2Dev(nn.Module):
             },
         )
 
-    # ── Génération ─────────────────────────────────────────────────────────
+    # ── Generation ─────────────────────────────────────────────────────────
 
     def generate_image(
         self,
@@ -171,15 +171,15 @@ class Flux2Dev(nn.Module):
         )
 
     def _guidance_embed(self, guidance: float) -> mx.array:
-        """Met la guidance à l'échelle attendue par le guidance embedder.
+        """Scale guidance the way the guidance embedder expects.
 
-        `Flux2Transformer.__call__` ne multiplie par 1000 que si
-        `max(guidance) <= 1.0` (flux2/.../transformer.py:91) — une heuristique
-        écrite pour le timestep, jamais exercée en amont puisqu'aucun modèle
-        mflux livré n'active `guidance_embeds` sur le transformer FLUX.2. Le
-        chemin FLUX.1, lui, fait bien `guidance * num_train_steps`
-        (flux/.../transformer.py:155). On pré-multiplie donc ici, ce qui rend
-        l'heuristique inopérante (×1.0) et redonne la bonne valeur.
+        `Flux2Transformer.__call__` only multiplies by 1000 when
+        `max(guidance) <= 1.0` (flux2/.../transformer.py:91) — a heuristic
+        written for the timestep and never exercised upstream, since no shipped
+        mflux model enables `guidance_embeds` on the FLUX.2 transformer. The
+        FLUX.1 path does do `guidance * num_train_steps`
+        (flux/.../transformer.py:155). So we pre-multiply here, which makes the
+        heuristic a no-op (×1.0) and restores the right value.
         """
         return mx.array(guidance * self.model_config.num_train_steps, dtype=ModelConfig.precision)
 
@@ -188,9 +188,9 @@ class Flux2Dev(nn.Module):
         if cached is not None:
             return cached
 
-        # `Flux2PromptEncoder.encode_prompt` est générique : il n'exige de
-        # l'encodeur qu'un `get_prompt_embeds(input_ids, attention_mask,
-        # hidden_state_layers)`, que Mistral3TextEncoder expose comme Qwen3.
+        # `Flux2PromptEncoder.encode_prompt` is generic: all it requires of the
+        # encoder is a `get_prompt_embeds(input_ids, attention_mask,
+        # hidden_state_layers)`, which Mistral3TextEncoder exposes like Qwen3.
         embeds = Flux2PromptEncoder.encode_prompt(
             prompt=prompt,
             tokenizer=self.tokenizers["mistral3"],
@@ -271,11 +271,11 @@ class Flux2Dev(nn.Module):
                 guidance=guidance,
             )
 
-        # Pas de mx.compile ici, contrairement à Flux2Klein : sur 32B le graphe
-        # compilé peut dépasser le watchdog GPU de Metal.
+        # No mx.compile here, unlike Flux2Klein: at 32B the compiled graph can
+        # exceed Metal's GPU watchdog.
         return predict
 
-    # ── Sauvegarde ─────────────────────────────────────────────────────────
+    # ── Saving ─────────────────────────────────────────────────────────────
 
     def save_model(self, base_path: str) -> None:
         ModelSaver.save_model(

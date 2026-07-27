@@ -1,8 +1,7 @@
-"""Format d'erreur OpenAI et traduction des exceptions mflux.
+"""OpenAI error shape, and translation of mflux exceptions.
 
-Un client OpenAI attend `{"error": {"message", "type", "param", "code"}}`.
-Le prototype renvoyait le `detail` brut de FastAPI, que les SDK n'exploitent
-pas.
+An OpenAI client expects `{"error": {"message", "type", "param", "code"}}`. The
+prototype returned FastAPI's raw `detail`, which the SDKs do not understand.
 """
 
 from __future__ import annotations
@@ -18,12 +17,12 @@ from mflux_server.logs import SERVER_LOGGER
 
 logger = logging.getLogger(SERVER_LOGGER)
 
-#: Le client a fermé la connexion / la génération a été interrompue.
+#: The client closed the connection, or the generation was interrupted.
 HTTP_CLIENT_CLOSED_REQUEST = 499
 
 
 class APIError(Exception):
-    """Erreur métier déjà formatée pour l'API."""
+    """A domain error already shaped for the API."""
 
     def __init__(
         self,
@@ -45,7 +44,7 @@ class APIError(Exception):
 class GenerationTimeout(APIError):
     def __init__(self, seconds: float):
         super().__init__(
-            f"Génération interrompue après {seconds:.0f} s (request_timeout_s).",
+            f"Generation aborted after {seconds:.0f}s (request_timeout_s).",
             status_code=504,
             error_type="server_error",
             code="timeout",
@@ -67,11 +66,10 @@ def _json(status_code: int, **kwargs) -> JSONResponse:
 
 
 def translate_mflux_exception(exc: BaseException) -> APIError:
-    """Traduit une exception remontée de mflux en erreur d'API.
+    """Translate an exception coming out of mflux into an API error.
 
-    Références : mflux/utils/exceptions.py, ainsi que les `ValueError` et
-    `FileNotFoundError` levées par la résolution de chemin et le chargement
-    des poids.
+    References: mflux/utils/exceptions.py, plus the `ValueError` and
+    `FileNotFoundError` raised by path resolution and weight loading.
     """
     from mflux.utils.exceptions import (
         InvalidBaseModel,
@@ -85,7 +83,7 @@ def translate_mflux_exception(exc: BaseException) -> APIError:
 
     if isinstance(exc, StopImageGenerationException):
         return APIError(
-            str(exc) or "Génération interrompue.",
+            str(exc) or "Generation interrupted.",
             status_code=HTTP_CLIENT_CLOSED_REQUEST,
             error_type="server_error",
             code="generation_stopped",
@@ -95,12 +93,12 @@ def translate_mflux_exception(exc: BaseException) -> APIError:
         return APIError(str(exc), status_code=400, param="model", code="invalid_model")
 
     if isinstance(exc, NotImplementedError):
-        # Typiquement un scheduler inconnu (config.py:159).
+        # Typically an unknown scheduler (config.py:159).
         return APIError(str(exc), status_code=400, code="unsupported")
 
     if isinstance(exc, FileNotFoundError):
         return APIError(
-            f"Poids ou modèle introuvable : {exc}",
+            f"Weights or model not found: {exc}",
             status_code=404,
             error_type="server_error",
             code="model_not_found",
@@ -111,12 +109,12 @@ def translate_mflux_exception(exc: BaseException) -> APIError:
 
         if isinstance(exc, UnidentifiedImageError):
             return APIError(
-                "Le fichier fourni n'est pas une image exploitable.",
+                "The supplied file is not a usable image.",
                 status_code=400,
                 param="image",
                 code="invalid_image",
             )
-    except ImportError:  # pragma: no cover - Pillow est une dépendance dure
+    except ImportError:  # pragma: no cover - Pillow is a hard dependency
         pass
 
     if isinstance(exc, MFluxException):
@@ -154,14 +152,14 @@ def install_exception_handlers(app: FastAPI) -> None:
         location = [str(part) for part in first.get("loc", []) if part not in ("body", "query")]
         return _json(
             422,
-            message=first.get("msg", "Requête invalide."),
+            message=first.get("msg", "Invalid request."),
             param=".".join(location) or None,
             code="invalid_parameter",
         )
 
     @app.exception_handler(Exception)
     async def _unhandled(_: Request, exc: Exception) -> JSONResponse:
-        logger.exception("Erreur non gérée")
+        logger.exception("Unhandled error")
         api_error = translate_mflux_exception(exc)
         return _json(
             api_error.status_code,

@@ -1,8 +1,8 @@
-"""Chargement et validation de `server-config.json`.
+"""Loading and validation of `server-config.json`.
 
-Toute clé de la section `server` est surchargeable par une variable
-d'environnement `MFLUX_SERVER_<CLÉ>`, ce qui permet de déployer la même
-config avec un binding et une clé d'API différents.
+Every key in the `server` section can be overridden by a `MFLUX_SERVER_<KEY>`
+environment variable, which makes it possible to deploy the same config with a
+different binding and API key.
 """
 
 from __future__ import annotations
@@ -19,49 +19,49 @@ from mflux_server.registry import BASE_SPECS_BY_KEY, QUANTIZE_CHOICES, ModelSpec
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "server-config.json"
 ENV_PREFIX = "MFLUX_SERVER_"
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
-#: "raw" est une extension maison : les octets PNG directement dans le corps.
+#: "raw" is a local extension: the PNG bytes straight in the response body.
 RESPONSE_FORMATS = {"url", "b64_json", "raw"}
 
 
 class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
-    #: Si renseignée, exigée en `Authorization: Bearer <clé>`.
+    #: When set, required as `Authorization: Bearer <key>`.
     api_key: str | None = None
     cors_origins: list[str] = Field(default_factory=lambda: ["*"])
-    #: Borne le `n` de l'API OpenAI ; chaque image est générée séquentiellement.
+    #: Bounds the OpenAI `n` parameter; images are generated one at a time.
     max_n: int = Field(default=4, ge=1, le=32)
-    #: Délai au-delà duquel la boucle de débruitage est interrompue.
+    #: Deadline past which the denoising loop is interrupted.
     request_timeout_s: float = Field(default=900.0, gt=0)
-    #: Dossier servant les images en `response_format="url"`.
+    #: Directory serving images for `response_format="url"`.
     image_store: str = "images"
     image_ttl_s: int = Field(default=3600, ge=0)
-    #: Valeur retenue quand le client n'envoie pas `response_format`.
-    #: "url" est le défaut de l'API OpenAI : le changer casse les SDK, qui
-    #: liront `data[0].url` et trouveront `None`.
+    #: Value used when the client sends no `response_format`.
+    #: "url" is the OpenAI default: changing it breaks the SDKs, which read
+    #: `data[0].url` and find `None`.
     default_response_format: str = "url"
     max_upload_mb: float = Field(default=25.0, gt=0)
     log_level: str = "INFO"
     log_file: str | None = "mflux.log"
-    #: Une ligne = un objet JSON sur stderr. Destiné à un superviseur (l'app
-    #: de bureau) plutôt qu'à un humain devant un terminal.
+    #: One line, one JSON object. Aimed at a supervisor (the desktop app)
+    #: rather than a human in front of a terminal.
     log_json: bool = False
-    #: Un log de progression toutes les N étapes de débruitage (0 = aucun).
+    #: One progress log every N denoising steps (0 = none).
     progress_log_every: int = Field(default=1, ge=0)
-    #: Borne l'arrêt gracieux d'uvicorn, dont le défaut est une attente infinie
-    #: sur les connexions en vol — soit, ici, jusqu'à `request_timeout_s`.
+    #: Bounds uvicorn's graceful shutdown, whose default is to wait forever on
+    #: in-flight connections — which here means up to `request_timeout_s`.
     shutdown_grace_s: float = Field(default=10.0, gt=0)
 
     @field_validator("image_store", "log_file")
     @classmethod
     def _absolute_path(cls, value: str | None) -> str | None:
-        """Ancre les chemins d'écriture, qui sont relatifs au CWD par défaut.
+        """Anchor the write paths, which are CWD-relative by default.
 
-        `image_store` et `log_file` sont créés pendant `create_app`, avant même
-        que le serveur ne bind. Lancé depuis un `.app` (CWD = `/`, en lecture
-        seule), un chemin relatif fait échouer le démarrage ; lancé de n'importe
-        où ailleurs, il éparpille `images/` et `mflux.log` dans le dossier
-        courant. On résout donc dès la validation.
+        `image_store` and `log_file` are created during `create_app`, before the
+        server even binds. Launched from a `.app` (CWD = `/`, read-only), a
+        relative path makes startup fail; launched from anywhere else, it
+        scatters `images/` and `mflux.log` into the current directory. So we
+        resolve them at validation time.
         """
         if value is None or value == "":
             return value
@@ -71,7 +71,7 @@ class ServerSettings(BaseModel):
     @classmethod
     def _check_response_format(cls, value: str) -> str:
         if value not in RESPONSE_FORMATS:
-            raise ValueError(f"default_response_format doit valoir l'un de {sorted(RESPONSE_FORMATS)}")
+            raise ValueError(f"default_response_format must be one of {sorted(RESPONSE_FORMATS)}")
         return value
 
     @field_validator("log_level")
@@ -79,7 +79,7 @@ class ServerSettings(BaseModel):
     def _upper(cls, value: str) -> str:
         level = value.upper()
         if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
-            raise ValueError(f"log_level invalide : {value!r}")
+            raise ValueError(f"Invalid log_level: {value!r}")
         return level
 
     @property
@@ -88,14 +88,14 @@ class ServerSettings(BaseModel):
 
 
 class ModelOverride(BaseModel):
-    # `model_path` tombe dans l'espace réservé `model_` de pydantic ; on le
-    # libère plutôt que de renommer un champ qui parle à mflux.
+    # `model_path` falls into pydantic's reserved `model_` namespace; we free it
+    # up rather than rename a field that speaks to mflux.
     model_config = ConfigDict(protected_namespaces=())
 
     enabled: bool = True
     quantize: int | None = None
-    #: Chemin local ou repo HF substitué à celui du catalogue. Indispensable pour
-    #: `flux2-dev`, dont l'artefact pré-quantifié est propre à la machine.
+    #: Local path or HF repo substituted for the catalogue's. Required for
+    #: `flux2-dev`, whose pre-quantized artifact is machine-specific.
     model_path: str | None = None
     default_size: str | None = None
     default_steps: int | None = Field(default=None, ge=1)
@@ -106,7 +106,7 @@ class ModelOverride(BaseModel):
     @classmethod
     def _check_quantize(cls, value: int | None) -> int | None:
         if value is not None and value != 0 and value not in QUANTIZE_CHOICES:
-            raise ValueError(f"quantize doit valoir 0 (aucune) ou l'un de {list(QUANTIZE_CHOICES)}")
+            raise ValueError(f"quantize must be 0 (none) or one of {list(QUANTIZE_CHOICES)}")
         return value
 
 
@@ -119,15 +119,15 @@ class Settings(BaseModel):
     def _check_default_model(self) -> Settings:
         if self.default_model not in BASE_SPECS_BY_KEY:
             raise ValueError(
-                f"default_model inconnu : {self.default_model!r}. Clés valides : {sorted(BASE_SPECS_BY_KEY)}"
+                f"Unknown default_model: {self.default_model!r}. Valid keys: {sorted(BASE_SPECS_BY_KEY)}"
             )
         override = self.models.get(self.default_model)
         if override is not None and not override.enabled:
-            raise ValueError(f"default_model {self.default_model!r} est désactivé dans la section models.")
+            raise ValueError(f"default_model {self.default_model!r} is disabled in the models section.")
         if not self.server.is_loopback and not self.server.api_key:
             raise ValueError(
-                f"host={self.server.host!r} expose le serveur hors de la machine locale : "
-                f"une api_key est obligatoire (config ou {ENV_PREFIX}API_KEY)."
+                f"host={self.server.host!r} exposes the server beyond this machine: "
+                f"an api_key is mandatory (config or {ENV_PREFIX}API_KEY)."
             )
         return self
 
@@ -156,20 +156,20 @@ def config_path() -> Path:
     return Path(os.environ.get(f"{ENV_PREFIX}CONFIG", DEFAULT_CONFIG_PATH)).expanduser()
 
 
-#: Renseigné par `load_settings` quand aucun fichier de config n'a été trouvé.
-#: `setup_logging` n'est configuré qu'ensuite (create_app), donc on ne peut pas
-#: journaliser au moment où on le découvre — `create_app` s'en charge.
+#: Set by `load_settings` when no config file was found. `setup_logging` only
+#: runs afterwards (in create_app), so we cannot log at the point of discovery —
+#: `create_app` takes care of it.
 missing_config_path: Path | None = None
 
 
 def load_settings(path: Path | None = None) -> Settings:
-    """Lit `server-config.json`, applique les variables d'environnement, valide.
+    """Read `server-config.json`, apply environment overrides, validate.
 
-    Une config absente n'est pas une erreur : les défauts du catalogue suffisent
-    à démarrer. Mais c'est un piège une fois le paquet installé en wheel, où
-    `DEFAULT_CONFIG_PATH` tombe dans `site-packages/` : on repartirait
-    silencieusement sur tous les défauts. D'où `missing_config_path`, que
-    `create_app` journalise en `warning`.
+    A missing config is not an error: the catalogue defaults are enough to
+    start. But it is a trap once the package is installed as a wheel, where
+    `DEFAULT_CONFIG_PATH` lands in `site-packages/`: we would silently fall back
+    to every default. Hence `missing_config_path`, which `create_app` logs as a
+    `warning`.
     """
     global missing_config_path
 
@@ -180,9 +180,9 @@ def load_settings(path: Path | None = None) -> Settings:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
-            raise ValueError(f"{path} n'est pas un JSON valide : {exc}") from exc
+            raise ValueError(f"{path} is not valid JSON: {exc}") from exc
         if not isinstance(raw, dict):
-            raise ValueError(f"{path} doit contenir un objet JSON à la racine.")
+            raise ValueError(f"{path} must contain a JSON object at the root.")
     else:
         missing_config_path = path
 
@@ -196,9 +196,9 @@ def load_settings(path: Path | None = None) -> Settings:
 
     try:
         settings = Settings.model_validate(raw)
-        # Provoque tout de suite les erreurs de surcharge de modèle plutôt
-        # qu'à la première requête.
+        # Surface model-override errors right away rather than on the first
+        # request.
         settings.registry()
     except (ValidationError, ValueError) as exc:
-        raise ValueError(f"Configuration invalide ({path}) :\n{exc}") from exc
+        raise ValueError(f"Invalid configuration ({path}):\n{exc}") from exc
     return settings

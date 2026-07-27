@@ -1,8 +1,8 @@
-"""Support de `black-forest-labs/FLUX.2-dev`, absent de mflux 0.18.0.
+"""Support for `black-forest-labs/FLUX.2-dev`, absent from mflux 0.18.0.
 
-Seul `config` est importé au chargement du paquet : il ne dépend de rien. Tout
-le reste est résolu paresseusement, parce que `registry` importe ce paquet au
-niveau module et doit rester léger — importer mflux tire torch et transformers.
+Only `config` is imported when the package loads: it depends on nothing. Everything
+else is resolved lazily, because `registry` imports this package at module level
+and must stay light — importing mflux pulls in torch and transformers.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from mflux_server.flux2_dev.config import (
     flux2_dev_model_config,
 )
 
-#: Nom exporté → module qui le définit. Chacun de ces modules importe mflux.
+#: Exported name → the module that defines it. Each of these imports mflux.
 _LAZY: dict[str, str] = {
     "Flux2Dev": "mflux_server.flux2_dev.model",
     "Flux2DevTokenizer": "mflux_server.flux2_dev.tokenizer",

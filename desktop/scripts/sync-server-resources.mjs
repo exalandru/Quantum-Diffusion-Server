@@ -1,13 +1,13 @@
 /**
- * Copie le projet Python dans les ressources du bundle Tauri.
+ * Copy the Python project into the Tauri bundle's resources.
  *
- * On ne duplique rien en VCS : `src-tauri/resources/` est gitignoré et
- * régénéré avant chaque build (`beforeBuildCommand`). Ce qui est embarqué est
- * le strict nécessaire pour que `uv sync --frozen` reconstitue l'environnement :
- * le manifeste, le lock, la version de Python, et le paquet lui-même.
+ * Nothing is duplicated in VCS: `src-tauri/resources/` is gitignored and
+ * regenerated before every build (`beforeBuildCommand`). What ships is the bare
+ * minimum for `uv sync --frozen` to rebuild the environment: the manifest, the
+ * lock, the Python version, and the package itself.
  *
- * Le binaire `uv` est copié en même temps, sous le nom que Tauri exige pour un
- * sidecar : `uv-<triplet cible>`.
+ * The `uv` binary is copied at the same time, under the name Tauri requires for
+ * a sidecar: `uv-<target triple>`.
  */
 import { execFileSync } from "node:child_process";
 import { chmodSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
@@ -20,12 +20,13 @@ const repo = resolve(desktop, "..");
 const resources = join(desktop, "src-tauri", "resources", "server");
 
 /**
- * Fichiers et dossiers du dépôt à embarquer, relatifs à sa racine.
+ * Repo files and directories to embed, relative to its root.
  *
- * `README.md` n'est pas de la documentation ici : `pyproject.toml` le déclare en
- * `readme`, et hatchling refuse de construire le wheel s'il est absent.
- * `.python-version` fixe l'interpréteur — sans lui, uv prendrait le plus récent
- * satisfaisant `requires-python`, et le lock résoudrait un autre jeu de paquets.
+ * `README.md` is not documentation here: `pyproject.toml` declares it as
+ * `readme`, and hatchling refuses to build the wheel without it.
+ * `.python-version` pins the interpreter — without it, uv would take the newest
+ * one satisfying `requires-python`, and the lock would resolve a different
+ * package set.
  */
 const PAYLOAD = ["pyproject.toml", "uv.lock", ".python-version", "README.md", "mflux_server"];
 
@@ -36,16 +37,16 @@ function syncPython() {
   for (const entry of PAYLOAD) {
     const source = join(repo, entry);
     if (!existsSync(source)) {
-      throw new Error(`Ressource manquante : ${source}`);
+      throw new Error(`Missing resource: ${source}`);
     }
     cpSync(source, join(resources, entry), {
       recursive: true,
-      // Ni caches d'octets ni artefacts de test : ils gonflent le bundle et
-      // seraient réécrits de toute façon.
+      // No bytecode caches, no test artifacts: they bloat the bundle and would
+      // be rewritten anyway.
       filter: (path) => !/(__pycache__|\.pyc$|\.pytest_cache|\.ruff_cache)/.test(path),
     });
   }
-  console.log(`✓ projet Python copié dans ${resources}`);
+  console.log(`✓ Python project copied to ${resources}`);
 }
 
 function syncUv() {
@@ -57,15 +58,15 @@ function syncUv() {
   try {
     uv = execFileSync("which", ["uv"], { encoding: "utf8" }).trim();
   } catch {
-    throw new Error("`uv` introuvable dans le PATH : installe-le avant de builder.");
+    throw new Error("`uv` not found in PATH: install it before building.");
   }
 
-  // Le suffixe de triplet est imposé par Tauri pour les `externalBin`.
+  // The triple suffix is mandated by Tauri for `externalBin` entries.
   const target = join(binaries, `uv-${triple}`);
   cpSync(uv, target);
   chmodSync(target, 0o755);
   const version = execFileSync(uv, ["--version"], { encoding: "utf8" }).trim();
-  console.log(`✓ sidecar ${version} copié vers uv-${triple}`);
+  console.log(`✓ sidecar ${version} copied to uv-${triple}`);
 }
 
 syncPython();

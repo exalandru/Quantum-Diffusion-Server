@@ -1,3 +1,3 @@
-"""Serveur local exposant mflux via une API compatible OpenAI Images."""
+"""Local server exposing mflux behind an OpenAI-Images-compatible API."""
 
 __version__ = "0.1.0"

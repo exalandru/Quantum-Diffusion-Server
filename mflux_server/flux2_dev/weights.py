@@ -1,15 +1,15 @@
-"""Définition des poids FLUX.2-dev, sur le modèle de `Flux2KleinWeightDefinition`.
+"""FLUX.2-dev weight definition, modelled on `Flux2KleinWeightDefinition`.
 
-Deux écarts seulement par rapport à klein :
+Only two departures from klein:
 
-* le transformer de FLUX.2-dev embarque deux tenseurs de plus
-  (`time_guidance_embed.guidance_embedder.linear_{1,2}`), parce qu'il est
-  guidance-distilled ;
-* l'encodeur texte est un Mistral3 et non un Qwen3 — d'où un mapping dédié, sans
-  `q_norm`/`k_norm` et préfixé `language_model.`.
+* the FLUX.2-dev transformer carries two extra tensors
+  (`time_guidance_embed.guidance_embedder.linear_{1,2}`), because it is
+  guidance-distilled;
+* the text encoder is a Mistral3 rather than a Qwen3 — hence a dedicated
+  mapping, without `q_norm`/`k_norm` and prefixed with `language_model.`.
 
-Le VAE (`AutoencoderKLFlux2`) est le même : `Flux2WeightMapping.get_vae_mapping`
-s'applique tel quel.
+The VAE (`AutoencoderKLFlux2`) is the same one: `Flux2WeightMapping.get_vae_mapping`
+applies unchanged.
 """
 
 from __future__ import annotations
@@ -22,17 +22,18 @@ from mflux.models.flux2.weights.flux2_weight_mapping import Flux2WeightMapping
 from mflux_server.flux2_dev.config import MAX_SEQUENCE_LENGTH
 from mflux_server.flux2_dev.tokenizer import Flux2DevTokenizer
 
-#: `text_encoder/` contient 585 tenseurs dont 223 inutiles ici : tour vision
-#: (`vision_tower.*`), projecteur multimodal et `language_model.lm_head`. On les
-#: écarte avant le mapping pour ne pas les charger en mémoire.
+#: `text_encoder/` holds 585 tensors, 223 of which are useless here: the vision
+#: tower (`vision_tower.*`), the multimodal projector and
+#: `language_model.lm_head`. We filter them out before mapping so they never
+#: reach memory.
 TEXT_ENCODER_PREFIX = "language_model.model."
 
 
 class Flux2DevWeightDefinition:
     @staticmethod
     def get_transformer_mapping() -> list[WeightTarget]:
-        # Le mapping klein couvre 329 des 331 tenseurs ; il ne connaît pas le
-        # guidance embedder, désactivé sur les modèles klein.
+        # The klein mapping covers 329 of the 331 tensors; it does not know
+        # about the guidance embedder, which is disabled on klein models.
         mapping = list(Flux2WeightMapping.get_transformer_mapping())
         mapping.extend(
             [
@@ -50,9 +51,9 @@ class Flux2DevWeightDefinition:
 
     @staticmethod
     def get_text_encoder_mapping() -> list[WeightTarget]:
-        # `{layer}` est étendu automatiquement : WeightMapper._detect_num_layers
-        # cherche `model\.layers\.(\d+)\.`, qui matche dans
-        # `language_model.model.layers.N.` → 40 couches détectées.
+        # `{layer}` is expanded automatically: WeightMapper._detect_num_layers
+        # looks for `model\.layers\.(\d+)\.`, which matches inside
+        # `language_model.model.layers.N.` → 40 layers detected.
         per_layer = (
             "input_layernorm.weight",
             "post_attention_layernorm.weight",
@@ -122,9 +123,8 @@ class Flux2DevWeightDefinition:
 
     @staticmethod
     def get_download_patterns() -> list[str]:
-        # Surtout pas de `*.safetensors` à la racine : le repo y expose un
-        # monolithe `flux2-dev.safetensors` de 64,8 Go qui duplique
-        # `transformer/`.
+        # Definitely no root-level `*.safetensors`: the repo exposes a 64.8 GB
+        # `flux2-dev.safetensors` monolith there that duplicates `transformer/`.
         return [
             "vae/*.safetensors",
             "vae/*.json",
@@ -141,15 +141,15 @@ class Flux2DevWeightDefinition:
 
 
 def single_component_definition(name: str) -> type:
-    """Fabrique une définition à un seul composant, pour la pré-quantification.
+    """Build a single-component definition, for pre-quantization.
 
-    `WeightApplier.apply_and_quantize` et `ModelSaver.save_model` travaillent sur
-    l'ensemble des composants d'une définition ; les traiter un par un est ce qui
-    permet de ne jamais tenir les 111 Go de bf16 en mémoire.
+    `WeightApplier.apply_and_quantize` and `ModelSaver.save_model` operate on all
+    of a definition's components; handling them one at a time is what keeps the
+    111 GB of bf16 out of memory.
     """
     components = {c.name: c for c in Flux2DevWeightDefinition.get_components()}
     if name not in components:
-        raise ValueError(f"Composant inconnu : {name!r}. Valides : {sorted(components)}")
+        raise ValueError(f"Unknown component: {name!r}. Valid: {sorted(components)}")
     component = components[name]
     tokenizers = Flux2DevWeightDefinition.get_tokenizers() if name == "text_encoder" else []
 

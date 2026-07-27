@@ -5,7 +5,7 @@ import { App } from "./App";
 import "./styles.css";
 
 const root = document.getElementById("root");
-if (!root) throw new Error("#root absent de index.html");
+if (!root) throw new Error("#root is missing from index.html");
 
 createRoot(root).render(
   <React.StrictMode>

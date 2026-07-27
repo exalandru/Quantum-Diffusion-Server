@@ -13,13 +13,13 @@ import type { Overview, ServerLine } from "./types";
 type Tab = "dashboard" | "config" | "models" | "logs";
 
 const TABS: { id: Tab; label: string }[] = [
-  { id: "dashboard", label: "Tableau de bord" },
+  { id: "dashboard", label: "Dashboard" },
   { id: "config", label: "Configuration" },
-  { id: "models", label: "Modèles" },
+  { id: "models", label: "Models" },
   { id: "logs", label: "Logs" },
 ];
 
-/** Nombre de lignes conservées ; au-delà, l'affichage devient inutilisable. */
+/** Lines kept; past this point the view becomes unusable. */
 const LOG_LIMIT = 2000;
 
 export function App() {
@@ -42,13 +42,13 @@ export function App() {
 
   useEffect(() => {
     void refresh();
-    // Le processus serveur peut mourir de son côté : on resonde régulièrement
-    // plutôt que de faire confiance au dernier état connu.
+    // The server process can die on its own: we re-poll regularly rather than
+    // trusting the last known state.
     const timer = setInterval(() => void refresh(), 4000);
     return () => clearInterval(timer);
   }, [refresh]);
 
-  // Les sorties du serveur et de la conversion arrivent par le même canal.
+  // Server output and conversion output arrive on the same channel.
   useEffect(() => {
     const pending = listen<ServerLine>("server-line", (event) => {
       setLines((previous) => {
@@ -72,14 +72,14 @@ export function App() {
       <div className="shell">
         <div className="titlebar">Quantum Diffusion Server</div>
         <main>
-          {error ? <div className="error-banner">{error}</div> : <p className="center-note">Chargement…</p>}
+          {error ? <div className="error-banner">{error}</div> : <p className="center-note">Loading…</p>}
         </main>
       </div>
     );
   }
 
-  // Sans environnement Python, rien d'autre n'est actionnable : on n'affiche
-  // que l'installation plutôt que des onglets qui échoueraient tous.
+  // With no Python environment nothing else is actionable, so we show the
+  // installer alone rather than tabs that would all fail.
   if (!state.bootstrap.ready) {
     return (
       <div className="shell">

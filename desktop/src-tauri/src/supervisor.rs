@@ -1,22 +1,22 @@
-//! Cycle de vie du serveur Python.
+//! Lifecycle of the Python server.
 //!
-//! Trois contraintes dictent ce fichier.
+//! Three constraints shape this file.
 //!
-//! **`mflux-server` n'accepte aucun argument** : tout passe par l'environnement
-//! et un fichier JSON. Il n'expose pas non plus le port qu'il a ouvert, donc
-//! c'est ici qu'on en choisit un libre avant de le lui imposer.
+//! **`mflux-server` takes no arguments**: everything goes through the environment
+//! and a JSON file. It does not report the port it opened either, so this is
+//! where we pick a free one and impose it.
 //!
-//! **Les chemins d'écriture doivent être absolus**, avec leurs dossiers parents
-//! déjà créés : le serveur crée son dossier d'images et son fichier de log
-//! pendant l'initialisation, avant d'écouter, et un `.app` lancé par le Finder
-//! hérite de `/` comme dossier courant.
+//! **The write paths must be absolute**, with their parent directories already
+//! created: the server creates its image directory and its log file during
+//! initialization, before it listens, and a `.app` launched by Finder inherits
+//! `/` as its current directory.
 //!
-//! **L'arrêt doit être borné.** `SIGTERM` déclenche l'arrêt gracieux d'uvicorn,
-//! borné côté serveur par `shutdown_grace_s` ; mesuré à environ 10 s en pleine
-//! génération. Mais un second `SIGTERM` ne force rien — seul `SIGINT` le fait
-//! côté uvicorn — d'où l'échelle SIGTERM puis SIGKILL. Le signal est envoyé au
-//! *groupe* de processus, sinon quitter l'app laisserait le serveur orphelin :
-//! macOS ne récolte pas les petits-enfants.
+//! **Shutdown must be bounded.** `SIGTERM` triggers uvicorn's graceful shutdown,
+//! bounded on the server side by `shutdown_grace_s`; measured at roughly 10s
+//! mid-generation. But a second `SIGTERM` forces nothing — only `SIGINT` does, on
+//! uvicorn's side — hence the SIGTERM-then-SIGKILL ladder. The signal goes to the
+//! process *group*, otherwise quitting the app would orphan the server: macOS
+//! does not reap grandchildren.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -31,14 +31,14 @@ use tokio::sync::Mutex;
 
 use crate::paths::Paths;
 
-/// Marge ajoutée à `shutdown_grace_s` avant de passer à SIGKILL.
+/// Margin added to `shutdown_grace_s` before escalating to SIGKILL.
 const KILL_AFTER: Duration = Duration::from_secs(8);
 
-/// Une ligne de sortie du serveur, relayée à l'interface.
+/// One line of server output, relayed to the interface.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerLine {
-    /// `true` pour stdout, qui ne porte que du JSON Lines en mode `log_json`.
+    /// `true` for stdout, which carries only JSON Lines in `log_json` mode.
     pub structured: bool,
     pub line: String,
 }
@@ -48,7 +48,7 @@ pub struct ServerLine {
 pub struct ServerStatus {
     pub running: bool,
     pub port: Option<u16>,
-    /// Renseigné quand le processus s'est arrêté de lui-même.
+    /// Set when the process stopped on its own.
     pub last_exit: Option<String>,
 }
 
@@ -70,7 +70,7 @@ impl Supervisor {
         }
     }
 
-    /// Démarre le serveur, ou renvoie le port courant s'il tourne déjà.
+    /// Start the server, or return the current port if it is already running.
     pub async fn start(&mut self, app: &AppHandle, paths: &Paths) -> Result<u16, String> {
         if let Some(port) = self.port {
             if self.child.is_some() {
@@ -79,7 +79,7 @@ impl Supervisor {
         }
         if !paths.env_ready() {
             return Err(format!(
-                "Environnement Python absent ({}). Lance l'installation d'abord.",
+                "Python environment missing ({}). Run the installation first.",
                 paths.server_bin().display()
             ));
         }
@@ -90,33 +90,33 @@ impl Supervisor {
         let hf_home = Paths::default_hf_home();
         let mut command = Command::new(paths.server_bin());
         command
-            // Le dossier courant est posé explicitement : on ne compte jamais
-            // sur celui hérité, qui vaut `/` depuis le Finder.
+            // The current directory is set explicitly: we never rely on the
+            // inherited one, which is `/` when launched from Finder.
             .current_dir(&paths.data)
             .env("MFLUX_SERVER_CONFIG", &paths.config)
             .env("MFLUX_SERVER_HOST", "127.0.0.1")
             .env("MFLUX_SERVER_PORT", port.to_string())
             .env("MFLUX_SERVER_IMAGE_STORE", &paths.images)
-            // Chaîne vide = pas de fichier de log : c'est nous qui capturons.
+            // Empty string = no log file: we are the ones capturing.
             .env("MFLUX_SERVER_LOG_FILE", "")
-            // stdout devient un flux de JSON Lines, stderr garde tqdm.
+            // stdout becomes a JSON Lines stream, stderr keeps tqdm.
             .env("MFLUX_SERVER_LOG_JSON", "1")
             .env("HF_HOME", &hf_home)
-            // Réduit le bruit de barres de progression sur stderr.
+            // Cuts down the progress-bar noise on stderr.
             .env("HF_HUB_DISABLE_PROGRESS_BARS", "1")
-            // Sans ça, stdout redirigé serait bufferisé par blocs et la
-            // progression arriverait par paquets.
+            // Without this, a redirected stdout would be block-buffered and
+            // progress would arrive in bursts.
             .env("PYTHONUNBUFFERED", "1")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .stdin(Stdio::null())
-            // Propre groupe de processus : permet de signaler tout le sous-arbre
-            // et évite de laisser le serveur orphelin quand l'app quitte.
+            // Its own process group: lets us signal the whole subtree and keeps
+            // the server from being orphaned when the app quits.
             .process_group(0);
 
         let mut child = command
             .spawn()
-            .map_err(|error| format!("impossible de lancer le serveur : {error}"))?;
+            .map_err(|error| format!("could not launch the server: {error}"))?;
 
         if let Some(stdout) = child.stdout.take() {
             pump(app.clone(), stdout, true);
@@ -131,14 +131,14 @@ impl Supervisor {
         Ok(port)
     }
 
-    /// Arrête le serveur : SIGTERM au groupe, attente bornée, puis SIGKILL.
+    /// Stop the server: SIGTERM to the group, a bounded wait, then SIGKILL.
     pub async fn stop(&mut self, grace: Duration) -> Result<(), String> {
         let Some(mut child) = self.child.take() else {
             self.port = None;
             return Ok(());
         };
         let Some(pid) = child.id() else {
-            // Déjà moissonné.
+            // Already reaped.
             self.port = None;
             return Ok(());
         };
@@ -148,7 +148,7 @@ impl Supervisor {
         match tokio::time::timeout(deadline, child.wait()).await {
             Ok(_) => {}
             Err(_) => {
-                // uvicorn n'accélère pas sur un second SIGTERM : on tranche.
+                // uvicorn does not speed up on a second SIGTERM: we cut it off.
                 signal_group(pid, libc::SIGKILL);
                 let _ = child.wait().await;
             }
@@ -157,7 +157,7 @@ impl Supervisor {
         Ok(())
     }
 
-    /// Termine sans attendre, pour la fermeture de la fenêtre.
+    /// Terminate without waiting, for window close.
     pub fn kill_now(&mut self) {
         if let Some(child) = self.child.as_mut() {
             if let Some(pid) = child.id() {
@@ -169,16 +169,16 @@ impl Supervisor {
     }
 }
 
-/// Envoie un signal à tout le groupe de processus (`-pgid`).
+/// Send a signal to the whole process group (`-pgid`).
 fn signal_group(pid: u32, signal: libc::c_int) {
-    // `process_group(0)` fait du fils le leader de son groupe : son pid est donc
-    // aussi son pgid.
+    // `process_group(0)` makes the child its group leader, so its pid is also
+    // its pgid.
     unsafe {
         libc::kill(-(pid as libc::pid_t), signal);
     }
 }
 
-/// Relaie un flux ligne par ligne vers l'interface.
+/// Relay a stream to the interface, line by line.
 fn pump<R>(app: AppHandle, reader: R, structured: bool)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
@@ -189,9 +189,8 @@ where
             if line.trim().is_empty() {
                 continue;
             }
-            // Sur stderr, tqdm réécrit sa barre avec des retours chariot sans
-            // saut de ligne : on redécoupe pour ne pas accumuler une ligne
-            // géante.
+            // On stderr, tqdm rewrites its bar with carriage returns and no
+            // newline: we re-split so as not to accumulate one giant line.
             for fragment in line.split('\r').filter(|part| !part.trim().is_empty()) {
                 let _ = app.emit(
                     "server-line",
@@ -205,22 +204,22 @@ where
     });
 }
 
-/// Réserve un port libre en le laissant choisir par l'OS, puis le relâche.
+/// Reserve a free port by letting the OS choose it, then release it.
 ///
-/// Il reste une fenêtre de course entre la fermeture et le bind du serveur,
-/// inévitable puisque `mflux-server` n'accepte pas de socket préouverte et
-/// n'annonce pas le port qu'il a obtenu.
+/// A race window remains between closing it and the server binding, unavoidable
+/// since `mflux-server` accepts no pre-opened socket and does not announce the
+/// port it obtained.
 fn free_port() -> Result<u16, String> {
     let listener = std::net::TcpListener::bind("127.0.0.1:0")
-        .map_err(|error| format!("aucun port libre : {error}"))?;
+        .map_err(|error| format!("no free port: {error}"))?;
     listener
         .local_addr()
         .map(|address| address.port())
-        .map_err(|error| format!("port illisible : {error}"))
+        .map_err(|error| format!("port unreadable: {error}"))
 }
 
-/// Attend que `/health` réponde. Le serveur écoute vite — il ne charge aucun
-/// poids au démarrage — mais uvicorn met tout de même une seconde à binder.
+/// Wait for `/health` to answer. The server listens quickly — it loads no
+/// weights at startup — but uvicorn still takes about a second to bind.
 pub async fn wait_healthy(port: u16, timeout: Duration) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + timeout;
     let address = format!("127.0.0.1:{port}");
@@ -230,10 +229,10 @@ pub async fn wait_healthy(port: u16, timeout: Duration) -> Result<(), String> {
         }
         tokio::time::sleep(Duration::from_millis(150)).await;
     }
-    Err(format!("le serveur n'écoute pas sur {address}"))
+    Err(format!("the server is not listening on {address}"))
 }
 
-/// Lance la pré-quantification et relaie sa sortie comme celle du serveur.
+/// Run the pre-quantization and relay its output like the server's.
 pub async fn run_prequantize(
     app: AppHandle,
     paths: &Paths,
@@ -242,7 +241,7 @@ pub async fn run_prequantize(
 ) -> Result<(), String> {
     let binary = paths.prequantize_bin();
     if !binary.is_file() {
-        return Err(format!("{} est absent.", binary.display()));
+        return Err(format!("{} is missing.", binary.display()));
     }
 
     let mut command = Command::new(&binary);
@@ -264,7 +263,7 @@ pub async fn run_prequantize(
 
     let mut child = command
         .spawn()
-        .map_err(|error| format!("impossible de lancer la conversion : {error}"))?;
+        .map_err(|error| format!("could not launch the conversion: {error}"))?;
     if let Some(stdout) = child.stdout.take() {
         pump(app.clone(), stdout, true);
     }
@@ -275,15 +274,15 @@ pub async fn run_prequantize(
     let status = child
         .wait()
         .await
-        .map_err(|error| format!("conversion interrompue : {error}"))?;
+        .map_err(|error| format!("conversion interrupted: {error}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("la conversion a échoué (code {:?})", status.code()))
+        Err(format!("the conversion failed (code {:?})", status.code()))
     }
 }
 
-/// `true` si un token HuggingFace est disponible pour les dépôts *gated*.
+/// `true` when a HuggingFace token is available for the *gated* repos.
 pub fn hf_token_present(hf_home: &Path) -> bool {
     if std::env::var("HF_TOKEN").is_ok_and(|value| !value.trim().is_empty()) {
         return true;

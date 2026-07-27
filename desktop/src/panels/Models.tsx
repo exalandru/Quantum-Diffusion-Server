@@ -4,11 +4,11 @@ import * as api from "../api";
 import { messageOf, type ServerClient } from "../api";
 import type { Capabilities, Overview } from "../types";
 
-/** Ordre imposé par le script : le plus gros d'abord, pour borner le pic disque. */
+/** Order enforced by the script: biggest first, to bound the disk peak. */
 const COMPONENTS = [
-  { id: "transformer", label: "Transformer", detail: "64,5 Go en bf16 → environ 34 Go" },
-  { id: "text_encoder", label: "Encodeur texte", detail: "45,8 Go en bf16 → environ 24 Go" },
-  { id: "vae", label: "VAE", detail: "0,34 Go" },
+  { id: "transformer", label: "Transformer", detail: "64.5 GB in bf16 → about 34 GB" },
+  { id: "text_encoder", label: "Text encoder", detail: "45.8 GB in bf16 → about 24 GB" },
+  { id: "vae", label: "VAE", detail: "0.34 GB" },
 ];
 
 export function Models({
@@ -62,16 +62,16 @@ export function Models({
   return (
     <>
       <div className="card">
-        <h2>Accès HuggingFace</h2>
+        <h2>HuggingFace access</h2>
         <p className="hint">
-          Les dépôts <code>black-forest-labs/*</code> sont à accès restreint : il faut un token dont
-          l'accès a été accordé. Il est enregistré là où <code>hf auth login</code> l'écrit, pour ne
-          pas dupliquer un secret déjà présent en clair.
+          The <code>black-forest-labs/*</code> repos are gated: you need a token that has been
+          granted access. It is stored where <code>hf auth login</code> writes it, so as not to
+          duplicate a secret that already sits there in plaintext.
         </p>
         <div className="row">
           <span className={`badge ${state.hfTokenPresent ? "ok" : "warn"}`}>
             <span className="dot" />
-            {state.hfTokenPresent ? "token présent" : "aucun token"}
+            {state.hfTokenPresent ? "token present" : "no token"}
           </span>
           <input
             type="password"
@@ -84,9 +84,9 @@ export function Models({
             style={{ flex: 1, minWidth: 220 }}
           />
           <button onClick={() => void saveToken()} disabled={token.trim().length === 0}>
-            Enregistrer
+            Save
           </button>
-          {tokenSaved && <span className="badge ok">enregistré</span>}
+          {tokenSaved && <span className="badge ok">saved</span>}
         </div>
         <p className="path" style={{ marginTop: 10 }}>
           {state.hfHome}/token
@@ -96,27 +96,26 @@ export function Models({
       <div className="card">
         <h2>FLUX.2 [dev]</h2>
         <p className="hint">
-          Le seul modèle qui demande une préparation. Son dépôt est en bf16 : transformer 64,5 Go,
-          encodeur texte 45,8 Go, soit environ <strong>111 Go de poids résidents</strong> — hors
-          d'atteinte de la mémoire unifiée. En 8 bits on retombe à environ 58 Go, mais quantifier au
-          chargement supposerait justement de tenir le bf16 en mémoire d'abord. D'où cette conversion,
-          à faire une fois.
+          The only model that needs preparation. Its repo ships bf16: a 64.5 GB transformer and a
+          45.8 GB text encoder, so about <strong>111 GB of resident weights</strong> — out of reach
+          for unified memory. At 8 bits we come back down to roughly 58 GB, but quantizing at load
+          time would mean holding the bf16 in memory first. Hence this one-time conversion.
         </p>
 
         <div className="row" style={{ marginBottom: 12 }}>
           <span className={`badge ${state.flux2DevReady ? "ok" : "warn"}`}>
             <span className="dot" />
-            {state.flux2DevReady ? "artefact présent" : "artefact absent"}
+            {state.flux2DevReady ? "artifact present" : "artifact missing"}
           </span>
           {!state.flux2DevReady && (
             <span className="hint" style={{ margin: 0 }}>
-              Sans lui, le serveur répond 503 <code>model_not_prepared</code>.
+              Without it, the server answers 503 <code>model_not_prepared</code>.
             </span>
           )}
         </div>
 
         <fieldset>
-          <legend>Composants à convertir</legend>
+          <legend>Components to convert</legend>
           {COMPONENTS.map((component) => (
             <label className="check" key={component.id}>
               <input
@@ -145,18 +144,18 @@ export function Models({
             onClick={() => void convert()}
             disabled={converting || selected.length === 0}
           >
-            {converting ? "Conversion en cours…" : "Lancer la conversion"}
+            {converting ? "Converting…" : "Start conversion"}
           </button>
           <span className="hint" style={{ margin: 0 }}>
-            Suis l'avancement dans l'onglet Logs.
+            Follow the progress in the Logs tab.
           </span>
         </div>
 
         <p className="hint" style={{ marginTop: 12, marginBottom: 0 }}>
-          La conversion travaille composant par composant, et quantifie le transformer bloc par bloc :
-          sans ça le pic mémoire atteindrait environ 96 Go, contre environ 66 ainsi. Entre deux
-          composants, purger le bf16 du cache HuggingFace fait tomber le pic disque de 169 à environ
-          97 Go — le script rappelle quoi supprimer.
+          The conversion works one component at a time, and quantizes the transformer block by
+          block: without that the memory peak would reach about 96 GB, against roughly 66 this way.
+          Between components, purging the bf16 from the HuggingFace cache brings the disk peak down
+          from 169 to about 97 GB — the script reminds you what to delete.
         </p>
       </div>
 
@@ -166,12 +165,12 @@ export function Models({
           <table className="models">
             <thead>
               <tr>
-                <th>Modèle</th>
-                <th>Taille</th>
-                <th>Étapes</th>
+                <th>Model</th>
+                <th>Size</th>
+                <th>Steps</th>
                 <th>Guidance</th>
                 <th>Quant.</th>
-                <th>Capacités</th>
+                <th>Features</th>
               </tr>
             </thead>
             <tbody>
@@ -181,7 +180,7 @@ export function Models({
                     <strong>{key}</strong>
                     {key === capabilities.default_model && (
                       <span className="badge" style={{ marginLeft: 6 }}>
-                        défaut
+                        default
                       </span>
                     )}
                     <div className="path">{caps.repo}</div>
@@ -190,14 +189,14 @@ export function Models({
                   <td>{caps.default_steps}</td>
                   <td>
                     {caps.default_guidance ?? "—"}
-                    {!caps.supports_guidance && <span className="hint"> figée</span>}
+                    {!caps.supports_guidance && <span className="hint"> fixed</span>}
                   </td>
                   <td>{caps.quantize ? `${caps.quantize} bits` : "—"}</td>
                   <td>
                     <div className="row" style={{ gap: 5 }}>
-                      {caps.supports_negative_prompt && <span className="badge">negatif</span>}
+                      {caps.supports_negative_prompt && <span className="badge">negative</span>}
                       {caps.supports_image_to_image && <span className="badge">img2img</span>}
-                      {caps.supports_edit && <span className="badge">édition</span>}
+                      {caps.supports_edit && <span className="badge">editing</span>}
                     </div>
                   </td>
                 </tr>
@@ -206,7 +205,7 @@ export function Models({
           </table>
         ) : (
           <p className="hint" style={{ marginBottom: 0 }}>
-            Démarre le serveur pour voir le catalogue et les capacités déclarées.
+            Start the server to see the catalogue and the declared capabilities.
           </p>
         )}
       </div>
