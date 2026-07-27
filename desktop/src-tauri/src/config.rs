@@ -37,7 +37,7 @@ fn default_config() -> Value {
         // wins over it, and `null` would leave every model on its catalogue size.
         "default_size": "1280x720",
         "models": {
-            "flux2-klein": {"enabled": true, "quantize": null, "enable_edit": true},
+            "flux2-klein": {"enabled": true, "quantize": 8, "enable_edit": true},
             // Off by default: it answers 503 `model_not_prepared` until
             // `mflux-server-prequantize` has produced the local 8-bit artifact.
             // Shipping it enabled would advertise a model that cannot generate.

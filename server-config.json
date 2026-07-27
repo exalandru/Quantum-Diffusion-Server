@@ -23,7 +23,7 @@
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
-      "quantize": null,
+      "quantize": 8,
       "enable_edit": true
     },
     "flux2-dev": {

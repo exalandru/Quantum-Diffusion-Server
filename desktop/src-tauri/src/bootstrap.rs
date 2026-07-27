@@ -48,12 +48,50 @@ pub fn status(app: &AppHandle) -> Result<BootstrapStatus, String> {
     let paths = Paths::new(app)?;
     let app_version = app.package_info().version.to_string();
     let installed_version = paths.stamped_version();
+    let up_to_date = installed_version.as_deref() == Some(app_version.as_str())
+        && !bundle_is_newer(app, &paths);
     Ok(BootstrapStatus {
-        ready: paths.env_ready() && installed_version.as_deref() == Some(app_version.as_str()),
+        ready: paths.env_ready() && up_to_date,
         installed_version,
         app_version,
         env_path: paths.env.display().to_string(),
     })
+}
+
+/// `true` when the bundled Python project is more recent than the installed one.
+///
+/// Comparing versions alone is not enough, and the gap is silent: a change to the
+/// Python code with the app version left alone leaves `ready = true`, so the
+/// bundle never gets copied, `uv sync` never re-runs, and the app keeps serving
+/// whatever code the *first* install captured. Measured the hard way — new model
+/// defaults shipped in the bundle while the server still answered with the old
+/// ones, with nothing anywhere saying why.
+///
+/// The bundle's files carry their build time, so a mtime comparison against the
+/// stamp catches every rebuild without hashing the tree. Unreadable timestamps
+/// mean "no evidence of a change": we do not force a reinstall on a doubt.
+fn bundle_is_newer(app: &AppHandle, paths: &Paths) -> bool {
+    let Ok(stamp) = std::fs::metadata(&paths.stamp).and_then(|meta| meta.modified()) else {
+        return false;
+    };
+    let Ok(source) = app
+        .path()
+        .resolve("resources/server", tauri::path::BaseDirectory::Resource)
+    else {
+        return false;
+    };
+    newest_mtime(&source).is_some_and(|bundled| bundled > stamp)
+}
+
+fn newest_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_dir() {
+        return metadata.modified().ok();
+    }
+    std::fs::read_dir(path)
+        .ok()?
+        .filter_map(|entry| newest_mtime(&entry.ok()?.path()))
+        .max()
 }
 
 fn emit(app: &AppHandle, event: BootstrapEvent) {
@@ -81,15 +119,16 @@ pub async fn run(app: AppHandle) -> Result<(), String> {
 }
 
 async fn install(app: &AppHandle, paths: &Paths, app_version: &str) -> Result<(), String> {
-    if paths.stamped_version().as_deref() != Some(app_version) {
-        emit(
-            app,
-            BootstrapEvent::Step {
-                message: "Copying the Python project…".into(),
-            },
-        );
-        copy_project(app, paths)?;
-    }
+    // Unconditionally: the copy is a handful of files, and the previous version
+    // check would skip it whenever only the *content* had changed — which is the
+    // common case during development and exactly what `bundle_is_newer` detects.
+    emit(
+        app,
+        BootstrapEvent::Step {
+            message: "Copying the Python project…".into(),
+        },
+    );
+    copy_project(app, paths)?;
 
     emit(
         app,

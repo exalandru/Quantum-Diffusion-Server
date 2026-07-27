@@ -62,12 +62,22 @@ export function Setup({ state, onDone }: { state: Overview; onDone: () => void }
   }
 
   const upgrade = state.bootstrap.installedVersion !== null;
+  // Same version on both sides means the *content* of the bundled server changed,
+  // not its version — a rebuild without a version bump. Saying "version X while
+  // the app runs Y" with X === Y would read as a bug.
+  const sameVersion = state.bootstrap.installedVersion === state.bootstrap.appVersion;
 
   return (
     <div className="card">
       <h2>{upgrade ? "Updating the environment" : "Installation"}</h2>
       <p className="hint">
-        {upgrade ? (
+        {upgrade && sameVersion ? (
+          <>
+            The bundled server has changed since the environment was installed, so the installed copy
+            would keep answering with the old code. Rebuilding reinstalls it — the dependencies are
+            already there, so this is quick.
+          </>
+        ) : upgrade ? (
           <>
             The environment currently installed was built by version{" "}
             <strong>{state.bootstrap.installedVersion}</strong>, while the app runs{" "}
