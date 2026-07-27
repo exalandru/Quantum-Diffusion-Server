@@ -12,7 +12,7 @@ uv sync
 
 mflux is a project dependency — no need for a separate `uv tool install mflux`. Weights already present in the HuggingFace cache are reused as-is.
 
-The `black-forest-labs/*` models are *gated*: you need a HuggingFace token that has been granted access (`hf auth login`). `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
+Nothing else is required to generate: the two models enabled by default are ungated and Apache-2.0. Five of the ten catalogue entries *are* gated (`black-forest-labs/*`, `briaai/*`, `ideogram-ai/*`) and need a HuggingFace token with approved access (`hf auth login`) — they ship disabled for that reason. `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
 
 ## Running
 
@@ -62,7 +62,7 @@ Real measurements on an M3 Ultra / 103 GB, weights already in the HuggingFace ca
 | `flux2-klein`, 1024×1024, 4 steps | 34.3s | **18.5s** |
 | `z-image-turbo`, 1280×720, 9 steps | — | 45s on the 1st call, then **32s** |
 
-That is roughly **1.8×** on the default model, and the gain repeats on every image.
+That is roughly **1.8×**, and the gain repeats on every image. (Measured at 8 bits; the shipped config now asks for 4, which lowers memory further at some cost in fine detail.)
 
 It is worth knowing where it comes from, because it is not what one would assume: mflux loads its weights **lazily / mmap'd**, so a 9B model is "ready" in half a second and the real cost is paid during the first generation. What the server saves is the startup of a full Python process (importing torch, transformers, mlx) and the rematerialization of the weights — not a multi-minute load. On a model where inference dominates (`z-image-turbo` at ~3.5s per step), the relative gain is therefore smaller.
 
@@ -78,27 +78,55 @@ What it costs is the figure in the table above, read the other way: ~16 s of rel
 
 ## Models
 
-| key | repo | default size | default steps | guidance | negative_prompt | img2img | editing |
-|---|---|---|---|---|---|---|---|
-| `flux2-klein` | `black-forest-labs/FLUX.2-klein-9B` | 1920×1072 | 4 | fixed at 1.0 | ❌ | ✅ | ✅ |
-| `flux2-dev` *(off by default)* | `black-forest-labs/FLUX.2-dev` | 1024×1024 | 50 | 4.0 | ❌ | ✅ | ❌ |
-| `qwen-image` *(default)* | `mlx-community/Qwen-Image-2512-8bit` | 1920×1072 | 50 | 4.0 | ✅ | ✅ | opt-in |
-| `z-image` | `mlx-community/Z-Image-bf16` | 1920×1072 | 50 | 4.0 | ✅ | ✅ | ❌ |
-| `z-image-turbo` | `mlx-community/Z-Image-Turbo-bf16` | 1280×720 | 9 | forced to 0 | ✅ | ✅ | ❌ |
+| key | repo | licence | gated | on | steps | guidance | prompt | negative | img2img | editing |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `z-image-turbo` *(default)* | `mlx-community/Z-Image-Turbo-bf16` | Apache-2.0 | — | ✅ | 9 | forced to 0 | text | ✅ | ✅ | ❌ |
+| `ernie-image-turbo` | `baidu/ERNIE-Image-Turbo` | Apache-2.0 | — | ✅ | 8 | fixed at 1.0 | text | ❌ | ✅ | ❌ |
+| `z-image` | `mlx-community/Z-Image-bf16` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
+| `ernie-image` | `baidu/ERNIE-Image` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
+| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | opt-in |
+| `flux2-klein` | `black-forest-labs/FLUX.2-klein-9B` | **FLUX Non-Commercial** | 🔒 | ❌ | 4 | fixed at 1.0 | text | ❌ | ✅ | ✅ |
+| `flux2-dev` | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | ❌ | 50 | 4.0 | text | ❌ | ✅ | ❌ |
+| `fibo-lite` | `briaai/Fibo-lite` | **CC-BY-NC-4.0** | 🔒 | ❌ | 8 | fixed at 1.0 | **json** | ❌ | ✅ | ❌ |
+| `fibo` | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | ❌ | 50 | 5.0 | **json** | ✅ | ✅ | ❌ |
+| `ideogram-4` | `ideogram-ai/ideogram-4-fp8` | **Ideogram 4 Non-Commercial** | 🔒 | ❌ | 20 *(preset)* | preset | text + json | ❌ | ❌ | ❌ |
+
+**The two models on by default are Apache-2.0 and ungated**, which is the point: a fresh install generates with no HuggingFace token, no access request, and no licence to accept. Everything else ships off — the gated and non-commercial ones because obtaining access is your decision, the rest because 50 steps is not a good first impression. Turn any of them on in the config, or in the app's Configuration tab.
 
 Useful details:
 
-- **`flux2-klein` is distilled.** 4 steps are enough, guidance is fixed at 1.0 and `negative_prompt` does not exist for this model — mflux rejects the parameter outright. The server returns a clear 400 instead of letting it blow up.
-- **`flux2-dev` requires a conversion step** and is not usable as-is: 32 billion parameters, a *gated* repo (HF token needed), and above all code that mflux 0.18.0 does not provide. See [FLUX.2-dev](#flux2-dev--32b-in-8-bit). Expect ~113 GB of one-time download, a ~58 GB local artifact, and ~58 GB resident during generation.
-- **`flux2-klein`, `z-image` and `z-image-turbo` are quantized to 8 bits at load time.** Those three repos are stored in bf16 — 36 GB of blobs for klein alone, every tensor `BF16` — so the quantization is real, and it roughly halves what the model plus its text encoder hold in memory. Paid once, on the first load, since the model then stays warm.
-- **`qwen-image` is already 8-bit quantized** in its safetensors metadata: adding `quantize` would do nothing.
-- **`qwen-image` editing is off by default**: it uses a separate repo (`Qwen/Qwen-Image-Edit-2509`), i.e. several GB to download on first call. Enable it with `"enable_edit": true`. `flux2-klein` editing shares the same weights as generation, so it is on by default.
-- **The steps and guidance defaults come from each model's own card**, not from mflux's blanket defaults: 4 steps for the distilled `flux2-klein`, 9 steps and guidance 0 for `z-image-turbo` (Tongyi), 50 steps and guidance 4.0 for `flux2-dev` (BFL) and `qwen-image` (Qwen-Image-2512). mflux would default `qwen-image` to 20 steps and guidance 3.5 — that is `GUIDANCE_SCALE`, the value it applies to every model. Note that guidance is free on `qwen-image`, whose negative pass runs on every step whatever the value, while each step costs two transformer forwards: lower `default_steps` if 50 is too slow, never the guidance.
-- **Dimensions are truncated down to a multiple of 16** — that is an mflux constraint. `1920x1080` becomes `1920x1072`. The server applies the rounding itself and reports the effective size in the response's `mflux.size` field.
+- **Prompt format matters on three models.** The `prompt` column says what each one accepts. `fibo` and `fibo-lite` accept **only** a structured JSON caption: their prompt encoder opens with a bare `json.loads(prompt)` whose result is discarded, so plain text raises. The server refuses it up front — `400 prompt_must_be_json`, before any weights load — rather than let you discover it after several GB. `ideogram-4` accepts both, and prefers JSON: plain text works but, per Bria's and Ideogram's own docs, underperforms.
 
-The table above is the catalogue — what each model is worth on its own. The shipped `server-config.json` then applies two policies on top: `default_size: "1280x720"` for every model (faster than the catalogue sizes, and the same 16:9 as `z-image-turbo`), and `flux2-dev` disabled, since it answers 503 `model_not_prepared` until the pre-quantization has run. Re-enable it with `"enabled": true` once the artifact exists.
+```bash
+# fibo-lite: the prompt is a JSON object, passed as the prompt string
+curl http://127.0.0.1:8765/v1/images/generations \
+  -H "Content-Type: application/json" \
+  -d '{"model": "fibo-lite", "prompt": "{\"high_level_description\": \"a red fox in the snow\"}"}'
+```
+
+  The full schemas live with the models: [FIBO's prompting guide](https://huggingface.co/briaai/FIBO) and [Ideogram's](https://github.com/ideogram-oss/ideogram-4/blob/main/docs/prompting.md). mflux ships `mflux-inspire-fibo` and `mflux-refine-fibo` to build those captions with Bria's VLM; the server does not call them — that would mean a second model resident alongside the first.
+- **`ideogram-4` takes its step count from a sampler preset**, not from a number: `V4_DEFAULT_20` (20 steps), `V4_QUALITY_48`, `V4_TURBO_12`. Each preset carries a per-step guidance schedule and a noise schedule, so `guidance` is refused and `steps` is best left alone — passing it replaces the schedule with a constant. Pick one with `models.ideogram-4.preset`. Its dimensions are also capped at 2048, checked before loading.
+- **`flux2-dev` requires a conversion step** and is not usable as-is: 32 billion parameters, a gated repo, and code mflux 0.18.0 does not provide. See [FLUX.2-dev](#flux2-dev--32b-in-8-bit). Expect ~113 GB of one-time download, a ~58 GB local artifact, and ~58 GB resident during generation.
+- **The steps and guidance defaults come from each model's own card**, not from mflux's blanket defaults — 50/4.0 for `qwen-image-2512` where mflux would say 20/3.5, 5.0 for base FIBO where its signature says 4.0, and 8 steps for the ERNIE and FIBO turbos. The distilled models reject `guidance` and `negative_prompt` outright: at guidance 1.0 the negative pass is skipped, so accepting the parameter would mean accepting one that does nothing.
+- **Editing is off in the default set.** `flux2-klein` is the only model with an instruction-editing variant sharing its weights, and it ships disabled. `/v1/images/edits` still works on the enabled models, as **img2img** — a different mechanic, so the result is a variation on your image rather than an edit of it. Enable `flux2-klein` for real editing.
+- **Dimensions are truncated down to a multiple of 16** — an mflux constraint. `1920x1080` becomes `1920x1072`. The server applies the rounding itself and reports the effective size in the response's `mflux.size` field.
+
+The table above is the catalogue — what each model is worth on its own. The shipped `server-config.json` then applies three policies on top: `default_size: "1280x720"` everywhere, `default_quantize: 4`, and the enabled set described above.
 
 `GET /v1/capabilities` returns the effective values, config applied.
+
+### Downloading weights ahead of time
+
+The first generation on a model that is not in the HuggingFace cache pays the whole download — tens of gigabytes, inside an HTTP request that looks hung. `mflux-server-fetch` makes it an explicit step:
+
+```sh
+uv run mflux-server-fetch --status          # what is cached, and how much room it takes
+uv run mflux-server-fetch ernie-image-turbo # download it now
+```
+
+`--status` prints one JSON object per catalogue entry (`cached`, `size_gb`, `gated`, `license`, `enabled`), which is what the app's Models tab shows next to an **Install** button — with the server stopped too, since it does not go through the HTTP API.
+
+The download works by loading the model and exiting. That is deliberate: the download patterns live in each family's `WeightDefinition` inside mflux, and copying them here would be one more table to keep in step. Loading also proves the thing works — gated access granted, quantization applied — rather than only that files landed on disk. What it does not buy is the quantization: that is not persisted, so the first real generation pays it again. It is the download that was worth moving.
 
 ## Endpoints
 
@@ -192,10 +220,19 @@ Two keys sit outside `server`, because they are generation defaults rather than 
 
 | key | default | role |
 |---|---|---|
-| `default_model` | `qwen-image` | model used when the request names none. Must be enabled |
+| `default_model` | `z-image-turbo` | model used when the request names none. Must be enabled |
+| `default_quantize` | `null` | config-wide quantization: 3/4/5/6/8, or `0` for none. Skipped on models whose weights already carry their precision |
 | `default_size` | `null` | config-wide resolution, `"WxH"`. Applies to every model; `null` leaves each on its catalogue size |
 
-These are the *code* defaults, used when no config file is found. The shipped `server-config.json` is more opinionated: it sets `default_size` to `1280x720` and disables `flux2-dev`.
+These are the *code* defaults, used when no config file is found. The shipped `server-config.json` is more opinionated: `1280x720`, 4 bits, and only the two fast ungated models enabled.
+
+#### 4 bits, and where it silently does not apply
+
+`default_quantize: 4` halves memory again over 8 bits, at some cost in fine detail and text rendering. It is reversible per model with `models.<key>.quantize`.
+
+It only works from bf16 weights. mflux resolves a conflict in favour of what the file already contains — `QuantizationResolution`, rule `conflict` → action `STORED` — and prints "Model is pre-quantized at 8-bit. Ignoring -q 4". So a repo distributed pre-quantized keeps its own precision whatever you ask. Two entries are in that position and are skipped rather than misreported: `flux2-dev` (our own 8-bit artifact) and `ideogram-4` (fp8, every heavy component marked `skip_quantization`). `/v1/capabilities` reports the effective value plus a `prequantized` flag, so a client never has to guess.
+
+That is also why `qwen-image-2512` and `fibo` point at their **raw bf16 repos** rather than the pre-quantized conversions: only raw weights can honour the setting. The trade is a bigger download and a load-time memory peak at bf16 before quantization — around 55 GB for the 20B Qwen, which fits on a 103 GB machine and not on a 32 GB one. Point `models.qwen-image-2512.model_path` at `mlx-community/Qwen-Image-2512-8bit` to go back.
 
 `default_size` is the single knob for "one resolution everywhere", without repeating the value under each model. It is still overridable per model — see below — which is what you want when one model does not deserve the same area as the others: `flux2-dev` is a 32B, `flux2-klein` a distilled 9B.
 
@@ -214,8 +251,9 @@ Each entry may contain these keys (all optional, `null` = the catalogue default)
 | `quantize` | 3/4/5/6/8, 0 or `null` | quantization at load time. `0` = none (bf16). `null` = the catalogue default. |
 | `model_path` | path, HF repo or `null` | weight source, in place of the catalogue's. Mostly useful for `flux2-dev`, whose pre-quantized artifact is machine-specific. |
 | `enable_edit` | `true` / `false` or `null` | enables the instruction-editing variant. `null` = the catalogue default. |
+| `preset` | `"V4_DEFAULT_20"`, `"V4_QUALITY_48"`, `"V4_TURBO_12"` | sampler preset. `ideogram-4` only; rejected on any other model, and it sets the step count too. |
 
-A full example:
+The shipped file, in full:
 
 ```json
 {
@@ -223,7 +261,9 @@ A full example:
     "host": "127.0.0.1",
     "port": 8765,
     "api_key": null,
-    "cors_origins": ["*"],
+    "cors_origins": [
+      "*"
+    ],
     "max_n": 4,
     "request_timeout_s": 2400,
     "image_store": "images",
@@ -235,11 +275,53 @@ A full example:
     "progress_log_every": 1,
     "idle_unload_s": null
   },
-  "default_model": "qwen-image",
+  "default_model": "z-image-turbo",
   "default_size": "1280x720",
+  "default_quantize": 4,
   "models": {
-    "flux2-klein": {
+    "z-image-turbo": {
       "enabled": true,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "ernie-image-turbo": {
+      "enabled": true,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "z-image": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "ernie-image": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "qwen-image-2512": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null,
+      "enable_edit": false
+    },
+    "flux2-klein": {
+      "enabled": false,
       "model_path": null,
       "default_size": null,
       "default_steps": null,
@@ -253,32 +335,32 @@ A full example:
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
+      "quantize": 8
     },
-    "qwen-image": {
-      "enabled": true,
+    "fibo-lite": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "fibo": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "ideogram-4": {
+      "enabled": false,
+      "model_path": null,
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
       "quantize": null,
-      "enable_edit": false
-    },
-    "z-image": {
-      "enabled": true,
-      "default_size": null,
-      "default_steps": null,
-      "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
-    },
-    "z-image-turbo": {
-      "enabled": true,
-      "default_size": null,
-      "default_steps": null,
-      "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
+      "preset": "V4_DEFAULT_20"
     }
   }
 }

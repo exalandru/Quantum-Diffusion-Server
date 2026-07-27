@@ -106,6 +106,9 @@ class ModelOverride(BaseModel):
     default_steps: int | None = Field(default=None, ge=1)
     default_guidance: float | None = Field(default=None, ge=0)
     enable_edit: bool | None = None
+    #: Sampler preset, for the models that have any. `ideogram-4` only, whose step
+    #: count and guidance schedule come as a named bundle.
+    preset: str | None = None
 
     @field_validator("quantize")
     @classmethod
@@ -117,16 +120,21 @@ class ModelOverride(BaseModel):
 
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
-    #: `qwen-image` rather than `flux2-klein`: it is already 8-bit quantized in
-    #: its repo, so it works with no preparation step, and it is the only model in
-    #: the catalogue that supports a negative prompt.
-    default_model: str = "qwen-image"
+    #: `z-image-turbo` because a default has to work with nothing set up: its repo
+    #: is neither gated nor licence-restricted (Apache-2.0), it needs no
+    #: preparation step, 9 steps make it the fastest usable model here, and its
+    #: native 1280x720 matches the resolution the shipped config asks for.
+    default_model: str = "z-image-turbo"
     #: Config-wide generation resolution, `"WxH"`. Sits below the per-model
     #: `default_size` overrides and above the catalogue, so one knob covers every
     #: model while a single model can still be pinned. `null` keeps each model on
     #: its catalogue size. Lives here rather than under `server` because it is a
     #: generation default, not a transport setting — same level as `default_model`.
     default_size: str | None = None
+    #: Config-wide quantization, same precedence as `default_size`: below the
+    #: per-model `quantize`, above the catalogue. Skipped on models whose weights
+    #: already carry their precision — mflux would keep the stored value anyway.
+    default_quantize: int | None = Field(default=None, ge=0, le=8)
     models: dict[str, ModelOverride] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -146,7 +154,11 @@ class Settings(BaseModel):
         return self
 
     def registry(self) -> dict[str, ModelSpec]:
-        return build_registry(self.models, default_size=self.default_size)
+        return build_registry(
+            self.models,
+            default_size=self.default_size,
+            default_quantize=self.default_quantize,
+        )
 
 
 def _coerce_env(raw: str, field_name: str) -> Any:
@@ -209,7 +221,7 @@ def load_settings(path: Path | None = None) -> Settings:
 
     # The generic `MFLUX_SERVER_*` loop above only covers `ServerSettings`
     # fields; these two live one level up and are special-cased.
-    for field_name in ("default_model", "default_size"):
+    for field_name in ("default_model", "default_size", "default_quantize"):
         value = os.environ.get(f"{ENV_PREFIX}{field_name.upper()}")
         if value:
             raw[field_name] = value

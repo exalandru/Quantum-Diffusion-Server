@@ -107,7 +107,7 @@ def settings(tmp_path) -> Settings:
                 "max_n": 4,
             },
             "default_model": "flux2-klein",
-            "models": {"qwen-image": {"enable_edit": True}},
+            "models": {"qwen-image-2512": {"enable_edit": True}},
         }
     )
 

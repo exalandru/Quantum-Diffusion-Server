@@ -11,6 +11,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   Capabilities,
   Health,
+  ModelStatus,
   Overview,
   Progress,
 } from "./types";
@@ -27,6 +28,8 @@ export const configWrite = (value: unknown) => invoke<void>("config_write", { va
 export const hfTokenWrite = (token: string) => invoke<void>("hf_token_write", { token });
 export const prequantizeRun = (components: string[], dest?: string) =>
   invoke<void>("prequantize_run", { components, dest: dest ?? null });
+export const modelsStatus = () => invoke<ModelStatus[]>("models_status");
+export const modelFetch = (key: string) => invoke<void>("model_fetch", { key });
 
 // ── Server HTTP client ─────────────────────────────────────────────────────
 

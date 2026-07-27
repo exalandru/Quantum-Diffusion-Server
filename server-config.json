@@ -3,7 +3,9 @@
     "host": "127.0.0.1",
     "port": 8765,
     "api_key": null,
-    "cors_origins": ["*"],
+    "cors_origins": [
+      "*"
+    ],
     "max_n": 4,
     "request_timeout_s": 2400,
     "image_store": "images",
@@ -15,16 +17,58 @@
     "progress_log_every": 1,
     "idle_unload_s": null
   },
-  "default_model": "qwen-image",
+  "default_model": "z-image-turbo",
   "default_size": "1280x720",
+  "default_quantize": 4,
   "models": {
-    "flux2-klein": {
+    "z-image-turbo": {
       "enabled": true,
       "model_path": null,
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
-      "quantize": 8,
+      "quantize": null
+    },
+    "ernie-image-turbo": {
+      "enabled": true,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "z-image": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "ernie-image": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "qwen-image-2512": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null,
+      "enable_edit": false
+    },
+    "flux2-klein": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null,
       "enable_edit": true
     },
     "flux2-dev": {
@@ -33,32 +77,32 @@
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
+      "quantize": 8
     },
-    "qwen-image": {
-      "enabled": true,
+    "fibo-lite": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "fibo": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "ideogram-4": {
+      "enabled": false,
+      "model_path": null,
       "default_size": null,
       "default_steps": null,
       "default_guidance": null,
       "quantize": null,
-      "enable_edit": false
-    },
-    "z-image": {
-      "enabled": true,
-      "default_size": null,
-      "default_steps": null,
-      "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
-    },
-    "z-image-turbo": {
-      "enabled": true,
-      "default_size": null,
-      "default_steps": null,
-      "default_guidance": null,
-      "quantize": 8,
-      "enable_edit": null
+      "preset": "V4_DEFAULT_20"
     }
   }
 }

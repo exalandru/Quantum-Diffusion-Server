@@ -143,6 +143,17 @@ fn restrict_permissions(file: &std::path::Path) {
 }
 
 #[tauri::command]
+async fn models_status(app: AppHandle) -> Result<Value, String> {
+    supervisor::models_status(&Paths::new(&app)?).await
+}
+
+#[tauri::command]
+async fn model_fetch(app: AppHandle, key: String) -> Result<(), String> {
+    let paths = Paths::new(&app)?;
+    supervisor::run_fetch(app.clone(), &paths, key).await
+}
+
+#[tauri::command]
 async fn prequantize_run(
     app: AppHandle,
     components: Vec<String>,
@@ -169,6 +180,8 @@ pub fn run() {
             config_write,
             hf_token_write,
             prequantize_run,
+            models_status,
+            model_fetch,
         ])
         .build(tauri::generate_context!())
         .expect("could not initialize Tauri")

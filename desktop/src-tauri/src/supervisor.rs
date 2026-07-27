@@ -331,6 +331,81 @@ pub async fn run_prequantize(
     }
 }
 
+/// Catalogue with cache state, straight from `mflux-server-fetch --status`.
+///
+/// Goes through the Python side rather than reading the HuggingFace cache in Rust:
+/// the catalogue and the config live there, and `scan_cache_dir` already answers
+/// the question. Cheap enough to call on every visit to the Models tab — the
+/// script imports neither torch nor mflux.
+pub async fn models_status(paths: &Paths) -> Result<serde_json::Value, String> {
+    let binary = paths.fetch_bin();
+    if !binary.is_file() {
+        return Err(format!("{} is missing.", binary.display()));
+    }
+    let output = Command::new(&binary)
+        .current_dir(&paths.data)
+        .env("MFLUX_SERVER_CONFIG", &paths.config)
+        .env("HF_HOME", Paths::default_hf_home())
+        .arg("--status")
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("could not read the catalogue: {error}"))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "mflux-server-fetch --status failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| format!("unreadable catalogue status: {error}"))
+}
+
+/// Download one model's weights, relaying progress like a conversion.
+pub async fn run_fetch(app: AppHandle, paths: &Paths, key: String) -> Result<(), String> {
+    let binary = paths.fetch_bin();
+    if !binary.is_file() {
+        return Err(format!("{} is missing.", binary.display()));
+    }
+
+    let mut child = Command::new(&binary)
+        .current_dir(&paths.data)
+        // The same config the server reads, so an overridden `model_path` or
+        // quantization is the one we fetch.
+        .env("MFLUX_SERVER_CONFIG", &paths.config)
+        .env("HF_HOME", Paths::default_hf_home())
+        .env("PYTHONUNBUFFERED", "1")
+        // Left on, unlike for the server: the download progress bar *is* the
+        // feedback here.
+        .env("HF_HUB_DISABLE_PROGRESS_BARS", "0")
+        .arg(&key)
+        .arg("--json-logs")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .stdin(Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(|error| format!("could not launch the download: {error}"))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        pump(app.clone(), stdout, true);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        pump(app.clone(), stderr, false);
+    }
+
+    let status = child
+        .wait()
+        .await
+        .map_err(|error| format!("download interrupted: {error}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the download failed (code {:?})", status.code()))
+    }
+}
+
 /// `true` when a HuggingFace token is available for the *gated* repos.
 pub fn hf_token_present(hf_home: &Path) -> bool {
     if std::env::var("HF_TOKEN").is_ok_and(|value| !value.trim().is_empty()) {
