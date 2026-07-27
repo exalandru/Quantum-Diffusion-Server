@@ -13,7 +13,10 @@ tests n'en ont pas besoin.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any
+
+from mflux_server.flux2_dev import config as flux2_dev_config
 
 #: mflux tronque toute dimension au multiple de 16 inférieur
 #: (mflux/models/common/config/config.py:41-47) sans borne min ni max.
@@ -84,6 +87,31 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
             shares_weights=True,
             enabled_by_default=True,
         ),
+    ),
+    ModelSpec(
+        key="flux2-dev",
+        family="flux2-dev",
+        repo="black-forest-labs/FLUX.2-dev",
+        # Pas de factory sur `ModelConfig` : mflux 0.18.0 ignore FLUX.2-dev.
+        # Résolu par `_LOCAL_MODEL_CONFIGS`.
+        model_config_name="flux2_dev",
+        # Le repo amont est en bf16 (~111 Go de poids) : seul un artefact déjà
+        # quantifié tient en mémoire unifiée, cf. `mflux-server-prequantize`.
+        model_path=flux2_dev_config.DEFAULT_MODEL_PATH,
+        # 1024² et non 1920x1072 : 32B sur 50 étapes, la surface coûte cher.
+        default_width=1024,
+        default_height=1024,
+        # Modèle de base, non distillé en étapes (cf. mflux
+        # cli/defaults/defaults.py, MODEL_INFERENCE_STEPS des flux2-klein-base).
+        default_steps=50,
+        default_guidance=4.0,
+        supports_guidance=True,
+        # Guidance-distilled : le scalaire est embarqué dans le transformer, il
+        # n'y a pas de CFG donc pas de negative prompt.
+        supports_negative_prompt=False,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        quantize=8,
     ),
     ModelSpec(
         key="qwen-image",
@@ -174,7 +202,7 @@ def parse_size(size: str) -> tuple[int, int]:
 
 
 def build_registry(overrides: dict[str, Any] | None = None) -> dict[str, ModelSpec]:
-    """Applique les surcharges de `server.config` sur le catalogue de base."""
+    """Applique les surcharges de `server-config.json` sur le catalogue de base."""
     overrides = overrides or {}
     unknown = set(overrides) - set(BASE_SPECS_BY_KEY)
     if unknown:
@@ -211,6 +239,8 @@ def _apply_override(spec: ModelSpec, override: Any) -> ModelSpec:
         changes["default_guidance"] = override.default_guidance
     if override.quantize is not None:
         changes["quantize"] = override.quantize or None
+    if override.model_path is not None:
+        changes["model_path"] = override.model_path
 
     if override.enable_edit is not None and spec.edit is not None:
         changes["edit"] = replace(spec.edit, enabled_by_default=override.enable_edit)
@@ -225,10 +255,43 @@ def edit_enabled(spec: ModelSpec) -> bool:
 # ── Chargement effectif des modèles ────────────────────────────────────────
 
 
+#: Configs que mflux ne connaît pas et qu'on construit nous-mêmes. Ce sont des
+#: factories, pas des instances : elles n'importent `ModelConfig` qu'à l'appel.
+_LOCAL_MODEL_CONFIGS: dict[str, Any] = {"flux2_dev": flux2_dev_config.flux2_dev_model_config}
+
+
 def _model_config(name: str):
+    factory = _LOCAL_MODEL_CONFIGS.get(name)
+    if factory is not None:
+        return factory()
+
     from mflux.models.common.config import ModelConfig
 
     return getattr(ModelConfig, name)()
+
+
+def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
+    """Échoue tôt et clairement si l'artefact pré-quantifié manque.
+
+    Sans ce garde-fou, `PathResolution` retomberait sur le repo HuggingFace en
+    bf16 et lancerait une quantification à la volée de ~111 Go, qui échouerait
+    beaucoup plus loin et beaucoup moins lisiblement.
+    """
+    if model_path and Path(model_path).expanduser().exists():
+        return
+
+    from mflux_server.errors import APIError
+
+    raise APIError(
+        f"Le modèle '{spec.key}' exige un artefact pré-quantifié, absent de {model_path!r}. "
+        f"Lancez `mflux-server-prequantize --dest {model_path}` (téléchargement unique d'environ "
+        f"113 Go depuis {spec.repo}, artefact final d'environ 58 Go), ou renseignez "
+        f"models.{spec.key}.model_path dans server-config.json.",
+        status_code=503,
+        error_type="server_error",
+        param="model",
+        code="model_not_prepared",
+    )
 
 
 def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
@@ -255,6 +318,14 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
         from mflux.models.flux2.variants import Flux2Klein
 
         return Flux2Klein(model_config=model_config, model_path=model_path, quantize=quantize)
+
+    if family == "flux2-dev":
+        # Sans artefact local, `PathResolution` retomberait sur le repo bf16 et
+        # tenterait une quantification à la volée de ~111 Go : autant échouer ici.
+        _require_local_artifact(spec, model_path)
+        from mflux_server.flux2_dev import Flux2Dev
+
+        return Flux2Dev(model_config=model_config, model_path=model_path, quantize=quantize)
 
     if family == "flux2-edit":
         from mflux.models.flux2.variants.edit.flux2_klein_edit import Flux2KleinEdit

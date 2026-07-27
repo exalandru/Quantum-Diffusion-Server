@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import logging
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -22,15 +24,68 @@ LIBRARY_LOGGER = "mflux"
 logger = logging.getLogger(SERVER_LOGGER)
 
 
-def setup_logging(level: str = "INFO", log_file: str | Path | None = "mflux.log") -> None:
-    console = logging.StreamHandler()
-    console.setFormatter(logging.Formatter("[%(asctime)s] %(name)s: %(message)s", datefmt="%H:%M:%S"))
+class JsonFormatter(logging.Formatter):
+    """Une ligne = un objet JSON, pour un superviseur qui lit stderr.
+
+    Les événements de cycle de vie portent en plus un `event` et les champs de
+    `fields`, posés par `extra=` à l'appel — le message humain reste inchangé à
+    côté. Attention côté consommateur : tqdm écrit sur stderr sans passer par
+    le logging (cf. `capture_stdout`), donc toute ligne qui ne parse pas en
+    JSON doit être ignorée plutôt que traitée comme une erreur.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        payload: dict = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(record.created)),
+            "level": record.levelname,
+            "logger": record.name,
+            "message": record.getMessage(),
+        }
+        event = getattr(record, "event", None)
+        if event is not None:
+            payload["event"] = event
+        fields = getattr(record, "fields", None)
+        if fields:
+            payload["fields"] = fields
+        if record.exc_info:
+            payload["traceback"] = self.formatException(record.exc_info)
+        return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def setup_logging(
+    level: str = "INFO",
+    log_file: str | Path | None = "mflux.log",
+    json_lines: bool = False,
+) -> None:
+    # En mode JSON, on sort sur **stdout** et pas stderr : mflux affiche sa barre
+    # de progression de débruitage avec tqdm (`Config.time_steps`), qui écrit sur
+    # stderr des fragments terminés par `\r` sans retour à la ligne. Nos objets
+    # JSON s'y colleraient — `{"ts": …}` précédé de `\r 0%| | 0/40` sur le même
+    # segment — et un consommateur raisonnable les manquerait tous. tqdm n'offre
+    # aucune variable d'environnement pour se taire, d'où la séparation des
+    # canaux : stdout porte les événements structurés, stderr le texte humain et
+    # les barres. `main()` coupe l'access log d'uvicorn en conséquence, sinon il
+    # polluerait stdout à son tour.
+    console = logging.StreamHandler(sys.stdout if json_lines else sys.stderr)
+    console.setFormatter(
+        JsonFormatter()
+        if json_lines
+        else logging.Formatter("[%(asctime)s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+    )
 
     handlers: list[logging.Handler] = [console]
     if log_file:
-        file_handler = logging.FileHandler(log_file, encoding="utf-8")
+        # `FileHandler` n'expanse pas `~` et ne crée pas les dossiers parents :
+        # sans ça, un chemin type `~/Library/Logs/mflux-server/mflux.log`
+        # échouerait en créant un dossier littéral `~`, ou lèverait un
+        # FileNotFoundError au démarrage.
+        path = Path(log_file).expanduser()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(path, encoding="utf-8")
         file_handler.setFormatter(
-            logging.Formatter(
+            JsonFormatter()
+            if json_lines
+            else logging.Formatter(
                 "%(asctime)s  %(levelname)-7s %(name)s  %(message)s",
                 datefmt="%Y-%m-%d %H:%M:%S",
             )

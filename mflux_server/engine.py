@@ -54,6 +54,48 @@ _PROMPT_CACHE_MAX_ENTRIES = 16
 
 
 @dataclass
+class ProgressSnapshot:
+    """État courant du moteur, lisible sans verrou.
+
+    Écrit depuis le thread worker, lu depuis la boucle d'événements : ce sont de
+    simples affectations d'attributs, donc atomiques sous le GIL. Un seul
+    instantané suffit parce que `ModelEngine._lock` sérialise les générations —
+    il n'y a jamais deux jobs en vol. C'est ce qui permet à `/v1/progress` de
+    sonder plutôt que de bâtir une file inter-threads, et à plusieurs
+    consommateurs SSE de coexister gratuitement.
+    """
+
+    state: str = "idle"  # idle | loading | generating
+    model: str | None = None
+    kind: str | None = None
+    seed: int | None = None
+    step: int = 0
+    total: int = 0
+    started_at: float | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        elapsed = None if self.started_at is None else round(time.monotonic() - self.started_at, 1)
+        return {
+            "state": self.state,
+            "model": self.model,
+            "kind": self.kind,
+            "seed": self.seed,
+            "step": self.step,
+            "total": self.total,
+            "elapsed_s": elapsed,
+        }
+
+    def reset(self) -> None:
+        self.state = "idle"
+        self.model = None
+        self.kind = None
+        self.seed = None
+        self.step = 0
+        self.total = 0
+        self.started_at = None
+
+
+@dataclass
 class GenerationJob:
     spec: ModelSpec
     kind: str  # "txt2img" | "edit"
@@ -69,36 +111,56 @@ class GenerationJob:
 
 
 class _ProgressCallback:
-    """Callback persistant : journalise la progression et arme le timeout.
+    """Callback persistant : journalise la progression, arme le timeout et l'annulation.
 
     Interrompre une génération n'est possible que d'ici : une opération MLX
     en cours ne se laisse pas annuler depuis l'extérieur, et `asyncio` ne
     peut pas tuer le thread worker. Lever une exception depuis `call_in_loop`
     remonte bien — mflux n'intercepte que `KeyboardInterrupt` dans sa boucle.
+    L'annulation demandée par `/v1/cancel` empruntre donc exactement le chemin
+    déjà emprunté par le timeout.
     """
 
-    def __init__(self, log_every: int = 1):
+    def __init__(self, log_every: int = 1, progress: ProgressSnapshot | None = None):
         self._log_every = log_every
+        self._progress = progress or ProgressSnapshot()
         self.deadline: float | None = None
         self.label: str = ""
         self.timed_out: bool = False
+        self.cancel_requested: bool = False
+        self.cancelled: bool = False
 
     def arm(self, label: str, deadline: float | None) -> None:
         self.label = label
         self.deadline = deadline
         self.timed_out = False
+        self.cancel_requested = False
+        self.cancelled = False
 
     def call_in_loop(self, *, t: int, config: Any, time_steps: Any, **_: Any) -> None:
-        if self.deadline is not None and time.monotonic() > self.deadline:
-            from mflux.utils.exceptions import StopImageGenerationException
-
-            self.timed_out = True
-            raise StopImageGenerationException(f"Timeout à l'étape {t + 1}/{config.num_inference_steps}")
+        from mflux.utils.exceptions import StopImageGenerationException
 
         step = t + 1
         total = config.num_inference_steps
+
+        if self.cancel_requested:
+            self.cancelled = True
+            raise StopImageGenerationException(f"Génération annulée à l'étape {step}/{total}")
+
+        if self.deadline is not None and time.monotonic() > self.deadline:
+            self.timed_out = True
+            raise StopImageGenerationException(f"Timeout à l'étape {step}/{total}")
+
+        self._progress.step = step
+        self._progress.total = total
         if self._log_every and (step % self._log_every == 0 or step == total):
-            logger.info("%s — étape %d/%d", self.label, step, total)
+            logger.info(
+                "%s — étape %d/%d",
+                self.label,
+                step,
+                total,
+                extra={"event": "generation_step", "fields": {"step": step, "total": total}},
+            )
 
 
 class ModelEngine:
@@ -107,7 +169,8 @@ class ModelEngine:
         self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="mflux-inference")
         self._request_timeout_s = request_timeout_s
         self._progress_log_every = progress_log_every
-        self._callback = _ProgressCallback(progress_log_every)
+        self._snapshot = ProgressSnapshot()
+        self._callback = _ProgressCallback(progress_log_every, self._snapshot)
         self._model: Any | None = None
         self._loaded: tuple[str, str] | None = None  # (clé du modèle, kind)
 
@@ -116,6 +179,34 @@ class ModelEngine:
     @property
     def loaded_model(self) -> str | None:
         return None if self._loaded is None else f"{self._loaded[0]}:{self._loaded[1]}"
+
+    def progress(self) -> dict[str, Any]:
+        """Instantané de progression. Sans verrou, appelable depuis la boucle.
+
+        Prendre `self._lock` ici serait un blocage garanti : il est détenu
+        pendant toute la génération, précisément quand on veut la suivre.
+        """
+        return {
+            **self._snapshot.as_dict(),
+            "loaded_model": self.loaded_model,
+            "memory": self.memory_stats(),
+        }
+
+    def request_cancel(self) -> bool:
+        """Demande l'arrêt de la génération en cours. `False` si rien ne tourne.
+
+        Le drapeau est lu par `_ProgressCallback.call_in_loop`, donc l'arrêt
+        prend effet à la prochaine étape de débruitage — pas instantanément.
+        """
+        if self._snapshot.state != "generating":
+            return False
+        self._callback.cancel_requested = True
+        logger.info(
+            "Annulation demandée pour %s",
+            self._snapshot.model,
+            extra={"event": "generation_cancel_requested", "fields": {"model": self._snapshot.model}},
+        )
+        return True
 
     def memory_stats(self) -> dict[str, float]:
         try:
@@ -134,7 +225,12 @@ class ModelEngine:
         """Génère une image en PNG. Sérialisé : un appel à la fois."""
         async with self._lock:
             loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(self._executor, self._generate_sync, job)
+            try:
+                return await loop.run_in_executor(self._executor, self._generate_sync, job)
+            except GenerationTimeout as exc:
+                raise exc
+            except Exception as exc:
+                raise translate_mflux_exception(exc) from exc
 
     async def unload(self) -> None:
         async with self._lock:
@@ -142,8 +238,24 @@ class ModelEngine:
             await loop.run_in_executor(self._executor, self._unload_sync)
 
     def shutdown(self) -> None:
-        self._unload_sync()
+        """Arrête le moteur en bornant l'attente à une étape de débruitage.
+
+        Deux pièges, dans cet ordre précis.
+
+        D'abord, demander l'annulation **avant** de joindre le worker : sans ça
+        `wait=True` attend la fin de la génération en cours, soit jusqu'à
+        `request_timeout_s` (2400 s dans la config livrée). `timeout_graceful_shutdown`
+        d'uvicorn ne couvre pas ce cas : il ne borne que l'attente des connexions
+        HTTP, et le lifespan de fermeture — donc cet appel — tourne ensuite.
+
+        Ensuite, ne libérer les sous-modules qu'**après** l'arrêt du worker :
+        `_unload_sync` tourne sur le thread appelant, et poser `transformer = None`
+        pendant qu'une génération l'utilise est une course.
+        """
+        self._callback.cancel_requested = True
         self._executor.shutdown(wait=True)
+        self._unload_sync()
+        self._snapshot.reset()
 
     # ── Implémentation (thread worker) ─────────────────────────────────────
 
@@ -154,12 +266,43 @@ class ModelEngine:
             deadline = time.monotonic() + self._request_timeout_s if self._request_timeout_s else None
             self._callback.arm(label, deadline)
 
-            logger.info("▶ %s — %d étapes", label, job.steps)
+            self._snapshot.state = "generating"
+            self._snapshot.model = job.spec.key
+            self._snapshot.kind = job.kind
+            self._snapshot.seed = job.seed
+            self._snapshot.step = 0
+            self._snapshot.total = job.steps
+            self._snapshot.started_at = time.monotonic()
+
+            logger.info(
+                "▶ %s — %d étapes",
+                label,
+                job.steps,
+                extra={
+                    "event": "generation_start",
+                    "fields": {
+                        "model": job.spec.key,
+                        "kind": job.kind,
+                        "seed": job.seed,
+                        "steps": job.steps,
+                        "width": job.width,
+                        "height": job.height,
+                    },
+                },
+            )
             started = time.monotonic()
             with capture_stdout():
                 generated = model.generate_image(**self._generate_kwargs(job))
             elapsed = time.monotonic() - started
-            logger.info("✓ %s — %.1f s", label, elapsed)
+            logger.info(
+                "✓ %s — %.1f s",
+                label,
+                elapsed,
+                extra={
+                    "event": "generation_done",
+                    "fields": {"model": job.spec.key, "seed": job.seed, "elapsed_s": round(elapsed, 1)},
+                },
+            )
 
             self._trim_prompt_cache(model)
             return _to_png_bytes(generated)
@@ -167,6 +310,11 @@ class ModelEngine:
             if self._callback.timed_out:
                 raise GenerationTimeout(self._request_timeout_s) from exc
             raise translate_mflux_exception(exc) from exc
+        finally:
+            # Quel que soit le sort du job — succès, annulation, timeout, crash —
+            # le moteur redevient disponible et les consommateurs SSE doivent le
+            # voir. Le modèle chargé, lui, reste chaud.
+            self._snapshot.reset()
 
     def _generate_kwargs(self, job: GenerationJob) -> dict[str, Any]:
         spec = job.spec
@@ -202,10 +350,27 @@ class ModelEngine:
             return self._model
 
         if self._model is not None:
-            logger.info("Déchargement de %s", self.loaded_model)
+            logger.info(
+                "Déchargement de %s",
+                self.loaded_model,
+                extra={"event": "model_unload", "fields": {"model": self.loaded_model}},
+            )
             self._unload_sync()
 
-        logger.info("Chargement de %s (%s) — %s", spec.key, kind, spec.repo)
+        # « loading » plutôt que « generating » : sur flux2-dev c'est une minute
+        # ou plus, et l'UI doit pouvoir le dire au lieu d'afficher 0/50.
+        self._snapshot.state = "loading"
+        self._snapshot.model = spec.key
+        self._snapshot.kind = kind
+        self._snapshot.started_at = time.monotonic()
+
+        logger.info(
+            "Chargement de %s (%s) — %s",
+            spec.key,
+            kind,
+            spec.repo,
+            extra={"event": "model_loading", "fields": {"model": spec.key, "kind": kind, "repo": spec.repo}},
+        )
         started = time.monotonic()
         with capture_stdout():
             model = load_model(spec, kind=kind)
@@ -215,11 +380,21 @@ class ModelEngine:
 
         self._model = model
         self._loaded = target
+        memory = self.memory_stats()
         logger.info(
             "Modèle %s prêt en %.1f s — mémoire %s",
             spec.key,
             time.monotonic() - started,
-            self.memory_stats(),
+            memory,
+            extra={
+                "event": "model_ready",
+                "fields": {
+                    "model": spec.key,
+                    "kind": kind,
+                    "load_s": round(time.monotonic() - started, 1),
+                    **memory,
+                },
+            },
         )
         return model
 

@@ -1,0 +1,216 @@
+import { useEffect, useState } from "react";
+import { open as openExternal } from "@tauri-apps/plugin-shell";
+
+import * as api from "../api";
+import { messageOf, type ServerClient } from "../api";
+import type { Health, Overview, Progress } from "../types";
+
+const IDLE: Progress = {
+  state: "idle",
+  model: null,
+  kind: null,
+  seed: null,
+  step: 0,
+  total: 0,
+  elapsed_s: null,
+  loaded_model: null,
+  memory: {},
+};
+
+export function Dashboard({
+  state,
+  client,
+  onChanged,
+  onError,
+}: {
+  state: Overview;
+  client: ServerClient | null;
+  onChanged: () => void;
+  onError: (message: string) => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [health, setHealth] = useState<Health | null>(null);
+  const [progress, setProgress] = useState<Progress>(IDLE);
+
+  // La progression arrive en Server-Sent Events, donc sans sondage : on ne
+  // réinterroge `/health` que pour le modèle chaud et la mémoire au repos.
+  useEffect(() => {
+    if (!client) {
+      setHealth(null);
+      setProgress(IDLE);
+      return;
+    }
+    const stop = client.subscribeProgress(setProgress, () => {
+      /* Une coupure du flux n'est pas une erreur visible : le sondage de
+         `overview` détectera un serveur arrêté. */
+    });
+    void client.health().then(setHealth).catch(() => setHealth(null));
+    return stop;
+  }, [client]);
+
+  useEffect(() => {
+    if (!client) return;
+    const timer = setInterval(() => {
+      void client.health().then(setHealth).catch(() => undefined);
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [client]);
+
+  async function act(label: string, action: () => Promise<unknown>) {
+    setBusy(label);
+    try {
+      await action();
+      onChanged();
+    } catch (cause) {
+      onError(messageOf(cause));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const running = state.server.running;
+  const memory = progress.memory.active_gb !== undefined ? progress.memory : (health?.memory ?? {});
+  const loaded = progress.loaded_model ?? health?.loaded_model ?? null;
+
+  return (
+    <>
+      <div className="card">
+        <div className="row spread">
+          <div className="row">
+            <h2 style={{ margin: 0 }}>Serveur</h2>
+            <span className={`badge ${running ? "ok" : ""}`}>
+              <span className="dot" />
+              {running ? `en marche · port ${state.server.port}` : "arrêté"}
+            </span>
+            {loaded ? (
+              <span className="badge ok">modèle chaud · {loaded}</span>
+            ) : (
+              running && <span className="badge">aucun modèle chargé</span>
+            )}
+          </div>
+          <div className="row">
+            {running ? (
+              <>
+                <button onClick={() => void act("stop", api.serverStop)} disabled={busy !== null}>
+                  {busy === "stop" ? "Arrêt…" : "Arrêter"}
+                </button>
+                <button
+                  onClick={() => void act("restart", api.serverRestart)}
+                  disabled={busy !== null}
+                >
+                  Redémarrer
+                </button>
+              </>
+            ) : (
+              <button
+                className="primary"
+                onClick={() => void act("start", api.serverStart)}
+                disabled={busy !== null}
+              >
+                {busy === "start" ? "Démarrage…" : "Démarrer"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
+          Le serveur écoute en une seconde mais ne charge aucun poids au démarrage : la première
+          génération paie le chargement du modèle, qui peut prendre plusieurs minutes.
+        </p>
+
+        {!state.hfTokenPresent && (
+          <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
+            <span className="badge warn">
+              <span className="dot" />
+              token HuggingFace absent
+            </span>{" "}
+            Les dépôts <code>black-forest-labs/*</code> sont à accès restreint. Renseigne un token
+            dans l'onglet Modèles, sinon le premier téléchargement échouera.
+          </p>
+        )}
+      </div>
+
+      <div className="card">
+        <h2>Activité</h2>
+        {progress.state === "idle" ? (
+          <p className="hint" style={{ marginBottom: 0 }}>
+            {running ? "Au repos." : "Serveur arrêté."}
+          </p>
+        ) : (
+          <>
+            <div className="row spread" style={{ marginBottom: 8 }}>
+              <span>
+                {progress.state === "loading" ? (
+                  <>
+                    Chargement de <strong>{progress.model}</strong>…
+                  </>
+                ) : (
+                  <>
+                    <strong>{progress.model}</strong> · étape {progress.step}/{progress.total}
+                    {progress.seed !== null && <> · seed {progress.seed}</>}
+                  </>
+                )}
+              </span>
+              {progress.elapsed_s !== null && (
+                <span className="badge">{progress.elapsed_s.toFixed(1)} s</span>
+              )}
+            </div>
+            {/* Le chargement n'a pas d'étapes : barre indéterminée. */}
+            {progress.state === "generating" && progress.total > 0 ? (
+              <progress value={progress.step} max={progress.total} />
+            ) : (
+              <progress />
+            )}
+          </>
+        )}
+
+        <div className="row" style={{ marginTop: 12 }}>
+          <button
+            onClick={() => void act("cancel", () => client!.cancel())}
+            disabled={!client || busy !== null || progress.state !== "generating"}
+          >
+            Annuler la génération
+          </button>
+          <button
+            onClick={() => void act("unload", () => client!.unload())}
+            disabled={!client || busy !== null || !loaded}
+          >
+            {busy === "unload" ? "Libération…" : "Libérer la mémoire"}
+          </button>
+          <button onClick={() => void openExternal(client!.docsUrl())} disabled={!client}>
+            Ouvrir /docs
+          </button>
+        </div>
+        <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+          MLX ne s'interrompt pas de l'extérieur : l'annulation prend effet à l'étape de débruitage
+          suivante.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>Mémoire et environnement</h2>
+        <dl className="stats">
+          <div className="stat">
+            <dt>MLX actif</dt>
+            <dd>{memory.active_gb !== undefined ? `${memory.active_gb.toFixed(2)} Go` : "—"}</dd>
+          </div>
+          <div className="stat">
+            <dt>Pic</dt>
+            <dd>{memory.peak_gb !== undefined ? `${memory.peak_gb.toFixed(2)} Go` : "—"}</dd>
+          </div>
+          <div className="stat">
+            <dt>Cache</dt>
+            <dd>{memory.cache_gb !== undefined ? `${memory.cache_gb.toFixed(2)} Go` : "—"}</dd>
+          </div>
+          <div className="stat">
+            <dt>Version serveur</dt>
+            <dd>{health?.version ?? "—"}</dd>
+          </div>
+        </dl>
+        <p className="path" style={{ marginTop: 12 }}>
+          {state.dataDir}
+        </p>
+      </div>
+    </>
+  );
+}

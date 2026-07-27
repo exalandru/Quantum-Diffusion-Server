@@ -9,7 +9,9 @@ additionnels que les SDK OpenAI ignorent.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import logging
 import random
 import secrets
@@ -17,17 +19,19 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
 from mflux_server import __version__
+from mflux_server import settings as mflux_settings
 from mflux_server.engine import GenerationJob, ModelEngine
 from mflux_server.errors import APIError, install_exception_handlers
 from mflux_server.logs import SERVER_LOGGER, setup_logging
@@ -41,6 +45,11 @@ MAX_SEED = 2**32 - 1
 #: Valeur utilisée quand `/v1/images/edits` fait de l'img2img sans que le
 #: client ait précisé `strength` (mflux/cli/defaults/defaults.py:14).
 DEFAULT_IMAGE_STRENGTH = 0.4
+#: Cadence de sondage de `/v1/progress`. Une étape de débruitage dure au mieux
+#: quelques centaines de millisecondes : inutile d'aller plus vite.
+PROGRESS_POLL_S = 0.25
+#: Battement de cœur quand rien ne change, pour détecter les clients partis.
+PROGRESS_PING_S = 15.0
 
 
 class ImageGenerationRequest(BaseModel):
@@ -62,13 +71,49 @@ class ImageGenerationRequest(BaseModel):
     negative_prompt: str | None = None
 
 
+async def progress_events(
+    engine: Any,
+    *,
+    poll_s: float = PROGRESS_POLL_S,
+    ping_s: float = PROGRESS_PING_S,
+) -> AsyncIterator[str]:
+    """Trames SSE de progression, jusqu'à ce que le consommateur se retire.
+
+    Générateur infini par conception : c'est la déconnexion du client qui
+    l'annule, via le groupe de tâches de `StreamingResponse`. Sorti de la route
+    pour être testable sans HTTP — `TestClient` ne propage pas les déconnexions,
+    donc le lire à travers lui bloquerait indéfiniment.
+    """
+    last: str | None = None
+    last_emit = time.monotonic()
+    while True:
+        payload = json.dumps(engine.progress(), ensure_ascii=False)
+        now = time.monotonic()
+        if payload != last:
+            yield f"data: {payload}\n\n"
+            last = payload
+            last_emit = now
+        elif now - last_emit >= ping_s:
+            # Commentaire SSE : sans trafic, une déconnexion cliente resterait
+            # invisible jusqu'à la prochaine génération.
+            yield ": ping\n\n"
+            last_emit = now
+        await asyncio.sleep(poll_s)
+
+
 def create_app(settings: Settings | None = None, engine: ModelEngine | None = None) -> FastAPI:
     settings = settings or load_settings()
-    setup_logging(settings.server.log_level, settings.server.log_file)
+    setup_logging(settings.server.log_level, settings.server.log_file, settings.server.log_json)
+    if mflux_settings.missing_config_path is not None:
+        logger.warning(
+            "Aucun fichier de configuration à %s : tous les défauts s'appliquent. "
+            "Pointe MFLUX_SERVER_CONFIG sur ton server-config.json.",
+            mflux_settings.missing_config_path,
+        )
 
     registry = settings.registry()
     if not registry:
-        raise ValueError("Aucun modèle activé : vérifie la section 'models' de server.config.")
+        raise ValueError("Aucun modèle activé : vérifie la section 'models' de server-config.json.")
 
     engine = engine or ModelEngine(
         request_timeout_s=settings.server.request_timeout_s,
@@ -305,6 +350,43 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
             "models": {key: _capabilities(spec) for key, spec in sorted(registry.items())},
         }
 
+    @app.get("/v1/progress")
+    async def progress_stream(_: None = auth) -> StreamingResponse:
+        """Progression en Server-Sent Events.
+
+        On sonde `engine.progress()` plutôt que de pousser depuis le worker : la
+        progression est produite dans le thread d'inférence, et un instantané
+        sondé évite toute file inter-threads, tout risque de backpressure et
+        toute fuite si un consommateur disparaît. Plusieurs clients peuvent
+        écouter en parallèle sans coordination.
+        """
+        return StreamingResponse(
+            progress_events(engine),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/v1/cancel")
+    async def cancel_generation(_: None = auth) -> dict:
+        """Interrompt la génération en cours, à la prochaine étape de débruitage.
+
+        MLX ne se laisse pas annuler de l'extérieur : l'arrêt passe par le
+        callback de progression, donc il prend effet à l'étape suivante. La
+        requête en cours se termine en 499 `generation_stopped`.
+        """
+        cancelled = engine.request_cancel()
+        return {"cancelled": cancelled, "state": engine.progress()["state"]}
+
+    @app.post("/v1/unload")
+    async def unload_model(_: None = auth) -> dict:
+        """Libère les poids résidents sans redémarrer le serveur.
+
+        Prend le verrou du moteur : si une génération tourne, on attend qu'elle
+        finisse plutôt que de la casser.
+        """
+        await engine.unload()
+        return {"loaded_model": engine.loaded_model, "memory": engine.memory_stats()}
+
     @app.post("/v1/images/generations")
     async def generate_images(request: Request, body: ImageGenerationRequest, _: None = auth):
         spec = resolve_spec(body.model)
@@ -467,6 +549,16 @@ def main() -> None:  # pragma: no cover - point d'entrée
         host=settings.server.host,
         port=settings.server.port,
         log_level=settings.server.log_level.lower(),
+        # Sans ça, uvicorn attend indéfiniment les connexions en vol : un
+        # SIGTERM pendant une génération bloquerait jusqu'à `request_timeout_s`
+        # (40 min dans la config livrée). Un superviseur doit malgré tout garder
+        # une échelle SIGTERM → SIGKILL, car un second SIGTERM ne force pas la
+        # sortie côté uvicorn — seul SIGINT le fait.
+        timeout_graceful_shutdown=settings.server.shutdown_grace_s,
+        # En mode JSON, stdout est le canal des événements structurés : l'access
+        # log d'uvicorn, qui y écrit du texte brut, le rendrait impossible à
+        # parser.
+        access_log=not settings.server.log_json,
     )
 
 

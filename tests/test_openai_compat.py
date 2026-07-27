@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from mflux_server.app import create_app
+from mflux_server.app import create_app, progress_events
 from mflux_server.settings import Settings
 from tests.conftest import tiny_png
 
@@ -23,6 +25,7 @@ def test_liste_des_modeles_conforme(client):
     payload = client.get("/v1/models").json()
     assert payload["object"] == "list"
     assert {entry["id"] for entry in payload["data"]} == {
+        "flux2-dev",
         "flux2-klein",
         "qwen-image",
         "z-image",
@@ -324,3 +327,91 @@ def test_shutdown_libere_le_moteur(settings, engine):
     with TestClient(create_app(settings, engine)):
         pass
     assert engine.shutdown_called is True
+
+
+# ── Progression, annulation, déchargement ──────────────────────────────────
+
+
+async def _take(generator, count: int) -> list[str]:
+    frames = []
+    try:
+        async for frame in generator:
+            frames.append(frame)
+            if len(frames) == count:
+                break
+    finally:
+        await generator.aclose()
+    return frames
+
+
+def test_progress_emet_une_trame_sse_puis_se_tait(engine):
+    # Testé sur le générateur, pas via HTTP : le flux est infini par conception
+    # et `TestClient` ne propage pas la déconnexion, donc le lire à travers lui
+    # bloquerait indéfiniment.
+    engine.busy = True
+    frames = asyncio.run(_take(progress_events(engine, poll_s=0, ping_s=0.05), 2))
+
+    assert frames[0].startswith("data: ") and frames[0].endswith("\n\n")
+    payload = json.loads(frames[0].removeprefix("data: ").rstrip())
+    assert payload["state"] == "generating"
+    assert (payload["step"], payload["total"]) == (3, 9)
+    assert payload["memory"]["active_gb"] == 0.0
+
+    # L'état n'a pas changé entre-temps : la deuxième trame est un battement de
+    # cœur, pas une répétition de l'instantané.
+    assert frames[1] == ": ping\n\n"
+
+
+def test_progress_reemet_quand_letat_change(engine):
+    async def scenario():
+        generator = progress_events(engine, poll_s=0, ping_s=3600)
+        try:
+            first = await anext(generator)
+            engine.busy = True
+            second = await anext(generator)
+            return first, second
+        finally:
+            await generator.aclose()
+
+    first, second = asyncio.run(scenario())
+    assert json.loads(first.removeprefix("data: ").rstrip())["state"] == "idle"
+    assert json.loads(second.removeprefix("data: ").rstrip())["state"] == "generating"
+
+
+#: Pas de test HTTP du flux SSE établi : `TestClient` bloque à la sortie du
+#: `with client.stream(...)`, même sans lire le corps, parce qu'il attend la fin
+#: d'un générateur infini par conception. Les trames et le battement de cœur sont
+#: couverts ci-dessus sur `progress_events`, le câblage de la route par le test
+#: d'authentification ci-dessous, et le type MIME se vérifie à la main :
+#: `curl -N -i http://127.0.0.1:8765/v1/progress`.
+
+
+def test_cancel_sur_serveur_au_repos_ne_fait_rien(client, engine):
+    payload = client.post("/v1/cancel").json()
+    assert payload == {"cancelled": False, "state": "idle"}
+    assert engine.cancel_requested is False
+
+
+def test_cancel_pendant_une_generation(client, engine):
+    engine.busy = True
+    payload = client.post("/v1/cancel").json()
+    assert payload["cancelled"] is True
+    assert engine.cancel_requested is True
+
+
+def test_unload_libere_le_modele(client, engine):
+    generate(client, model="z-image")
+    assert client.get("/health").json()["loaded_model"] == "z-image:txt2img"
+
+    payload = client.post("/v1/unload").json()
+    assert engine.unload_called is True
+    assert payload["loaded_model"] is None
+    assert client.get("/health").json()["loaded_model"] is None
+
+
+def test_progress_et_cancel_exigent_la_cle_api(secured_client):
+    # Contrairement à /health, ces routes sont sous /v1 : elles doivent être
+    # protégées comme le reste.
+    assert secured_client.get("/v1/progress").status_code == 401
+    assert secured_client.post("/v1/cancel").status_code == 401
+    assert secured_client.post("/v1/unload").status_code == 401

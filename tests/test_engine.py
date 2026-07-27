@@ -40,6 +40,9 @@ class FakeModel:
         self.prompt_cache: dict[str, object] = {}
         self.calls: list[dict] = []
         self.delay = 0.0
+        #: Appelé après chaque étape, avec l'indice de l'étape. Permet de
+        #: déclencher une annulation à un moment déterministe.
+        self.step_hook = None
 
     def generate_image(self, **kwargs):
         import time
@@ -47,16 +50,20 @@ class FakeModel:
         self.calls.append(kwargs)
         if self.delay:
             time.sleep(self.delay)
-        # Le vrai modèle notifie ses callbacks à chaque étape.
-        for callback in self.callbacks.in_loop_callbacks():
-            callback.call_in_loop(
-                t=0,
-                seed=kwargs["seed"],
-                prompt=kwargs["prompt"],
-                latents=None,
-                config=_FakeConfig(kwargs["num_inference_steps"]),
-                time_steps=None,
-            )
+        # Le vrai modèle notifie ses callbacks à chaque étape de débruitage.
+        config = _FakeConfig(kwargs["num_inference_steps"])
+        for t in range(kwargs["num_inference_steps"]):
+            for callback in self.callbacks.in_loop_callbacks():
+                callback.call_in_loop(
+                    t=t,
+                    seed=kwargs["seed"],
+                    prompt=kwargs["prompt"],
+                    latents=None,
+                    config=config,
+                    time_steps=None,
+                )
+            if self.step_hook is not None:
+                self.step_hook(t)
         return FakeGenerated()
 
 
@@ -278,3 +285,99 @@ def test_arguments_passes_a_mflux(loaded):
     # img2img : latent de départ bruité.
     assert img2img_kwargs["image_path"] == "/tmp/in.png"
     assert img2img_kwargs["image_strength"] == 0.6
+
+
+# ── Progression et annulation ──────────────────────────────────────────────
+
+
+def test_le_moteur_est_idle_au_repos():
+    eng = ModelEngine(progress_log_every=0)
+    snapshot = eng.progress()
+    assert snapshot["state"] == "idle"
+    assert snapshot["loaded_model"] is None
+    assert (snapshot["step"], snapshot["total"]) == (0, 0)
+    assert snapshot["elapsed_s"] is None
+    eng.shutdown()
+
+
+def test_la_progression_suit_les_etapes(loaded):
+    """L'instantané est écrit depuis le thread worker et lu sans verrou."""
+    seen: list[tuple[str, int, int]] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())  # charge le modèle
+        loaded[0].step_hook = lambda _: seen.append(
+            (eng.progress()["state"], eng.progress()["step"], eng.progress()["total"])
+        )
+        await eng.generate(job(seed=1))
+        return eng
+
+    eng = asyncio.run(scenario())
+    # flux2-klein est distillé : 4 étapes.
+    assert seen == [("generating", 1, 4), ("generating", 2, 4), ("generating", 3, 4), ("generating", 4, 4)]
+    # Retour au repos, mais le modèle reste chaud.
+    assert eng.progress()["state"] == "idle"
+    assert eng.loaded_model == "flux2-klein:txt2img"
+    eng.shutdown()
+
+
+def test_annuler_au_repos_ne_fait_rien():
+    eng = ModelEngine(progress_log_every=0)
+    assert eng.request_cancel() is False
+    eng.shutdown()
+
+
+def test_lannulation_interrompt_la_boucle(loaded):
+    """Même chemin que le timeout : le callback in-loop est la seule prise."""
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job("z-image"))  # 50 étapes, chargé
+        # Demande l'annulation depuis la première étape ; elle prend effet à la
+        # suivante, comme en production.
+        loaded[0].step_hook = lambda t: eng.request_cancel() if t == 0 else None
+        with pytest.raises(APIError) as excinfo:
+            await eng.generate(job("z-image", seed=1))
+        return eng, excinfo.value
+
+    eng, error = asyncio.run(scenario())
+    assert error.status_code == 499
+    assert error.code == "generation_stopped"
+    # Le moteur reste utilisable et le modèle chaud.
+    assert eng.progress()["state"] == "idle"
+    assert eng.loaded_model == "z-image:txt2img"
+    eng.shutdown()
+
+
+def test_le_moteur_reste_utilisable_apres_une_annulation(loaded):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job("z-image"))
+        loaded[0].step_hook = lambda t: eng.request_cancel() if t == 0 else None
+        with pytest.raises(APIError):
+            await eng.generate(job("z-image", seed=1))
+        # Le drapeau doit être remis à zéro par `arm()`, sinon la génération
+        # suivante serait annulée elle aussi.
+        loaded[0].step_hook = None
+        data = await eng.generate(job("z-image", seed=2))
+        eng.shutdown()
+        return data
+
+    data = asyncio.run(scenario())
+    assert Image.open(io.BytesIO(data)).format == "PNG"
+
+
+def test_unload_libere_le_modele(loaded):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        model = loaded[0]
+        await eng.unload()
+        eng.shutdown()
+        return eng, model
+
+    eng, model = asyncio.run(scenario())
+    assert eng.loaded_model is None
+    assert eng.progress()["loaded_model"] is None
+    assert model.transformer is None
