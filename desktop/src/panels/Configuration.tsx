@@ -226,6 +226,25 @@ export function Configuration({
         </label>
 
         <label className="field">
+          <span>Free memory after (s)</span>
+          <input
+            type="number"
+            min={0}
+            placeholder="never"
+            value={server.idle_unload_s ?? ""}
+            onChange={(event) =>
+              patchServer("idle_unload_s", event.target.value === "" ? null : Number(event.target.value))
+            }
+          />
+        </label>
+        <p className="hint" style={{ marginTop: 0 }}>
+          Releases the warm model after that many seconds without a generation, so something else can
+          have the memory — a text LLM, typically. Empty keeps it warm forever, <code>0</code> frees it
+          as soon as the request ends. The cost is paying the load again on the next image, which is
+          seconds on a distilled model and a minute on a large one.
+        </p>
+
+        <label className="field">
           <span>API key</span>
           <input
             type="password"

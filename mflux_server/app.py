@@ -34,6 +34,7 @@ from mflux_server import __version__
 from mflux_server import settings as mflux_settings
 from mflux_server.engine import GenerationJob, ModelEngine
 from mflux_server.errors import APIError, install_exception_handlers
+from mflux_server.idle import IdleUnloader
 from mflux_server.logs import SERVER_LOGGER, setup_logging
 from mflux_server.registry import ModelSpec, edit_enabled, parse_size
 from mflux_server.settings import RESPONSE_FORMATS, Settings, load_settings
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         Path(settings.server.image_store).expanduser(),
         ttl_s=settings.server.image_ttl_s,
     )
+    idle_unloader = IdleUnloader(engine, settings.server.idle_unload_s)
     scratch_dir = Path(tempfile.mkdtemp(prefix="mflux_scratch_"))
     created_at = int(time.time())
 
@@ -139,6 +141,9 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
             logger.warning("Server exposed without an API key")
         yield
+        # Before `engine.shutdown()`: a pending countdown would otherwise be left
+        # dangling on a loop that is closing.
+        idle_unloader.cancel()
         engine.shutdown()
         shutil.rmtree(scratch_dir, ignore_errors=True)
         logger.info("Server stopped")
@@ -286,26 +291,30 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         image_path: Path | None = None,
         image_strength: float | None = None,
     ) -> list[bytes]:
-        images = []
-        for seed in seeds:
-            images.append(
-                await engine.generate(
-                    GenerationJob(
-                        spec=spec,
-                        kind=kind,
-                        prompt=prompt,
-                        width=width,
-                        height=height,
-                        steps=steps,
-                        seed=seed,
-                        guidance=guidance,
-                        negative_prompt=negative_prompt,
-                        image_path=image_path,
-                        image_strength=image_strength,
+        # The idle countdown is armed here, on the way out, rather than inside
+        # the engine: it must measure the gap between *requests*, otherwise a
+        # delay of 0 would release the model between the images of a single one.
+        with idle_unloader:
+            images = []
+            for seed in seeds:
+                images.append(
+                    await engine.generate(
+                        GenerationJob(
+                            spec=spec,
+                            kind=kind,
+                            prompt=prompt,
+                            width=width,
+                            height=height,
+                            steps=steps,
+                            seed=seed,
+                            guidance=guidance,
+                            negative_prompt=negative_prompt,
+                            image_path=image_path,
+                            image_strength=image_strength,
+                        )
                     )
                 )
-            )
-        return images
+            return images
 
     # ── Endpoints ──────────────────────────────────────────────────────────
 
@@ -317,6 +326,8 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
             "default_model": settings.default_model,
             "models": sorted(registry),
             "loaded_model": engine.loaded_model,
+            # Without this, "no warm model" is indistinguishable from a bug.
+            "idle_unload_s": settings.server.idle_unload_s,
             "memory": engine.memory_stats(),
         }
 

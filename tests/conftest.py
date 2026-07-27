@@ -8,6 +8,7 @@ verified by hand (see the README).
 from __future__ import annotations
 
 import io
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,21 @@ from PIL import Image
 from mflux_server.app import create_app
 from mflux_server.engine import GenerationJob
 from mflux_server.settings import Settings
+
+
+def wait_until(predicate, timeout: float = 2.0) -> bool:
+    """Poll a condition that the app's own event loop has to satisfy.
+
+    `TestClient` drives the app from another thread, so sleeping here lets it
+    progress. Polling rather than awaiting: the automatic release happens on a
+    task the test does not hold.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
 
 
 def tiny_png(color: str = "red") -> bytes:
@@ -32,6 +48,9 @@ class FakeEngine:
         self.loaded_model: str | None = None
         self.shutdown_called = False
         self.unload_called = False
+        #: Counts them, not just "did it happen": the point of the idle policy is
+        #: that an n=3 request releases *once*, at the end.
+        self.unload_count = 0
         #: Simulates a running generation, to exercise `/v1/cancel`.
         self.busy = False
         self.cancel_requested = False
@@ -65,6 +84,7 @@ class FakeEngine:
 
     async def unload(self) -> None:
         self.unload_called = True
+        self.unload_count += 1
         self.loaded_model = None
 
     def shutdown(self) -> None:
