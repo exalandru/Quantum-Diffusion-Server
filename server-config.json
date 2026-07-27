@@ -14,8 +14,8 @@
     "log_file": "mflux.log",
     "progress_log_every": 1
   },
-  "default_model": "flux2-klein",
-  "default_size": null,
+  "default_model": "qwen-image",
+  "default_size": "1280x720",
   "models": {
     "flux2-klein": {
       "enabled": true,
@@ -27,10 +27,10 @@
       "enable_edit": true
     },
     "flux2-dev": {
-      "enabled": true,
+      "enabled": false,
       "model_path": null,
       "default_size": null,
-      "default_steps": 20,
+      "default_steps": null,
       "default_guidance": null,
       "quantize": 8,
       "enable_edit": null

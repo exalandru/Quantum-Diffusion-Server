@@ -72,9 +72,9 @@ Corollary: memory is the real limiting factor. Running another mflux process alo
 
 | key | repo | default size | default steps | guidance | negative_prompt | img2img | editing |
 |---|---|---|---|---|---|---|---|
-| `flux2-klein` *(default)* | `black-forest-labs/FLUX.2-klein-9B` | 1920×1072 | 4 | fixed at 1.0 | ❌ | ✅ | ✅ |
-| `flux2-dev` | `black-forest-labs/FLUX.2-dev` | 1024×1024 | 50 | 4.0 | ❌ | ✅ | ❌ |
-| `qwen-image` | `mlx-community/Qwen-Image-2512-8bit` | 1920×1072 | 20 | 3.5 | ✅ | ✅ | opt-in |
+| `flux2-klein` | `black-forest-labs/FLUX.2-klein-9B` | 1920×1072 | 4 | fixed at 1.0 | ❌ | ✅ | ✅ |
+| `flux2-dev` *(off by default)* | `black-forest-labs/FLUX.2-dev` | 1024×1024 | 50 | 4.0 | ❌ | ✅ | ❌ |
+| `qwen-image` *(default)* | `mlx-community/Qwen-Image-2512-8bit` | 1920×1072 | 50 | 4.0 | ✅ | ✅ | opt-in |
 | `z-image` | `mlx-community/Z-Image-bf16` | 1920×1072 | 50 | 4.0 | ✅ | ✅ | ❌ |
 | `z-image-turbo` | `mlx-community/Z-Image-Turbo-bf16` | 1280×720 | 9 | forced to 0 | ✅ | ✅ | ❌ |
 
@@ -85,9 +85,12 @@ Useful details:
 - **`z-image` and `z-image-turbo` are quantized to 8 bits at load time.** The repos are stored in bf16, so the quantization is real, but paid only once since the model stays warm.
 - **`qwen-image` is already 8-bit quantized** in its safetensors metadata: adding `quantize` would do nothing.
 - **`qwen-image` editing is off by default**: it uses a separate repo (`Qwen/Qwen-Image-Edit-2509`), i.e. several GB to download on first call. Enable it with `"enable_edit": true`. `flux2-klein` editing shares the same weights as generation, so it is on by default.
+- **The steps and guidance defaults come from each model's own card**, not from mflux's blanket defaults: 4 steps for the distilled `flux2-klein`, 9 steps and guidance 0 for `z-image-turbo` (Tongyi), 50 steps and guidance 4.0 for `flux2-dev` (BFL) and `qwen-image` (Qwen-Image-2512). mflux would default `qwen-image` to 20 steps and guidance 3.5 — that is `GUIDANCE_SCALE`, the value it applies to every model. Note that guidance is free on `qwen-image`, whose negative pass runs on every step whatever the value, while each step costs two transformer forwards: lower `default_steps` if 50 is too slow, never the guidance.
 - **Dimensions are truncated down to a multiple of 16** — that is an mflux constraint. `1920x1080` becomes `1920x1072`. The server applies the rounding itself and reports the effective size in the response's `mflux.size` field.
 
-`GET /v1/capabilities` returns this table as JSON.
+The table above is the catalogue — what each model is worth on its own. The shipped `server-config.json` then applies two policies on top: `default_size: "1280x720"` for every model (faster than the catalogue sizes, and the same 16:9 as `z-image-turbo`), and `flux2-dev` disabled, since it answers 503 `model_not_prepared` until the pre-quantization has run. Re-enable it with `"enabled": true` once the artifact exists.
+
+`GET /v1/capabilities` returns the effective values, config applied.
 
 ## Endpoints
 
@@ -180,10 +183,12 @@ Two keys sit outside `server`, because they are generation defaults rather than 
 
 | key | default | role |
 |---|---|---|
-| `default_model` | `flux2-klein` | model used when the request names none. Must be enabled |
+| `default_model` | `qwen-image` | model used when the request names none. Must be enabled |
 | `default_size` | `null` | config-wide resolution, `"WxH"`. Applies to every model; `null` leaves each on its catalogue size |
 
-`default_size` is the single knob for "generate bigger", without repeating the value under each model. It is still overridable per model — see below — which is what you want when one model does not deserve the same area as the others: `flux2-dev` is a 32B, `flux2-klein` a distilled 4B.
+These are the *code* defaults, used when no config file is found. The shipped `server-config.json` is more opinionated: it sets `default_size` to `1280x720` and disables `flux2-dev`.
+
+`default_size` is the single knob for "one resolution everywhere", without repeating the value under each model. It is still overridable per model — see below — which is what you want when one model does not deserve the same area as the others: `flux2-dev` is a 32B, `flux2-klein` a distilled 9B.
 
 Both accept an environment override too: `MFLUX_SERVER_DEFAULT_MODEL`, `MFLUX_SERVER_DEFAULT_SIZE`.
 
@@ -220,8 +225,8 @@ A full example:
     "log_file": "mflux.log",
     "progress_log_every": 1
   },
-  "default_model": "flux2-klein",
-  "default_size": null,
+  "default_model": "qwen-image",
+  "default_size": "1280x720",
   "models": {
     "flux2-klein": {
       "enabled": true,
@@ -233,7 +238,7 @@ A full example:
       "enable_edit": true
     },
     "flux2-dev": {
-      "enabled": true,
+      "enabled": false,
       "model_path": null,
       "default_size": null,
       "default_steps": null,

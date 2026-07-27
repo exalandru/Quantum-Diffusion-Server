@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -13,7 +14,7 @@ from mflux_server.registry import (
     normalize_dimension,
     parse_size,
 )
-from mflux_server.settings import ModelOverride, Settings
+from mflux_server.settings import ModelOverride, Settings, load_settings
 
 
 def test_default_registry_exposes_the_five_models():
@@ -77,6 +78,19 @@ def test_qwen_does_not_use_from_name():
     spec = BASE_SPECS_BY_KEY["qwen-image"]
     assert spec.model_config_name == "qwen_image"
     assert spec.model_path == "mlx-community/Qwen-Image-2512-8bit"
+
+
+def test_qwen_follows_its_own_card_not_the_mflux_defaults():
+    """The Qwen-Image-2512 card asks for 50 steps and cfg 4.0.
+
+    mflux would give 20 steps (`MODEL_INFERENCE_STEPS["qwen"]`) and guidance 3.5
+    (`GUIDANCE_SCALE`, its blanket default for every model). qwen-image is the one
+    entry in the catalogue where the two disagree, so it is also the one that would
+    silently regress if someone "harmonized" the table against mflux.
+    """
+    spec = BASE_SPECS_BY_KEY["qwen-image"]
+    assert spec.default_steps == 50
+    assert spec.default_guidance == 4.0
 
 
 def test_flux2_dev_is_guidance_distilled_and_prequantized():
@@ -183,6 +197,29 @@ def test_overriding_guidance_on_a_distilled_model_fails():
 def test_unknown_model_in_the_config():
     with pytest.raises(ValueError, match="Unknown models"):
         build_registry({"sdxl": ModelOverride()})
+
+
+def test_the_code_default_model_is_usable_with_no_config():
+    # A config-less run must still be able to serve its own default: qwen-image
+    # needs no preparation step, unlike flux2-dev.
+    settings = Settings()
+    assert settings.default_model == "qwen-image"
+    assert settings.default_model in settings.registry()
+
+
+def test_the_shipped_config_says_what_the_readme_says():
+    """Load the real `server-config.json`, not a fixture.
+
+    This is the only test that catches a typo in the file we actually ship — the
+    three policies it applies on top of the catalogue live nowhere else.
+    """
+    settings = load_settings(Path(__file__).resolve().parent.parent / "server-config.json")
+    registry = settings.registry()
+
+    assert settings.default_model == "qwen-image"
+    # Disabled: it answers 503 model_not_prepared until the artifact is built.
+    assert "flux2-dev" not in registry
+    assert {spec.default_size for spec in registry.values()} == {"1280x720"}
 
 
 def test_default_model_must_exist():

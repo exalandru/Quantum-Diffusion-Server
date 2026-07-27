@@ -112,7 +112,10 @@ class ModelOverride(BaseModel):
 
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
-    default_model: str = "flux2-klein"
+    #: `qwen-image` rather than `flux2-klein`: it is already 8-bit quantized in
+    #: its repo, so it works with no preparation step, and it is the only model in
+    #: the catalogue that supports a negative prompt.
+    default_model: str = "qwen-image"
     #: Config-wide generation resolution, `"WxH"`. Sits below the per-model
     #: `default_size` overrides and above the catalogue, so one knob covers every
     #: model while a single model can still be pinned. `null` keeps each model on

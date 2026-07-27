@@ -269,7 +269,11 @@ def secured_app(tmp_path, engine, api_key: str):
                 "image_store": str(tmp_path / "images"),
                 "log_file": None,
                 "api_key": api_key,
-            }
+            },
+            # Pinned rather than inherited from the code default, like the main
+            # `client` fixture: these tests assert on the value, so they should
+            # own it.
+            "default_model": "flux2-klein",
         }
     )
     return create_app(settings, engine)

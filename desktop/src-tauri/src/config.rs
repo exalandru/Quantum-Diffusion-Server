@@ -32,13 +32,16 @@ fn default_config() -> Value {
             "progress_log_every": 1,
             "shutdown_grace_s": 10
         },
-        "default_model": "flux2-klein",
-        // Config-wide generation resolution. `null` leaves every model on its
-        // catalogue size; a per-model `default_size` still wins over this.
-        "default_size": null,
+        "default_model": "qwen-image",
+        // Config-wide generation resolution; a per-model `default_size` still
+        // wins over it, and `null` would leave every model on its catalogue size.
+        "default_size": "1280x720",
         "models": {
             "flux2-klein": {"enabled": true, "quantize": null, "enable_edit": true},
-            "flux2-dev": {"enabled": true, "quantize": 8, "model_path": null},
+            // Off by default: it answers 503 `model_not_prepared` until
+            // `mflux-server-prequantize` has produced the local 8-bit artifact.
+            // Shipping it enabled would advertise a model that cannot generate.
+            "flux2-dev": {"enabled": false, "quantize": 8, "model_path": null},
             "qwen-image": {"enabled": true, "quantize": null, "enable_edit": false},
             "z-image": {"enabled": true, "quantize": 8},
             "z-image-turbo": {"enabled": true, "quantize": 8}
