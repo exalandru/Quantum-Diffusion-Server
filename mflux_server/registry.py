@@ -124,8 +124,18 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         model_path="mlx-community/Qwen-Image-2512-8bit",
         default_width=1920,
         default_height=1072,
-        default_steps=20,
-        default_guidance=3.5,
+        # The Qwen-Image-2512 card, not mflux: its MODEL_INFERENCE_STEPS says 20
+        # and GUIDANCE_SCALE 3.5, which is the blanket default it applies to every
+        # model. The card asks for 50 steps and cfg 4.0.
+        #
+        # The two are not paid for the same way here. `qwen_image.py:106-119` runs
+        # the negative pass *unconditionally*, whatever the guidance, so raising
+        # it to 4.0 costs nothing — unlike z-image, which skips that pass below
+        # 1.0. Steps do cost: two transformer forwards each, so 50 steps on a 20B
+        # is 100 passes per image. Lower `default_steps` in the config if that is
+        # too slow; lowering the guidance would only cost quality.
+        default_steps=50,
+        default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
         supports_image_to_image=True,

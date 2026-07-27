@@ -78,6 +78,17 @@ export function Configuration({
   const models: Json = draft.models ?? {};
   const sizeError = sizeProblem(String(draft.default_size ?? ""));
 
+  // The server refuses a configuration whose default model is disabled
+  // (`Settings._check_default_model`), and refuses it at *startup* — so without
+  // this the mistake is saved silently and only surfaces as "Invalid
+  // configuration" on the next launch. Easy to make, too: the checkbox that
+  // disables a model sits in the table right under the select that names it.
+  const disabledDefault =
+    models[String(draft.default_model ?? "")]?.enabled === false
+      ? String(draft.default_model)
+      : null;
+  const blocked = sizeError?.fatal === true || disabledDefault !== null;
+
   function edit(next: Json) {
     setDraft(next);
     setDirty(true);
@@ -100,7 +111,7 @@ export function Configuration({
   }
 
   async function save() {
-    if (sizeError?.fatal) return;
+    if (blocked) return;
     setSaving(true);
     try {
       await api.configWrite(draft);
@@ -126,7 +137,7 @@ export function Configuration({
             <button
               className="primary"
               onClick={() => void save()}
-              disabled={saving || sizeError?.fatal === true}
+              disabled={saving || blocked}
             >
               {saving ? "Saving…" : "Save"}
             </button>
@@ -260,6 +271,12 @@ export function Configuration({
         <p className="hint">
           Controls that do not apply are disabled based on the capabilities the server declares.
         </p>
+        {disabledDefault && (
+          <p className="hint" style={{ color: "var(--error)" }}>
+            <code>{disabledDefault}</code> is the default model, so it cannot be disabled — the
+            server would refuse to start. Pick another default above, or turn it back on.
+          </p>
+        )}
         <table className="models">
           <thead>
             <tr>
