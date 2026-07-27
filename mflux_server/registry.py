@@ -201,8 +201,22 @@ def parse_size(size: str) -> tuple[int, int]:
     return normalize_dimension(raw_width), normalize_dimension(raw_height)
 
 
-def build_registry(overrides: dict[str, Any] | None = None) -> dict[str, ModelSpec]:
-    """Apply the `server-config.json` overrides on top of the base catalogue."""
+def build_registry(
+    overrides: dict[str, Any] | None = None,
+    *,
+    default_size: str | None = None,
+) -> dict[str, ModelSpec]:
+    """Apply the `server-config.json` overrides on top of the base catalogue.
+
+    `default_size` is the config-wide resolution. It sits **below** the per-model
+    overrides, so the resulting precedence is:
+
+        request `size` > models.<key>.default_size > default_size > catalogue
+
+    Keeping the per-model level under the global one is the escape hatch that
+    matters: a 32B does not want the same area as a distilled 4B, so pinning
+    `flux2-dev` alone stays possible without giving up a single global knob.
+    """
     overrides = overrides or {}
     unknown = set(overrides) - set(BASE_SPECS_BY_KEY)
     if unknown:
@@ -210,9 +224,13 @@ def build_registry(overrides: dict[str, Any] | None = None) -> dict[str, ModelSp
             f"Unknown models in config: {sorted(unknown)}. Valid keys: {sorted(BASE_SPECS_BY_KEY)}"
         )
 
+    global_size = parse_size(default_size) if default_size else None
+
     registry: dict[str, ModelSpec] = {}
     for key, base in BASE_SPECS_BY_KEY.items():
         spec = base
+        if global_size is not None:
+            spec = replace(spec, default_width=global_size[0], default_height=global_size[1])
         override = overrides.get(key)
         if override is not None:
             spec = _apply_override(spec, override)

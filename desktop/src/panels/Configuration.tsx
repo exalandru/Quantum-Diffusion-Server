@@ -17,6 +17,28 @@ type Json = Record<string, any>;
 
 const QUANTIZE_CHOICES = [null, 0, 3, 4, 5, 6, 8];
 
+/**
+ * Check a `WxH` resolution the way the server does.
+ *
+ * Worth checking here even though the server is the authority: an invalid
+ * `default_size` makes `load_settings` refuse to start, so without this the
+ * mistake would only surface as a failed launch later on — `fatal` is what blocks
+ * the save. A truncation to a multiple of 16, in contrast, is legal and silent
+ * server-side; we only say so rather than let it surprise them.
+ */
+function sizeProblem(value: string): { message: string; fatal: boolean } | null {
+  if (value.trim() === "") return null;
+  const match = /^(\d+)\s*[xX]\s*(\d+)$/.exec(value.trim());
+  if (!match) return { message: "Expected WxH, for example 1024x1024.", fatal: true };
+  const [width, height] = [Number(match[1]), Number(match[2])];
+  if (width < 16 || height < 16) return { message: "Each side must be at least 16.", fatal: true };
+  if (width % 16 || height % 16) {
+    const [w, h] = [16 * Math.floor(width / 16), 16 * Math.floor(height / 16)];
+    return { message: `Will be truncated to ${w}x${h}.`, fatal: false };
+  }
+  return null;
+}
+
 export function Configuration({
   config,
   client,
@@ -27,18 +49,23 @@ export function Configuration({
   config: unknown;
   client: ServerClient | null;
   serverRunning: boolean;
-  onSaved: () => void;
+  onSaved: () => void | Promise<void>;
   onError: (message: string) => void;
 }) {
   const [draft, setDraft] = useState<Json | null>(null);
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [dirty, setDirty] = useState(false);
 
+  // Never reseed over edits in flight. The root cause was `config` being re-read
+  // on a timer, which is fixed upstream; this guard is what keeps the whole class
+  // of bug from coming back through another door — any future caller that hands
+  // us a fresh config object cannot silently discard what the user typed.
   useEffect(() => {
+    if (dirty) return;
     setDraft(config ? (structuredClone(config) as Json) : null);
-    setSaved(false);
-  }, [config]);
+  }, [config, dirty]);
 
   useEffect(() => {
     if (!client) return;
@@ -49,26 +76,39 @@ export function Configuration({
 
   const server: Json = draft.server ?? {};
   const models: Json = draft.models ?? {};
+  const sizeError = sizeProblem(String(draft.default_size ?? ""));
+
+  function edit(next: Json) {
+    setDraft(next);
+    setDirty(true);
+    setSaved(false);
+  }
+
+  function patchRoot(key: string, value: unknown) {
+    edit({ ...draft, [key]: value });
+  }
 
   function patchServer(key: string, value: unknown) {
-    setDraft({ ...draft, server: { ...server, [key]: value } });
-    setSaved(false);
+    edit({ ...draft, server: { ...server, [key]: value } });
   }
 
   function patchModel(key: string, field: string, value: unknown) {
-    setDraft({
+    edit({
       ...draft,
       models: { ...models, [key]: { ...(models[key] ?? {}), [field]: value } },
     });
-    setSaved(false);
   }
 
   async function save() {
+    if (sizeError?.fatal) return;
     setSaving(true);
     try {
       await api.configWrite(draft);
+      // Clearing `dirty` lets the reseed effect pick up what was just written;
+      // `saved` survives it and is only cleared by the next edit.
+      setDirty(false);
       setSaved(true);
-      onSaved();
+      await onSaved();
     } catch (cause) {
       onError(messageOf(cause));
     } finally {
@@ -83,7 +123,11 @@ export function Configuration({
           <h2 style={{ margin: 0 }}>Server</h2>
           <div className="row">
             {saved && <span className="badge ok">saved</span>}
-            <button className="primary" onClick={() => void save()} disabled={saving}>
+            <button
+              className="primary"
+              onClick={() => void save()}
+              disabled={saving || sizeError?.fatal === true}
+            >
               {saving ? "Saving…" : "Save"}
             </button>
           </div>
@@ -100,10 +144,7 @@ export function Configuration({
           <span>Default model</span>
           <select
             value={String(draft.default_model ?? "")}
-            onChange={(event) => {
-              setDraft({ ...draft, default_model: event.target.value });
-              setSaved(false);
-            }}
+            onChange={(event) => patchRoot("default_model", event.target.value)}
           >
             {Object.keys(models).map((key) => (
               <option key={key} value={key}>
@@ -112,6 +153,35 @@ export function Configuration({
             ))}
           </select>
         </label>
+
+        <label className="field">
+          <span>Port</span>
+          <input
+            type="number"
+            min={1}
+            max={65535}
+            value={Number(server.port ?? 8765)}
+            onChange={(event) => patchServer("port", Number(event.target.value))}
+          />
+        </label>
+
+        <label className="field">
+          <span>Default resolution</span>
+          <input
+            type="text"
+            placeholder="each model's own default"
+            value={String(draft.default_size ?? "")}
+            onChange={(event) => patchRoot("default_size", event.target.value || null)}
+          />
+        </label>
+        {sizeError && (
+          <p
+            className="hint"
+            style={{ marginTop: 0, color: `var(--${sizeError.fatal ? "error" : "warn"})` }}
+          >
+            {sizeError.message}
+          </p>
+        )}
 
         <label className="field">
           <span>Maximum images (n)</span>
@@ -179,8 +249,9 @@ export function Configuration({
         </label>
 
         <p className="hint" style={{ marginTop: 12, marginBottom: 0 }}>
-          The app sets the host, port, image directory and log format itself: those values belong
-          to how it operates, so they are not editable here.
+          The resolution applies to every model; a model pinned in the JSON with its own
+          <code> default_size</code> still wins over it. The app sets the host, image directory and
+          log format itself: those belong to how it operates, so they are not editable here.
         </p>
       </div>
 

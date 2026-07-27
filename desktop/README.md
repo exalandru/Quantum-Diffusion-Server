@@ -44,16 +44,20 @@ uv sync --frozen --no-dev --no-editable --managed-python --python 3.12 --project
 
 Roughly 1.1 GB of download. `--no-editable` matters: without it the installed package would point back at the project copy. So does `--python 3.12`, see below.
 
-**Starting the server.** The Rust side picks a free port, creates the write directories, then launches `<appdata>/env/bin/mflux-server` with everything absolute:
+**Starting the server.** The Rust side reads the port from the configuration, checks it is free, creates the write directories, then launches `<appdata>/env/bin/mflux-server` with everything absolute:
 
 | variable | value |
 |---|---|
 | `MFLUX_SERVER_CONFIG` | `<appdata>/server-config.json` |
-| `MFLUX_SERVER_HOST` / `PORT` | `127.0.0.1` / the port picked in Rust |
+| `MFLUX_SERVER_HOST` / `PORT` | `127.0.0.1` / `server.port`, `8765` by default |
 | `MFLUX_SERVER_IMAGE_STORE` | `<appdata>/images` |
 | `MFLUX_SERVER_LOG_FILE` | `""` — the app captures instead |
 | `MFLUX_SERVER_LOG_JSON` | `1` |
 | `HF_HOME`, `HF_HUB_DISABLE_PROGRESS_BARS`, `PYTHONUNBUFFERED` | |
+
+The port used to be drawn at random on every start, which made the address unstable and unconfigurable. Reading it from the file makes it fixed and editable from the Configuration tab — but it also makes collisions possible, so the port is test-bound before launching. On a collision the error is immediate and names the two likely causes (a server left over from a previous session, or `uv run mflux-server` running alongside) instead of surfacing 30 seconds later as a health-check timeout. There is no automatic fallback to another port: that would restore exactly the instability being fixed.
+
+**Noticing a death.** `status()` calls `try_wait()` on each status poll, so a server that exits on its own is reaped within four seconds: the dashboard flips to *stopped*, shows the exit code or signal, and Start relaunches without needing Stop first. Lazily, at the rhythm of the existing poll — no watcher task, no channel.
 
 **Stopping.** SIGTERM to the process group, a wait bounded at `shutdown_grace_s + 8s`, then SIGKILL. The group rather than the pid alone, otherwise quitting the app would orphan the server: macOS does not reap grandchildren.
 
