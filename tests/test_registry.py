@@ -58,6 +58,13 @@ def test_flux2_klein_is_distilled():
     assert spec.scheduler == "flow_match_euler_discrete"
 
 
+def test_flux2_klein_is_quantized_at_load_time():
+    # The BFL repo ships bf16, so this is a real quantization, unlike qwen-image
+    # whose repo is already 8-bit and where the flag would be a no-op.
+    assert BASE_SPECS_BY_KEY["flux2-klein"].quantize == 8
+    assert BASE_SPECS_BY_KEY["qwen-image"].quantize is None
+
+
 def test_flux2_edit_shares_weights_and_is_on_by_default():
     spec = BASE_SPECS_BY_KEY["flux2-klein"]
     assert spec.edit is not None

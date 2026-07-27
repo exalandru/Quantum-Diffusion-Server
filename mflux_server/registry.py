@@ -79,6 +79,12 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         supports_negative_prompt=False,  # the CLI rejects the flag outright
         supports_image_to_image=True,
         scheduler="flow_match_euler_discrete",
+        # The BFL repo ships bf16 — 36 GB of blobs, every tensor BF16, no
+        # `scales`/`biases` anywhere — so this quantization is real, not a no-op
+        # like on `qwen-image`. Same deal as z-image: paid once on the first load,
+        # then the model stays warm, and it roughly halves what a 9B plus its
+        # Mistral text encoder hold in unified memory.
+        quantize=8,
         edit=EditSpec(
             family="flux2-edit",
             model_config_name="flux2_klein_9b",
