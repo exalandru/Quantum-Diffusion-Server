@@ -72,6 +72,11 @@ impl Paths {
         self.env.join("bin").join("mflux-server-prequantize")
     }
 
+    /// The weight downloader, installed by the same wheel.
+    pub fn fetch_bin(&self) -> PathBuf {
+        self.env.join("bin").join("mflux-server-fetch")
+    }
+
     /// `true` once `uv sync` has produced a usable environment.
     pub fn env_ready(&self) -> bool {
         self.server_bin().is_file()

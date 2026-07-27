@@ -35,19 +35,29 @@ fn default_config() -> Value {
             // keeps it warm forever, `0` frees it as soon as a request ends.
             "idle_unload_s": null
         },
-        "default_model": "qwen-image",
-        // Config-wide generation resolution; a per-model `default_size` still
-        // wins over it, and `null` would leave every model on its catalogue size.
+        // Both enabled models are Apache-2.0 and ungated: a fresh install
+        // generates with no token, no access request and no licence to accept.
+        // Everything gated or non-commercial ships off, and so do the slow ones.
+        "default_model": "z-image-turbo",
+        // Config-wide resolution; a per-model `default_size` still wins over it.
         "default_size": "1280x720",
+        // 4 bits everywhere it means anything. Skipped on models whose weights
+        // already carry their precision: mflux keeps the stored value and only
+        // prints "Ignoring -q", so the setting would be a lie there.
+        "default_quantize": 4,
         "models": {
-            "flux2-klein": {"enabled": true, "quantize": 8, "enable_edit": true},
-            // Off by default: it answers 503 `model_not_prepared` until
-            // `mflux-server-prequantize` has produced the local 8-bit artifact.
-            // Shipping it enabled would advertise a model that cannot generate.
+            "z-image-turbo": {"enabled": true},
+            "ernie-image-turbo": {"enabled": true},
+            "z-image": {"enabled": false},
+            "ernie-image": {"enabled": false},
+            "qwen-image-2512": {"enabled": false, "enable_edit": false},
+            // Gated and non-commercial, like the three below it.
+            "flux2-klein": {"enabled": false, "enable_edit": true},
+            // Also needs `mflux-server-prequantize` before it can answer at all.
             "flux2-dev": {"enabled": false, "quantize": 8, "model_path": null},
-            "qwen-image": {"enabled": true, "quantize": null, "enable_edit": false},
-            "z-image": {"enabled": true, "quantize": 8},
-            "z-image-turbo": {"enabled": true, "quantize": 8}
+            "fibo-lite": {"enabled": false},
+            "fibo": {"enabled": false},
+            "ideogram-4": {"enabled": false, "preset": "V4_DEFAULT_20"}
         }
     })
 }

@@ -17,9 +17,20 @@ from mflux_server.registry import (
 from mflux_server.settings import ModelOverride, Settings, load_settings
 
 
-def test_default_registry_exposes_the_five_models():
+def test_the_catalogue_exposes_ten_models():
     registry = build_registry({})
-    assert set(registry) == {"flux2-dev", "flux2-klein", "qwen-image", "z-image", "z-image-turbo"}
+    assert set(registry) == {
+        "ernie-image",
+        "ernie-image-turbo",
+        "fibo",
+        "fibo-lite",
+        "flux2-dev",
+        "flux2-klein",
+        "ideogram-4",
+        "qwen-image-2512",
+        "z-image",
+        "z-image-turbo",
+    }
 
 
 @pytest.mark.parametrize(
@@ -58,11 +69,23 @@ def test_flux2_klein_is_distilled():
     assert spec.scheduler == "flow_match_euler_discrete"
 
 
-def test_flux2_klein_is_quantized_at_load_time():
-    # The BFL repo ships bf16, so this is a real quantization, unlike qwen-image
-    # whose repo is already 8-bit and where the flag would be a no-op.
+def test_quantization_is_only_advertised_where_it_happens():
+    """`prequantized` is the difference between a real setting and a no-op.
+
+    `nn.quantize` cannot touch weights that already carry their precision — mflux
+    resolves the conflict in favour of the file and merely prints "Ignoring -q".
+    Advertising a bit depth for those models would be a lie, so the catalogue
+    marks them instead.
+    """
+    # bf16 upstream: quantizing at load is real work.
     assert BASE_SPECS_BY_KEY["flux2-klein"].quantize == 8
-    assert BASE_SPECS_BY_KEY["qwen-image"].quantize is None
+    assert BASE_SPECS_BY_KEY["flux2-klein"].prequantized is False
+
+    # Our own 8-bit artifact, and Ideogram's fp8 layout whose heavy components are
+    # all `skip_quantization=True`.
+    assert BASE_SPECS_BY_KEY["flux2-dev"].prequantized is True
+    assert BASE_SPECS_BY_KEY["ideogram-4"].prequantized is True
+    assert BASE_SPECS_BY_KEY["ideogram-4"].quantize is None
 
 
 def test_flux2_edit_shares_weights_and_is_on_by_default():
@@ -73,7 +96,7 @@ def test_flux2_edit_shares_weights_and_is_on_by_default():
 
 
 def test_qwen_edit_is_off_by_default_due_to_separate_download():
-    spec = BASE_SPECS_BY_KEY["qwen-image"]
+    spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
     assert spec.edit is not None
     assert spec.edit.shares_weights is False
     assert edit_enabled(spec) is False
@@ -81,10 +104,15 @@ def test_qwen_edit_is_off_by_default_due_to_separate_download():
 
 def test_qwen_does_not_use_from_name():
     # from_name() would lose the scheduler's sigma_* values; we pass the
-    # canonical factory plus the repo as model_path.
-    spec = BASE_SPECS_BY_KEY["qwen-image"]
+    # canonical factory plus the repo as model_path. And the path is needed at all
+    # because `ModelConfig.qwen_image()` points at `Qwen/Qwen-Image`, the original
+    # release, not the 2512 this key is named after.
+    spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
     assert spec.model_config_name == "qwen_image"
-    assert spec.model_path == "mlx-community/Qwen-Image-2512-8bit"
+    assert spec.model_path == "Qwen/Qwen-Image-2512"
+    # The raw bf16 repo, not the 8-bit conversion: only raw weights can honour
+    # `default_quantize`.
+    assert spec.prequantized is False
 
 
 def test_qwen_follows_its_own_card_not_the_mflux_defaults():
@@ -95,7 +123,7 @@ def test_qwen_follows_its_own_card_not_the_mflux_defaults():
     entry in the catalogue where the two disagree, so it is also the one that would
     silently regress if someone "harmonized" the table against mflux.
     """
-    spec = BASE_SPECS_BY_KEY["qwen-image"]
+    spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
     assert spec.default_steps == 50
     assert spec.default_guidance == 4.0
 
@@ -136,10 +164,10 @@ def test_overrides_are_applied():
     registry = build_registry(
         {
             "z-image": ModelOverride(default_size="1024x1024", default_steps=30, default_guidance=5.0),
-            "qwen-image": ModelOverride(enabled=False),
+            "qwen-image-2512": ModelOverride(enabled=False),
         }
     )
-    assert "qwen-image" not in registry
+    assert "qwen-image-2512" not in registry
     spec = registry["z-image"]
     assert (spec.default_width, spec.default_height) == (1024, 1024)
     assert spec.default_steps == 30
@@ -207,26 +235,41 @@ def test_unknown_model_in_the_config():
 
 
 def test_the_code_default_model_is_usable_with_no_config():
-    # A config-less run must still be able to serve its own default: qwen-image
-    # needs no preparation step, unlike flux2-dev.
+    """A config-less run must serve its own default with nothing set up at all.
+
+    That rules out more models than it looks: no gated repo (no HuggingFace token
+    to obtain), no non-commercial licence to accept, no preparation step, and no
+    JSON-only prompt format — a default that rejects "a red fox" is not a default.
+    """
     settings = Settings()
-    assert settings.default_model == "qwen-image"
-    assert settings.default_model in settings.registry()
+    spec = settings.registry()[settings.default_model]
+    assert settings.default_model == "z-image-turbo"
+    assert spec.gated is False
+    assert spec.license == "Apache-2.0"
+    assert "text" in spec.prompt_formats
 
 
 def test_the_shipped_config_says_what_the_readme_says():
     """Load the real `server-config.json`, not a fixture.
 
     This is the only test that catches a typo in the file we actually ship — the
-    three policies it applies on top of the catalogue live nowhere else.
+    policies it applies on top of the catalogue live nowhere else.
     """
     settings = load_settings(Path(__file__).resolve().parent.parent / "server-config.json")
     registry = settings.registry()
 
-    assert settings.default_model == "qwen-image"
-    # Disabled: it answers 503 model_not_prepared until the artifact is built.
-    assert "flux2-dev" not in registry
+    assert settings.default_model == "z-image-turbo"
+    assert set(registry) == {"z-image-turbo", "ernie-image-turbo"}
     assert {spec.default_size for spec in registry.values()} == {"1280x720"}
+
+    # The whole point of the enabled set: nothing to obtain, nothing to accept,
+    # and nothing that refuses a plain-text prompt. Re-enabling `fibo-lite` — which
+    # is gated, non-commercial *and* JSON-only — would fail right here.
+    for spec in registry.values():
+        assert spec.gated is False, spec.key
+        assert spec.license == "Apache-2.0", spec.key
+        assert "text" in spec.prompt_formats, spec.key
+        assert spec.quantize == 4, spec.key
 
 
 def test_default_model_must_exist():

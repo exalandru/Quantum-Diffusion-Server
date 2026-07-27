@@ -26,10 +26,16 @@ def generate(client: TestClient, **body):
 def test_model_list_is_conformant(client):
     payload = client.get("/v1/models").json()
     assert payload["object"] == "list"
+    # Every catalogue entry, since the fixture disables none of them.
     assert {entry["id"] for entry in payload["data"]} == {
+        "ernie-image",
+        "ernie-image-turbo",
+        "fibo",
+        "fibo-lite",
         "flux2-dev",
         "flux2-klein",
-        "qwen-image",
+        "ideogram-4",
+        "qwen-image-2512",
         "z-image",
         "z-image-turbo",
     }
@@ -158,7 +164,7 @@ def test_negative_prompt_rejected_on_flux2_klein(client):
 
 
 def test_negative_prompt_accepted_on_qwen(client, engine):
-    assert generate(client, model="qwen-image", negative_prompt="flou").status_code == 200
+    assert generate(client, model="qwen-image-2512", negative_prompt="flou").status_code == 200
     assert engine.jobs[0].negative_prompt == "flou"
 
 
@@ -338,6 +344,86 @@ def test_shutdown_releases_the_engine(settings, engine):
     with TestClient(create_app(settings, engine)):
         pass
     assert engine.shutdown_called is True
+
+
+# ── Prompt formats and dimension bounds ────────────────────────────────────
+
+
+def test_a_plain_prompt_is_refused_before_the_model_loads(client, engine):
+    """FIBO's prompt encoder opens with a bare `json.loads(prompt)`.
+
+    Plain text would raise a JSONDecodeError *after* several GB had been loaded, and
+    reach the client as "Expecting value: line 1 column 1". The empty `engine.jobs`
+    is the whole point of this test: the refusal has to come first.
+    """
+    response = generate(client, model="fibo-lite")
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["param"] == "prompt"
+    assert error["code"] == "prompt_must_be_json"
+    assert engine.jobs == [], "the model was loaded before the prompt was checked"
+
+
+def test_a_json_caption_is_accepted(client, engine):
+    caption = json.dumps({"high_level_description": "a red fox in the snow"})
+    response = client.post("/v1/images/generations", json={"prompt": caption, "model": "fibo-lite"})
+    assert response.status_code == 200
+    assert engine.jobs[0].prompt == caption
+
+
+def test_a_json_array_is_not_a_caption(client):
+    response = client.post("/v1/images/generations", json={"prompt": "[1, 2]", "model": "fibo"})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "prompt_must_be_json"
+
+
+def test_a_text_model_accepts_a_json_looking_prompt(client, engine):
+    # Accepting text means accepting anything: a JSON string is text too. No model
+    # should reject a prompt for being *more* structured than it needs.
+    response = generate(client, model="z-image-turbo", prompt='{"not": "a caption"}')
+    assert response.status_code == 200
+    assert engine.jobs[0].prompt == '{"not": "a caption"}'
+
+
+def test_a_size_beyond_the_model_bound_is_refused_before_loading(client, engine):
+    # Ideogram 4 caps at 2048. Its weights are 28 GB: finding out afterwards is not
+    # an option.
+    response = generate(client, model="ideogram-4", size="2560x1440")
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "size"
+    assert engine.jobs == []
+
+
+def test_the_bound_also_covers_the_model_default(client, engine):
+    """A config-wide `default_size` out of range must not sail through.
+
+    The check runs on the resolved size, not just on an explicit one — otherwise a
+    request with no `size` would reach mflux and fail there.
+    """
+    settings = Settings.model_validate(
+        {
+            "server": {"log_file": None, "progress_log_every": 0},
+            "default_size": "2560x1440",
+        }
+    )
+    with TestClient(create_app(settings, engine)) as scoped:
+        assert generate(scoped, model="ideogram-4").status_code == 400
+        # Every other model is happy with it.
+        assert generate(scoped, model="z-image-turbo").status_code == 200
+
+
+def test_capabilities_publish_the_new_flags(client):
+    models = client.get("/v1/capabilities").json()["models"]
+    assert models["fibo"]["prompt_formats"] == ["json"]
+    assert models["ideogram-4"]["prompt_formats"] == ["text", "json"]
+    assert models["z-image-turbo"]["prompt_formats"] == ["text"]
+    assert models["ideogram-4"]["preset"] == "V4_DEFAULT_20"
+    assert models["ideogram-4"]["max_dimension"] == 2048
+    assert models["z-image-turbo"]["max_dimension"] is None
+    assert models["flux2-klein"]["gated"] is True
+    assert models["z-image-turbo"]["gated"] is False
+    assert models["z-image-turbo"]["license"] == "Apache-2.0"
+    assert models["ideogram-4"]["prequantized"] is True
 
 
 # ── Automatic release of the warm model ────────────────────────────────────

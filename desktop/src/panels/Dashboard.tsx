@@ -145,8 +145,8 @@ export function Dashboard({
               <span className="dot" />
               no HuggingFace token
             </span>{" "}
-            The <code>black-forest-labs/*</code> repos are gated. Add a token in the Models tab,
-            or the first download will fail.
+            Half the catalogue sits in gated repos. The two models enabled by default are not
+            among them, but add a token in the Models tab before installing one that is.
           </p>
         )}
       </div>

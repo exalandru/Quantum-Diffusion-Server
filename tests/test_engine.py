@@ -18,6 +18,10 @@ from mflux_server.engine import GenerationJob, ModelEngine
 from mflux_server.errors import APIError
 from mflux_server.registry import BASE_SPECS_BY_KEY
 
+#: What the double uses when no step count is passed, standing in for the step
+#: count a sampler preset would supply.
+_PRESET_FALLBACK_STEPS = 20
+
 
 class FakeGenerated:
     def __init__(self):
@@ -50,8 +54,11 @@ class FakeModel:
         if self.delay:
             time.sleep(self.delay)
         # The real model notifies its callbacks on every denoising step.
-        config = _FakeConfig(kwargs["num_inference_steps"])
-        for t in range(kwargs["num_inference_steps"]):
+        # `num_inference_steps` may be absent: Ideogram 4 takes its step count from
+        # the sampler preset, and its signature defaults the parameter to None.
+        steps = kwargs.get("num_inference_steps") or _PRESET_FALLBACK_STEPS
+        config = _FakeConfig(steps)
+        for t in range(steps):
             for callback in self.callbacks.in_loop_callbacks():
                 callback.call_in_loop(
                     t=t,
@@ -190,14 +197,67 @@ def test_generations_are_serialized(loaded):
 def test_qwen_prompt_cache_is_purged(loaded):
     async def scenario():
         eng = ModelEngine(progress_log_every=0)
-        await eng.generate(job("qwen-image"))
+        await eng.generate(job("qwen-image-2512"))
         model = loaded[0]
         model.prompt_cache.update({f"prompt-{index}": object() for index in range(50)})
-        await eng.generate(job("qwen-image", seed=7))
+        await eng.generate(job("qwen-image-2512", seed=7))
         return eng, model
 
     eng, model = asyncio.run(scenario())
     assert model.prompt_cache == {}
+    eng.shutdown()
+
+
+# ── Ideogram 4: the one family whose call shape differs ────────────────────
+
+
+def test_ideogram_gets_its_preset_and_no_scheduler(loaded):
+    """The kwargs actually handed to mflux, which is where this breaks silently.
+
+    `Ideogram4.generate_image` has no `scheduler` parameter — passing ours would be
+    a TypeError, not an ignored argument. And `preset` must go in even though the
+    step count is left out, because the sampler also supplies `mu` and `std` to the
+    noise schedule.
+    """
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job("ideogram-4", steps_from_preset=True))
+        return eng, loaded[0].calls[0]
+
+    eng, kwargs = asyncio.run(scenario())
+    assert "scheduler" not in kwargs
+    assert kwargs["preset"] == "V4_DEFAULT_20"
+    # Absent on purpose: passing it would flatten the preset's per-step guidance
+    # schedule into a constant.
+    assert "num_inference_steps" not in kwargs
+    eng.shutdown()
+
+
+def test_an_explicit_step_count_reaches_ideogram(loaded):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        # steps_from_preset stays False: the client asked for a number.
+        await eng.generate(job("ideogram-4", steps=12))
+        return eng, loaded[0].calls[0]
+
+    eng, kwargs = asyncio.run(scenario())
+    assert kwargs["num_inference_steps"] == 12
+    # Still passed: the preset governs the noise schedule regardless.
+    assert kwargs["preset"] == "V4_DEFAULT_20"
+    eng.shutdown()
+
+
+def test_every_other_family_still_gets_its_scheduler(loaded):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job("z-image-turbo"))
+        return eng, loaded[0].calls[0]
+
+    eng, kwargs = asyncio.run(scenario())
+    assert kwargs["scheduler"] == "linear"
+    assert kwargs["num_inference_steps"] == 9
+    assert "preset" not in kwargs
     eng.shutdown()
 
 

@@ -106,6 +106,10 @@ class GenerationJob:
     negative_prompt: str | None = None
     image_path: Path | None = None
     image_strength: float | None = None
+    #: True when `steps` comes from the model's sampler preset rather than from
+    #: the request. Only then may the step count be left out of the call, which is
+    #: what lets the preset's guidance schedule apply.
+    steps_from_preset: bool = False
 
 
 class _ProgressCallback:
@@ -339,6 +343,23 @@ class ModelEngine:
         elif job.image_path is not None:
             kwargs["image_path"] = str(job.image_path)
             kwargs["image_strength"] = job.image_strength
+
+        if spec.preset is not None:
+            # Ideogram 4. Two departures from every other family, both of which
+            # bite silently if ignored.
+            #
+            # Its `generate_image` has no `scheduler` parameter at all, so passing
+            # ours would be a TypeError rather than an ignored argument.
+            kwargs.pop("scheduler", None)
+            # And `preset` goes in *always*, even when the step count is explicit:
+            # the sampler also supplies `mu` and `std` to the noise schedule
+            # (`make_timesteps`), not just the step count.
+            kwargs["preset"] = spec.preset
+            if job.steps_from_preset:
+                # Passing `num_inference_steps` replaces the preset's per-step
+                # guidance schedule with a constant (`ideogram4.py:67-72`), so we
+                # leave it out unless the client asked for a specific count.
+                kwargs.pop("num_inference_steps", None)
 
         return kwargs
 

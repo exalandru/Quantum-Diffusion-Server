@@ -59,6 +59,13 @@ The port used to be drawn at random on every start, which made the address unsta
 
 **Noticing a death.** `status()` calls `try_wait()` on each status poll, so a server that exits on its own is reaped within four seconds: the dashboard flips to *stopped*, shows the exit code or signal, and Start relaunches without needing Stop first. Lazily, at the rhythm of the existing poll — no watcher task, no channel.
 
+**Downloading weights.** The Models tab reads the catalogue through `mflux-server-fetch --status`, a
+third console script from the same wheel, and its **Install** button runs `mflux-server-fetch <key>` as
+a sidecar whose output is relayed to the Logs tab like a conversion. Going through that script rather
+than the HTTP API is what makes the list complete — disabled models included — and available with the
+server stopped, which is exactly when you want to fetch weights. `HF_HUB_DISABLE_PROGRESS_BARS` is left
+*on* for this one, unlike for the server: the progress bar is the feedback.
+
 **Stopping.** SIGTERM to the process group, a wait bounded at `shutdown_grace_s + 8s`, then SIGKILL. The group rather than the pid alone, otherwise quitting the app would orphan the server: macOS does not reap grandchildren.
 
 ## Four traps we hit, and their fixes

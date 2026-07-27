@@ -54,6 +54,16 @@ export type ModelCapabilities = {
   default_steps: number;
   default_guidance: number | null;
   quantize: number | null;
+  /** Weights arrive at a fixed precision: the quantize setting does nothing. */
+  prequantized: boolean;
+  license: string;
+  /** Repo requires approved access, so a download without a token would 401. */
+  gated: boolean;
+  /** `["json"]` means plain text is rejected outright. */
+  prompt_formats: string[];
+  preset: string | null;
+  min_dimension: number;
+  max_dimension: number | null;
   scheduler: string;
   supports_guidance: boolean;
   supports_negative_prompt: boolean;
@@ -79,6 +89,24 @@ export type Progress = {
   elapsed_s: number | null;
   loaded_model: string | null;
   memory: Health["memory"];
+};
+
+/**
+ * One catalogue entry with its weights' cache state, from `mflux-server-fetch
+ * --status`. Comes through Rust rather than the HTTP API, so the list is complete
+ * (disabled models included) and available with the server stopped.
+ */
+export type ModelStatus = {
+  key: string;
+  repo: string;
+  license: string;
+  gated: boolean;
+  enabled: boolean;
+  cached: boolean;
+  /** A local artifact rather than an HF repo: nothing to download here. */
+  local: boolean;
+  size_gb: number;
+  files: number;
 };
 
 /** Structured event read from the server's stdout, in `log_json` mode. */

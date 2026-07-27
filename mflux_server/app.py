@@ -198,11 +198,24 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
     def resolve_size(spec: ModelSpec, size: str | None) -> tuple[int, int]:
         if size is None or size.lower() == "auto":
-            return spec.default_width, spec.default_height
-        try:
-            return parse_size(size)
-        except ValueError as exc:
-            raise APIError(str(exc), param="size", code="invalid_size") from exc
+            width, height = spec.default_width, spec.default_height
+        else:
+            try:
+                width, height = parse_size(size)
+            except ValueError as exc:
+                raise APIError(str(exc), param="size", code="invalid_size") from exc
+        # Checked on the default too, not just on an explicit size: otherwise a
+        # config-wide `default_size` outside the model's range would sail straight
+        # through and fail inside mflux, after the weights were loaded.
+        for label, value in (("width", width), ("height", height)):
+            if value < spec.min_dimension or (spec.max_dimension and value > spec.max_dimension):
+                bound = f"[{spec.min_dimension}, {spec.max_dimension or '∞'}]"
+                raise APIError(
+                    f"Model '{spec.key}' requires {label} in {bound}, got {value}.",
+                    param="size",
+                    code="invalid_size",
+                )
+        return width, height
 
     def resolve_response_format(value: str | None) -> str:
         fmt = value or settings.server.default_response_format
@@ -213,6 +226,36 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
                 code="invalid_response_format",
             )
         return fmt
+
+    def check_prompt(spec: ModelSpec, prompt: str) -> None:
+        """Refuse a prompt the model cannot read, before any weights are loaded.
+
+        FIBO's prompt encoder opens with a bare `json.loads(prompt)` whose result
+        is discarded — a validation gate. Plain text raises a `JSONDecodeError`,
+        which would reach the client as a 400 saying "Expecting value: line 1
+        column 1" *after* several GB of weights had been loaded. So we say it here,
+        and say what to do about it.
+        """
+        if "text" in spec.prompt_formats:
+            # Accepting text means accepting anything: a JSON caption is text too.
+            return
+        try:
+            parsed = json.loads(prompt)
+        except json.JSONDecodeError as exc:
+            raise APIError(
+                f"Model '{spec.key}' only accepts a structured JSON caption as its prompt, "
+                f"not plain text ({exc.msg}). Pass a JSON object describing the image — see the "
+                f"model card for the schema.",
+                param="prompt",
+                code="prompt_must_be_json",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise APIError(
+                f"Model '{spec.key}' expects a JSON *object* as its prompt, got "
+                f"{type(parsed).__name__}.",
+                param="prompt",
+                code="prompt_must_be_json",
+            )
 
     def check_capabilities(spec: ModelSpec, *, negative_prompt: str | None, guidance: float | None) -> None:
         if negative_prompt and not spec.supports_negative_prompt:
@@ -290,6 +333,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
         negative_prompt: str | None,
         image_path: Path | None = None,
         image_strength: float | None = None,
+        steps_from_preset: bool = False,
     ) -> list[bytes]:
         # The idle countdown is armed here, on the way out, rather than inside
         # the engine: it must measure the gap between *requests*, otherwise a
@@ -311,6 +355,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
                             negative_prompt=negative_prompt,
                             image_path=image_path,
                             image_strength=image_strength,
+                            steps_from_preset=steps_from_preset,
                         )
                     )
                 )
@@ -401,6 +446,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     async def generate_images(request: Request, body: ImageGenerationRequest, _: None = auth):
         spec = resolve_spec(body.model)
         check_n(body.n)
+        check_prompt(spec, body.prompt)
         check_capabilities(spec, negative_prompt=body.negative_prompt, guidance=body.guidance)
         response_format = resolve_response_format(body.response_format)
         if response_format == "raw" and body.n > 1:
@@ -413,6 +459,9 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
         width, height = resolve_size(spec, body.size)
         steps = body.steps or spec.default_steps
+        # No explicit step count on a preset model means deferring to the preset,
+        # schedule included.
+        steps_from_preset = body.steps is None and spec.preset is not None
         seeds = seeds_for(body.seed, body.n)
 
         images = await run_jobs(
@@ -425,6 +474,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
             seeds=seeds,
             guidance=body.guidance,
             negative_prompt=body.negative_prompt,
+            steps_from_preset=steps_from_preset,
         )
 
         if response_format == "raw":
@@ -457,6 +507,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
         spec = resolve_spec(model)
         check_n(n)
+        check_prompt(spec, prompt)
         check_capabilities(spec, negative_prompt=negative_prompt, guidance=guidance)
         fmt = resolve_response_format(response_format)
         if fmt == "raw" and n > 1:
@@ -485,6 +536,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
         width, height = resolve_size(spec, size)
         steps_val = steps or spec.default_steps
+        steps_from_preset = steps is None and spec.preset is not None
         seeds = seeds_for(seed, n)
 
         in_file = scratch_dir / f"in_{uuid.uuid4().hex}{Path(image.filename or '').suffix or '.png'}"
@@ -502,6 +554,7 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
                 negative_prompt=negative_prompt,
                 image_path=in_file,
                 image_strength=image_strength,
+                steps_from_preset=steps_from_preset,
             )
         finally:
             in_file.unlink(missing_ok=True)
@@ -520,6 +573,13 @@ def _capabilities(spec: ModelSpec) -> dict:
         "default_steps": spec.default_steps,
         "default_guidance": spec.default_guidance,
         "quantize": spec.quantize,
+        "prequantized": spec.prequantized,
+        "license": spec.license,
+        "gated": spec.gated,
+        "prompt_formats": list(spec.prompt_formats),
+        "preset": spec.preset,
+        "min_dimension": spec.min_dimension,
+        "max_dimension": spec.max_dimension,
         "scheduler": spec.scheduler,
         "supports_guidance": spec.supports_guidance,
         "supports_negative_prompt": spec.supports_negative_prompt,

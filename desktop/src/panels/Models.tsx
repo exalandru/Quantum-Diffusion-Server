@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import * as api from "../api";
 import { messageOf, type ServerClient } from "../api";
-import type { Capabilities, Overview } from "../types";
+import type { Capabilities, ModelStatus, Overview } from "../types";
 
 /** Order enforced by the script: biggest first, to bound the disk peak. */
 const COMPONENTS = [
@@ -23,6 +23,8 @@ export function Models({
   onError: (message: string) => void;
 }) {
   const [capabilities, setCapabilities] = useState<Capabilities | null>(null);
+  const [models, setModels] = useState<ModelStatus[] | null>(null);
+  const [fetching, setFetching] = useState<string | null>(null);
   const [token, setToken] = useState("");
   const [tokenSaved, setTokenSaved] = useState(false);
   const [selected, setSelected] = useState<string[]>(COMPONENTS.map((component) => component.id));
@@ -32,6 +34,35 @@ export function Models({
     if (!client) return;
     void client.capabilities().then(setCapabilities).catch(() => setCapabilities(null));
   }, [client]);
+
+  // The catalogue itself comes from Rust, not from the server: that way it lists
+  // the disabled models too, and it works with the server stopped — which is when
+  // you most want to download weights.
+  const reloadModels = useCallback(async () => {
+    try {
+      setModels(await api.modelsStatus());
+    } catch (cause) {
+      onError(messageOf(cause));
+    }
+  }, [onError]);
+
+  useEffect(() => {
+    void reloadModels();
+  }, [reloadModels]);
+
+  async function download(key: string) {
+    setFetching(key);
+    try {
+      await api.modelFetch(key);
+      await reloadModels();
+    } catch (cause) {
+      onError(messageOf(cause));
+    } finally {
+      setFetching(null);
+    }
+  }
+
+  const gatedRepos = (models ?? []).filter((model) => model.gated).map((model) => model.repo);
 
   const modelPath =
     (config as { models?: { "flux2-dev"?: { model_path?: string | null } } } | null)?.models?.[
@@ -64,9 +95,21 @@ export function Models({
       <div className="card">
         <h2>HuggingFace access</h2>
         <p className="hint">
-          The <code>black-forest-labs/*</code> repos are gated: you need a token that has been
-          granted access. It is stored where <code>hf auth login</code> writes it, so as not to
-          duplicate a secret that already sits there in plaintext.
+          {gatedRepos.length > 0 && (
+            <>
+              {gatedRepos.length} of the ten catalogue repos are gated — the{" "}
+              {[...new Set(gatedRepos.map((repo) => repo.split("/")[0]))].map((org, index) => (
+                <span key={org}>
+                  {index > 0 && ", "}
+                  <code>{org}/*</code>
+                </span>
+              ))}{" "}
+              ones.{" "}
+            </>
+          )}
+          A gated repo needs a token that has been granted access on its model card. It is stored
+          where <code>hf auth login</code> writes it, so as not to duplicate a secret that already
+          sits there in plaintext.
         </p>
         <div className="row">
           <span className={`badge ${state.hfTokenPresent ? "ok" : "warn"}`}>
@@ -161,12 +204,17 @@ export function Models({
 
       <div className="card">
         <h2>Catalogue</h2>
-        {capabilities ? (
+        <p className="hint">
+          Weights are downloaded on demand. Without that, the first generation on a fresh model
+          silently pays tens of gigabytes; here you pay it when you choose to, and watch it in the
+          Logs tab. The generation columns need the server running — they are what it declares.
+        </p>
+        {models ? (
           <table className="models">
             <thead>
               <tr>
                 <th>Model</th>
-                <th>Size</th>
+                <th>Weights</th>
                 <th>Steps</th>
                 <th>Guidance</th>
                 <th>Quant.</th>
@@ -174,38 +222,90 @@ export function Models({
               </tr>
             </thead>
             <tbody>
-              {Object.entries(capabilities.models).map(([key, caps]) => (
-                <tr key={key}>
-                  <td>
-                    <strong>{key}</strong>
-                    {key === capabilities.default_model && (
-                      <span className="badge" style={{ marginLeft: 6 }}>
-                        default
-                      </span>
-                    )}
-                    <div className="path">{caps.repo}</div>
-                  </td>
-                  <td>{caps.default_size}</td>
-                  <td>{caps.default_steps}</td>
-                  <td>
-                    {caps.default_guidance ?? "—"}
-                    {!caps.supports_guidance && <span className="hint"> fixed</span>}
-                  </td>
-                  <td>{caps.quantize ? `${caps.quantize} bits` : "—"}</td>
-                  <td>
-                    <div className="row" style={{ gap: 5 }}>
-                      {caps.supports_negative_prompt && <span className="badge">negative</span>}
-                      {caps.supports_image_to_image && <span className="badge">img2img</span>}
-                      {caps.supports_edit && <span className="badge">editing</span>}
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {models.map((model) => {
+                const caps = capabilities?.models[model.key];
+                // A gated repo with no token would 401 several minutes in: better to
+                // say so before starting.
+                const blocked = model.gated && !state.hfTokenPresent;
+                return (
+                  <tr key={model.key} style={model.enabled ? undefined : { opacity: 0.6 }}>
+                    <td>
+                      <strong>{model.key}</strong>
+                      {model.key === capabilities?.default_model && (
+                        <span className="badge ok" style={{ marginLeft: 6 }}>
+                          default
+                        </span>
+                      )}
+                      {!model.enabled && (
+                        <span className="badge" style={{ marginLeft: 6 }}>
+                          off
+                        </span>
+                      )}
+                      {model.gated && (
+                        <span className="badge warn" style={{ marginLeft: 6 }}>
+                          gated
+                        </span>
+                      )}
+                      <div className="path">
+                        {model.repo} · {model.license}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="row" style={{ gap: 6 }}>
+                        {model.local ? (
+                          <span className="hint">local artifact</span>
+                        ) : model.cached ? (
+                          <span className="badge ok">{model.size_gb} GB</span>
+                        ) : (
+                          <button
+                            onClick={() => void download(model.key)}
+                            disabled={fetching !== null}
+                            title={
+                              blocked
+                                ? "This repo is gated: save a HuggingFace token above first, or the download will fail with a 401."
+                                : undefined
+                            }
+                          >
+                            {fetching === model.key ? "Downloading…" : blocked ? "Install ⚠" : "Install"}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                    <td>
+                      {caps ? caps.default_steps : "—"}
+                      {caps?.preset && <span className="hint"> {caps.preset}</span>}
+                    </td>
+                    <td>
+                      {caps ? (caps.default_guidance ?? "—") : "—"}
+                      {caps && !caps.supports_guidance && <span className="hint"> fixed</span>}
+                    </td>
+                    <td>
+                      {caps ? (caps.quantize ? `${caps.quantize} bits` : "—") : "—"}
+                      {caps?.prequantized && <span className="hint"> fixed</span>}
+                    </td>
+                    <td>
+                      <div className="row" style={{ gap: 5 }}>
+                        {caps?.prompt_formats.includes("text") === false && (
+                          <span className="badge warn">json only</span>
+                        )}
+                        {caps?.supports_negative_prompt && <span className="badge">negative</span>}
+                        {caps?.supports_image_to_image && <span className="badge">img2img</span>}
+                        {caps?.supports_edit && <span className="badge">editing</span>}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         ) : (
           <p className="hint" style={{ marginBottom: 0 }}>
-            Start the server to see the catalogue and the declared capabilities.
+            Reading the catalogue…
+          </p>
+        )}
+        {!capabilities && (
+          <p className="hint" style={{ marginTop: 12, marginBottom: 0 }}>
+            Start the server to fill in the generation columns.
           </p>
         )}
       </div>
