@@ -1,0 +1,27 @@
+[package]
+name = "quantum-diffusion-server"
+version = "0.1.0"
+description = "Quantum Diffusion Server — panneau de contrôle macOS"
+edition = "2021"
+rust-version = "1.82"
+
+[lib]
+name = "quantum_diffusion_server_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6", features = [] }
+
+[dependencies]
+tauri = { version = "2.11", features = [] }
+tauri-plugin-shell = "2.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["process", "io-util", "net", "time", "macros", "sync"] }
+# Envoi de signaux au groupe de processus du serveur : SIGTERM puis SIGKILL.
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = true
+strip = true

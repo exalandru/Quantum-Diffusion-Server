@@ -1,20 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
+from mflux_server.errors import APIError
 from mflux_server.registry import (
     BASE_SPECS_BY_KEY,
     build_registry,
     edit_enabled,
+    load_model,
     normalize_dimension,
     parse_size,
 )
 from mflux_server.settings import ModelOverride, Settings
 
 
-def test_default_registry_expose_les_quatre_modeles():
+def test_default_registry_expose_les_cinq_modeles():
     registry = build_registry({})
-    assert set(registry) == {"flux2-klein", "qwen-image", "z-image", "z-image-turbo"}
+    assert set(registry) == {"flux2-dev", "flux2-klein", "qwen-image", "z-image", "z-image-turbo"}
 
 
 @pytest.mark.parametrize(
@@ -73,6 +77,38 @@ def test_qwen_nutilise_pas_from_name():
     spec = BASE_SPECS_BY_KEY["qwen-image"]
     assert spec.model_config_name == "qwen_image"
     assert spec.model_path == "mlx-community/Qwen-Image-2512-8bit"
+
+
+def test_flux2_dev_est_guidance_distille_et_pre_quantifie():
+    spec = BASE_SPECS_BY_KEY["flux2-dev"]
+    # La guidance est un scalaire embarqué, pas du CFG : configurable mais sans
+    # negative prompt.
+    assert spec.supports_guidance is True
+    assert spec.supports_negative_prompt is False
+    assert spec.default_guidance == 4.0
+    # Modèle de base : 50 étapes, et 1024² pour ne pas payer la surface sur 32B.
+    assert spec.default_steps == 50
+    assert (spec.default_width, spec.default_height) == (1024, 1024)
+    # Le repo amont est en bf16 : le chargement passe par un artefact local.
+    assert spec.quantize == 8
+    assert spec.model_path is not None and spec.model_path.endswith("flux2-dev-mlx-8bit")
+    # L'édition multi-images n'est pas implémentée.
+    assert spec.edit is None
+
+
+def test_flux2_dev_refuse_de_charger_sans_artefact_prequantifie(tmp_path):
+    # Sans ce garde-fou, mflux retomberait sur le repo bf16 et tenterait une
+    # quantification à la volée de ~111 Go.
+    spec = replace(BASE_SPECS_BY_KEY["flux2-dev"], model_path=str(tmp_path / "absent"))
+    with pytest.raises(APIError, match="prequantize") as raised:
+        load_model(spec)
+    assert raised.value.status_code == 503
+    assert raised.value.code == "model_not_prepared"
+
+
+def test_surcharge_du_model_path():
+    registry = build_registry({"flux2-dev": ModelOverride(model_path="/models/flux2-dev")})
+    assert registry["flux2-dev"].model_path == "/models/flux2-dev"
 
 
 def test_surcharges_appliquees():

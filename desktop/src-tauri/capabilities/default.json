@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Le panneau de contrôle, son sidecar uv, et l'ouverture de /docs dans le navigateur.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [{ "name": "binaries/uv", "sidecar": true }]
+    },
+    {
+      "identifier": "shell:allow-open",
+      "allow": [{ "url": "^http://127\\.0\\.0\\.1:\\d+/docs$" }]
+    }
+  ]
+}

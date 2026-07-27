@@ -31,6 +31,10 @@ class FakeEngine:
         self.jobs: list[GenerationJob] = []
         self.loaded_model: str | None = None
         self.shutdown_called = False
+        self.unload_called = False
+        #: Simule une génération en cours, pour tester `/v1/cancel`.
+        self.busy = False
+        self.cancel_requested = False
 
     async def generate(self, job: GenerationJob) -> bytes:
         self.jobs.append(job)
@@ -39,6 +43,29 @@ class FakeEngine:
 
     def memory_stats(self) -> dict:
         return {"active_gb": 0.0, "peak_gb": 0.0, "cache_gb": 0.0}
+
+    def progress(self) -> dict:
+        return {
+            "state": "generating" if self.busy else "idle",
+            "model": "z-image-turbo" if self.busy else None,
+            "kind": "txt2img" if self.busy else None,
+            "seed": 42 if self.busy else None,
+            "step": 3 if self.busy else 0,
+            "total": 9 if self.busy else 0,
+            "elapsed_s": 1.5 if self.busy else None,
+            "loaded_model": self.loaded_model,
+            "memory": self.memory_stats(),
+        }
+
+    def request_cancel(self) -> bool:
+        if not self.busy:
+            return False
+        self.cancel_requested = True
+        return True
+
+    async def unload(self) -> None:
+        self.unload_called = True
+        self.loaded_model = None
 
     def shutdown(self) -> None:
         self.shutdown_called = True

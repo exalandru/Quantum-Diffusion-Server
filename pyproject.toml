@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 mflux-server = "mflux_server.app:main"
+mflux-server-prequantize = "mflux_server.prequantize:main"
 
 [dependency-groups]
 dev = [
