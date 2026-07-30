@@ -114,9 +114,9 @@ export function App() {
   }
 
   return (
-    <div className="shell">
-      <div className="titlebar">Quantum Diffusion Server</div>
-      <div className="tabs" role="tablist">
+      <div className="shell">
+        <div className="titlebar">Quantum Diffusion Server</div>
+        <div className="tabs" role="tablist">
         {TABS.map(({ id, label }) => (
           <button
             key={id}
