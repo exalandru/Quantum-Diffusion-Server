@@ -4,7 +4,7 @@
   "version": "0.2.0",
   "identifier": "com.exalandru.qds",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "../../../build/desktop/web",
     "devUrl": "http://localhost:5273",
     "beforeDevCommand": "npm run sync-resources && npm run dev",
     "beforeBuildCommand": "npm run sync-resources && npm run build"
@@ -45,12 +45,11 @@
       "icons/icon.icns"
     ],
     "externalBin": [
-      "binaries/uv"
+      "../../../build/desktop/staging/binaries/uv"
     ],
-    "resources": [
-      "resources/server/**/*",
-      "resources/server/.python-version"
-    ],
+    "resources": {
+      "../../../build/desktop/staging/resources/server/": "server/"
+    },
     "macOS": {
       "minimumSystemVersion": "14.0",
       "signingIdentity": "-"

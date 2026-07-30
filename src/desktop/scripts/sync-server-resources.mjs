@@ -1,7 +1,7 @@
 /**
  * Copy the Python project into the Tauri bundle's resources.
  *
- * Nothing is duplicated in VCS: `src-tauri/resources/` is gitignored and
+ * Nothing is duplicated in VCS: `build/desktop/staging/` is gitignored and
  * regenerated before every build (`beforeBuildCommand`). What ships is the bare
  * minimum for `uv sync --frozen` to rebuild the environment: the manifest, the
  * lock, the Python version, and the package itself.
@@ -16,8 +16,10 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const desktop = resolve(here, "..");
-const repo = resolve(desktop, "..");
-const resources = join(desktop, "src-tauri", "resources", "server");
+const repo = resolve(desktop, "../..");
+const server = join(repo, "src", "server");
+const staging = join(repo, "build", "desktop", "staging");
+const resources = join(staging, "resources", "server");
 
 /**
  * Repo files and directories to embed, relative to its root.
@@ -35,7 +37,7 @@ function syncPython() {
   mkdirSync(resources, { recursive: true });
 
   for (const entry of PAYLOAD) {
-    const source = join(repo, entry);
+    const source = join(server, entry);
     if (!existsSync(source)) {
       throw new Error(`Missing resource: ${source}`);
     }
@@ -51,7 +53,7 @@ function syncPython() {
 
 function syncUv() {
   const triple = execFileSync("rustc", ["--print", "host-tuple"], { encoding: "utf8" }).trim();
-  const binaries = join(desktop, "src-tauri", "binaries");
+  const binaries = join(staging, "binaries");
   mkdirSync(binaries, { recursive: true });
 
   let uv;

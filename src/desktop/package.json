@@ -7,11 +7,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "sync-resources": "node scripts/sync-server-resources.mjs",
     "tauri": "tauri",
-    "app:dev": "tauri dev",
-    "app:build": "tauri build"
+    "app:dev": "CARGO_TARGET_DIR=../../build/desktop/tauri tauri dev",
+    "app:build": "CARGO_TARGET_DIR=../../build/desktop/tauri tauri build && node scripts/collect-desktop-artifacts.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
