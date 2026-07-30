@@ -1,15 +1,14 @@
 # Quantum Diffusion Server
 
-A macOS control panel for [mflux-server](../README.md): a double-clickable app that installs its own Python, starts and supervises the server, exposes its configuration as a form, and drives model preparation.
+A macOS control panel for [mflux-server](../server/README.md): a double-clickable app that installs its own Python, starts and supervises the server, exposes its configuration as a form, and drives model preparation.
 
 Tauri 2 (Rust) + React 19 + Vite. **Apple Silicon only** — mlx is, by construction.
 
 ## Building
 
 ```sh
-cd desktop
-npm install
-npm run app:build     # → src-tauri/target/release/bundle/
+make install-desktop
+make build-desktop     # → dist/desktop/
 ```
 
 Prerequisites: Node, Rust, and `uv` on the `PATH` (it gets copied into the bundle as a sidecar).

@@ -5,19 +5,26 @@ mflux.log
 # Generated images served for response_format="url"
 images/
 
+# Project outputs
+/build/
+/dist/
+src/build
+
 # Python
 __pycache__/
 *.py[cod]
 .venv/
 venv/
 *.egg-info/
-dist/
-build/
 
 # Tooling
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+
+# Desktop
+/src/desktop/node_modules/
+/src/desktop/src-tauri/gen/schemas/
 
 # macOS
 .DS_Store
