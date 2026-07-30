@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Quantum Diffusion Server",
+  "productName": "QDS",
   "version": "0.2.0",
   "identifier": "com.exalandru.qds",
   "build": {
@@ -49,5 +49,5 @@
       "signingIdentity": "-"
     }
   },
-  "mainBinaryName": "Quantum Diffusion Server"
+  "mainBinaryName": "QDS"
 }

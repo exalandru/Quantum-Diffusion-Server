@@ -14,7 +14,7 @@ npm run app:build     # → src-tauri/target/release/bundle/
 
 Prerequisites: Node, Rust, and `uv` on the `PATH` (it gets copied into the bundle as a sidecar).
 
-The result: `Quantum Diffusion Server.app` (**57 MB**) and a `.dmg` (**25 MB**), ad-hoc signed (`signingIdentity: "-"`). No Developer ID certificate, no notarization: this is for personal use. After moving it between machines, `xattr -d com.apple.quarantine "Quantum Diffusion Server.app"` may be needed (the quotes matter: the name contains spaces).
+The result: `QDS.app` (**57 MB**) and a `.dmg` (**25 MB**), ad-hoc signed (`signingIdentity: "-"`). No Developer ID certificate, no notarization: this est pour usage personnel. After moving it between machines, `xattr -d com.apple.quarantine "QDS.app"` may be needed (the quotes matter: the name contains spaces).
 
 For development: `npm run app:dev`. Beware that `tauri dev` inherits a comfortable working directory and therefore hides relative-path problems — serious checks happen on the built `.app`.
 
