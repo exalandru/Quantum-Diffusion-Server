@@ -3,6 +3,7 @@ name = "mflux-server"
 version = "0.2.0"
 description = "Local server exposing mflux behind an OpenAI-Images-compatible API"
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "mflux==0.18.0",
