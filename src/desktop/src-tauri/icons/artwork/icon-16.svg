@@ -1,0 +1,115 @@
+<!--
+  QDS app icon — 16 pt tier. Serves the 16 px and 32 px representations.
+
+  Not the master shrunk: the master's seven bands and fifty particles collapse to
+  an unreadable smudge at 16 px, where the whole body is only 13 px tall. This is
+  the same idea rebuilt at a scale where every feature survives.
+
+  The arithmetic that fixes the layout, at 16 px one pixel is 64 user units:
+
+  * three bands of 128 units (2 px) with 128-unit gaps (2 px), spanning 224..800
+    vertically, centred on 512;
+  * round caps make a zero-length dash a disc of the stroke's width, so a dash
+    occupies 64 units beyond each end. Two dashes therefore need their starts
+    192 units apart to leave a 1 px gap between the discs — hence the 191-unit
+    gaps in the dash patterns;
+  * per band: two discs, then the solid. Three features per row is what fits.
+
+  No filters at all. A drop shadow is sub-pixel here, and resvg computes filter
+  regions in device pixels: at 16 px a small region can round to zero area and
+  the filtered element disappears outright.
+
+  The left edge is deliberately ragged (each band starts at a different x) so the
+  discs do not stack into a column.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="180" y1="140" x2="880" y2="900">
+      <stop offset="0" stop-color="#191338"/>
+      <stop offset="0.55" stop-color="#191338"/>
+      <stop offset="1" stop-color="#241a4d"/>
+    </linearGradient>
+
+    <radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="760" cy="512" r="470">
+      <stop offset="0" stop-color="#6b4bd6" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#5a3fbc" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#12102a" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="settle" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="620" y2="0">
+      <stop offset="0" stop-color="#0b0820" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#0b0820" stop-opacity="0"/>
+    </linearGradient>
+
+    <!-- Brightness ramps earlier than in the master: there is less width to do it in. -->
+    <linearGradient id="band" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="850" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.55"/>
+      <stop offset="0.32" stop-color="#8564ea" stop-opacity="0.85"/>
+      <stop offset="0.62" stop-color="#a98ef7"/>
+      <stop offset="1" stop-color="#e8def8"/>
+    </linearGradient>
+
+    <linearGradient id="bandHero" gradientUnits="userSpaceOnUse" x1="180" y1="0" x2="850" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.58"/>
+      <stop offset="0.32" stop-color="#8a68ec" stop-opacity="0.9"/>
+      <stop offset="0.64" stop-color="#bf95f6"/>
+      <stop offset="0.86" stop-color="#f59ae0"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+
+    <linearGradient id="sheen" gradientUnits="userSpaceOnUse" x1="0" y1="100" x2="0" y2="500">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <clipPath id="body-clip">
+      <path d="M 627.36 100
+               c 103.8374 0 155.7561 0 195.4155 20.2069
+               a 185.4 185.4 0 0 1 81.0177 81.0177
+               c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+               L 924 627.36
+               c 0 103.8374 0 155.7561 -20.2069 195.4155
+               a 185.4 185.4 0 0 1 -81.0177 81.0177
+               c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+               L 396.64 924
+               c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+               a 185.4 185.4 0 0 1 -81.0177 -81.0177
+               c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+               L 100 396.64
+               c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+               a 185.4 185.4 0 0 1 81.0177 -81.0177
+               c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M 627.36 100
+           c 103.8374 0 155.7561 0 195.4155 20.2069
+           a 185.4 185.4 0 0 1 81.0177 81.0177
+           c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+           L 924 627.36
+           c 0 103.8374 0 155.7561 -20.2069 195.4155
+           a 185.4 185.4 0 0 1 -81.0177 81.0177
+           c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+           L 396.64 924
+           c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+           a 185.4 185.4 0 0 1 -81.0177 -81.0177
+           c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+           L 100 396.64
+           c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+           a 185.4 185.4 0 0 1 81.0177 -81.0177
+           c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"
+        fill="url(#body)"/>
+
+  <g clip-path="url(#body-clip)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#glow)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#settle)"/>
+
+    <g fill="none" stroke-width="128" stroke-linecap="round" stroke-dasharray="1 191 1 191 400">
+      <path d="M 240 256 H 782" stroke="url(#band)"/>
+      <path d="M 228 512 H 806" stroke="url(#bandHero)"/>
+      <path d="M 252 768 H 758" stroke="url(#band)"/>
+    </g>
+
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+  </g>
+</svg>
