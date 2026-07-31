@@ -4,6 +4,7 @@
   "version": "0.2.0",
   "type": "module",
   "description": "macOS control panel for Quantum Diffusion Server",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
