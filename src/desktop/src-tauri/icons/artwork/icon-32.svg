@@ -1,0 +1,112 @@
+<!--
+  QDS app icon — 32 pt tier. Serves the 32 px and 64 px representations.
+
+  Sits between the master and the 16 pt artwork. The 32 px render here and the
+  32 px render of icon-16.svg are two different drawings on purpose: the first is
+  a 32 pt icon at 1x, the second a 16 pt icon on Retina, and Apple's iconset
+  keeps them in separate slots precisely so they can differ.
+
+  At 32 px one pixel is 32 user units, so:
+
+  * five bands of 64 units (2 px) with 64-unit gaps, spanning 224..800, centred
+    on 512 — two more rows than the 16 pt tier affords, two fewer than the master;
+  * round caps extend a dash by 32 units each side, so dash starts 96 units apart
+    leave a 1 px gap. Four features per row: three discs of growing length, then
+    the solid;
+  * band ends are staggered and starts are ragged, which is what carries the
+    "still settling" reading now that there is no room for free particles.
+
+  No filters, for the same reason as the 16 pt tier.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" shape-rendering="geometricPrecision">
+  <defs>
+    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="180" y1="140" x2="880" y2="900">
+      <stop offset="0" stop-color="#191338"/>
+      <stop offset="0.55" stop-color="#191338"/>
+      <stop offset="1" stop-color="#241a4d"/>
+    </linearGradient>
+
+    <radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="760" cy="512" r="470">
+      <stop offset="0" stop-color="#6b4bd6" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#5a3fbc" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#12102a" stop-opacity="0"/>
+    </radialGradient>
+
+    <linearGradient id="settle" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="620" y2="0">
+      <stop offset="0" stop-color="#0b0820" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#0b0820" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="band" gradientUnits="userSpaceOnUse" x1="190" y1="0" x2="850" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.45"/>
+      <stop offset="0.30" stop-color="#8060e8" stop-opacity="0.80"/>
+      <stop offset="0.62" stop-color="#a68af7"/>
+      <stop offset="1" stop-color="#e8def8"/>
+    </linearGradient>
+
+    <linearGradient id="bandHero" gradientUnits="userSpaceOnUse" x1="190" y1="0" x2="850" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.5"/>
+      <stop offset="0.30" stop-color="#8767ea" stop-opacity="0.88"/>
+      <stop offset="0.64" stop-color="#bd93f6"/>
+      <stop offset="0.87" stop-color="#f59ae0"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+
+    <linearGradient id="sheen" gradientUnits="userSpaceOnUse" x1="0" y1="100" x2="0" y2="500">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <clipPath id="body-clip">
+      <path d="M 627.36 100
+               c 103.8374 0 155.7561 0 195.4155 20.2069
+               a 185.4 185.4 0 0 1 81.0177 81.0177
+               c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+               L 924 627.36
+               c 0 103.8374 0 155.7561 -20.2069 195.4155
+               a 185.4 185.4 0 0 1 -81.0177 81.0177
+               c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+               L 396.64 924
+               c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+               a 185.4 185.4 0 0 1 -81.0177 -81.0177
+               c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+               L 100 396.64
+               c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+               a 185.4 185.4 0 0 1 81.0177 -81.0177
+               c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M 627.36 100
+           c 103.8374 0 155.7561 0 195.4155 20.2069
+           a 185.4 185.4 0 0 1 81.0177 81.0177
+           c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+           L 924 627.36
+           c 0 103.8374 0 155.7561 -20.2069 195.4155
+           a 185.4 185.4 0 0 1 -81.0177 81.0177
+           c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+           L 396.64 924
+           c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+           a 185.4 185.4 0 0 1 -81.0177 -81.0177
+           c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+           L 100 396.64
+           c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+           a 185.4 185.4 0 0 1 81.0177 -81.0177
+           c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"
+        fill="url(#body)"/>
+
+  <g clip-path="url(#body-clip)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#glow)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#settle)"/>
+
+    <g fill="none" stroke-width="64" stroke-linecap="round" stroke-dasharray="1 95 1 95 48 96 500">
+      <path d="M 230 256 H 790" stroke="url(#band)"/>
+      <path d="M 214 384 H 812" stroke="url(#band)"/>
+      <path d="M 246 512 H 764" stroke="url(#bandHero)"/>
+      <path d="M 222 640 H 800" stroke="url(#band)"/>
+      <path d="M 238 768 H 774" stroke="url(#band)"/>
+    </g>
+
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+  </g>
+</svg>

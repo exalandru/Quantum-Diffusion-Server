@@ -13,9 +13,25 @@ make build-desktop     # → dist/desktop/
 
 Prerequisites: Node, Rust, and `uv` on the `PATH` (it gets copied into the bundle as a sidecar).
 
-The result: `QDS.app` (**57 MB**) and a `.dmg` (**25 MB**), ad-hoc signed (`signingIdentity: "-"`). No Developer ID certificate, no notarization: this est pour usage personnel. After moving it between machines, `xattr -d com.apple.quarantine "QDS.app"` may be needed (the quotes matter: the name contains spaces).
+The result: `QDS.app` (**57 MB**) and a `.dmg` (**25 MB**), ad-hoc signed (`signingIdentity: "-"`). No Developer ID certificate, no notarization: this is for personal use. After moving it between machines, `xattr -d com.apple.quarantine "QDS.app"` may be needed (the quotes matter: the name contains spaces).
 
 For development: `npm run app:dev`. Beware that `tauri dev` inherits a comfortable working directory and therefore hides relative-path problems — serious checks happen on the built `.app`.
+
+## The app icon
+
+```sh
+npm run generate-icon        # → src-tauri/icons/
+```
+
+The source is [`src-tauri/icons/artwork/icon.svg`](src-tauri/icons/artwork/icon.svg); everything in `src-tauri/icons/` is generated and should never be edited by hand. The set used to be exported manually from Affinity, with no source in the repo and no written procedure — nobody but its author could regenerate it.
+
+Rasterizing goes through `tauri icon --png`, which is the Tauri CLI already in `devDependencies`, so there is no new dependency: it embeds resvg and renders **each size directly from the SVG** rather than downscaling one master. `--png` matters — without it the CLI also writes the `.ico`, the Windows `Square*Logo` set and the Android/iOS trees into `icons/`. Packing is then left to `iconutil`.
+
+There are **three artworks, not one**. A 200-particle field cannot be shrunk to 16 px, where the whole icon body is 13 px tall: each particle lands on a fraction of a pixel and the render is a wash with random specks. Apple's iconset anticipates this — `icon_16x16@2x.png` and `icon_32x32.png` are both 32 px but they are *not* the same drawing, one being a 16 pt icon on Retina and the other a 32 pt icon at 1x. So `icon.svg` (seven bands, full particle field) serves 128 pt and up, `icon-32.svg` (five bands) serves 32 pt, and `icon-16.svg` (three bands) serves 16 pt. Each removes sub-pixel geometry rather than scaling it down. Drop the two reduced files and the script falls back to the master, announcing it.
+
+The script asserts what `iconutil` will not: that every PNG's actual pixel size matches the slot it is about to fill — `iconutil` neither resizes nor checks, so a mismatch yields an `.icns` that is silently wrong until someone opens Finder in list view. It then round-trips the result back to an iconset and verifies all ten representations.
+
+Only `icon.icns` ever reaches the bundle: the macOS bundler copies the first `.icns` it finds in `bundle.icon` verbatim and points `CFBundleIconFile` at it. The ten PNGs stay because Tauri errors on a missing path in that list, and because they are the inspectable proof set.
 
 ## Why not PyInstaller
 

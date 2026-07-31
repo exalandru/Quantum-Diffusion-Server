@@ -10,9 +10,10 @@
     "typecheck": "tsc --noEmit",
     "preview": "vite preview",
     "sync-resources": "node scripts/sync-server-resources.mjs",
+    "generate-icon": "node scripts/generate-app-icon.mjs",
     "tauri": "tauri",
-    "app:dev": "CARGO_TARGET_DIR=../../build/desktop/tauri tauri dev",
-    "app:build": "CARGO_TARGET_DIR=../../build/desktop/tauri tauri build && node scripts/collect-desktop-artifacts.mjs"
+    "app:dev": "CARGO_TARGET_DIR=../../../build/desktop/tauri tauri dev",
+    "app:build": "CARGO_TARGET_DIR=../../../build/desktop/tauri tauri build && node scripts/collect-desktop-artifacts.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",

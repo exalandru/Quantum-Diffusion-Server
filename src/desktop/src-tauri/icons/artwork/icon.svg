@@ -1,0 +1,243 @@
+<!--
+  QDS app icon — master artwork (full detail: 128, 256 and 512 pt).
+
+  Subject: a latent field. Scattered cool particles on the left resolve, band by
+  band, into crisp luminous strokes on the right — the gesture of diffusion
+  itself. Palette anchored on the panel's own accent (the CSS custom property
+  named "accent" in src/styles.css: #6b4bd6 light, #9b7cf5 dark), so that the
+  icon and the UI agree. Note that XML comments cannot contain a double hyphen,
+  so that property is spelled out here rather than written with its prefix.
+
+  Rendered by `scripts/generate-app-icon.mjs`, which drives resvg through the
+  Tauri CLI. Constraints that come from that renderer, all load-bearing:
+
+  * `width`/`height`/`viewBox` must be explicit, numeric and square. Given a
+    percentage, usvg silently falls back to its 100x100 `default_size`.
+  * No <text> (the CLI loads system fonts, so the output would depend on the
+    build machine) and no <image>.
+  * No feTurbulence: it is evaluated in device pixels, so the noise pattern
+    would differ between the 16 px and the 1024 px render. Particles are
+    explicit geometry for that reason.
+  * The shadow filter needs an enlarged region, otherwise it clips at the
+    element's bounding box.
+
+  Geometry follows Apple's Big Sur+ grid: 1024 canvas, 824x824 body, 100 px
+  margin all round. The body is a *continuous-curvature* squircle, not a
+  `rect rx="185.4"` — a circular corner reads visibly rounder than its
+  neighbours at 512 px. Corner construction: radius 185.4, smoothing 0.6, which
+  yields a=103.8374 b=51.9187 c=39.6594 d=20.2069 and an 81.0177 arc section
+  per corner (they sum to p=296.64, the length each corner takes off an edge).
+  The path is written out twice — once filled, once as the clip — rather than
+  defined once and <use>d, to keep the file free of cross-references.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" shape-rendering="geometricPrecision">
+  <defs>
+    <!-- Deep indigo body, lit from the upper left. -->
+    <linearGradient id="body" gradientUnits="userSpaceOnUse" x1="180" y1="140" x2="880" y2="900">
+      <stop offset="0" stop-color="#191338"/>
+      <stop offset="0.55" stop-color="#191338"/>
+      <stop offset="1" stop-color="#241a4d"/>
+    </linearGradient>
+
+    <!-- The resolved side glows: energy accumulates where the noise settles. -->
+    <radialGradient id="glow" gradientUnits="userSpaceOnUse" cx="760" cy="512" r="470">
+      <stop offset="0" stop-color="#6b4bd6" stop-opacity="0.55"/>
+      <stop offset="0.55" stop-color="#5a3fbc" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#12102a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- A counter-shadow on the noise side, to sink the left into the dark. -->
+    <linearGradient id="settle" gradientUnits="userSpaceOnUse" x1="100" y1="0" x2="620" y2="0">
+      <stop offset="0" stop-color="#0b0820" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#0b0820" stop-opacity="0"/>
+    </linearGradient>
+
+    <!--
+      One gradient in user space for every band, so colour is a function of x
+      alone: dim violet where the field is still noise, near-white where it has
+      resolved. That shared mapping is what makes the seven strokes read as one
+      field rather than seven unrelated bars.
+    -->
+    <linearGradient id="band" gradientUnits="userSpaceOnUse" x1="185" y1="0" x2="870" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.30"/>
+      <stop offset="0.30" stop-color="#7f5ce8" stop-opacity="0.70"/>
+      <stop offset="0.62" stop-color="#9b7cf5" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#e8def8"/>
+    </linearGradient>
+
+    <!-- The centre band carries the single pink accent. -->
+    <linearGradient id="bandHero" gradientUnits="userSpaceOnUse" x1="185" y1="0" x2="870" y2="0">
+      <stop offset="0" stop-color="#9b7cf5" stop-opacity="0.32"/>
+      <stop offset="0.30" stop-color="#845fe8" stop-opacity="0.75"/>
+      <stop offset="0.66" stop-color="#b98cf5"/>
+      <stop offset="0.88" stop-color="#f59ae0"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+
+    <!-- Particles fade out towards the resolved side, where bands take over. -->
+    <linearGradient id="dust" gradientUnits="userSpaceOnUse" x1="150" y1="0" x2="620" y2="0">
+      <stop offset="0" stop-color="#8f7ae0"/>
+      <stop offset="0.55" stop-color="#b9a6f5"/>
+      <stop offset="1" stop-color="#e8def8" stop-opacity="0.15"/>
+    </linearGradient>
+
+    <!-- The top sheen every macOS icon has; keeps the body from reading flat. -->
+    <linearGradient id="sheen" gradientUnits="userSpaceOnUse" x1="0" y1="100" x2="0" y2="500">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.14"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <filter id="shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.32"/>
+    </filter>
+
+    <!--
+      A horizontal stroke has a zero-height geometric bounding box, and resvg
+      refuses a filter on a zero-sized shape ("Filters on zero-sized shapes are
+      not allowed") — the element is simply dropped, silently. The region is
+      therefore given in user space, sized to the hero band plus room for the
+      blur, instead of being derived from the bounding box.
+    -->
+    <filter id="bloom" filterUnits="userSpaceOnUse" x="120" y="430" width="800" height="164">
+      <feGaussianBlur stdDeviation="18"/>
+    </filter>
+
+    <clipPath id="body-clip">
+      <path d="M 627.36 100
+               c 103.8374 0 155.7561 0 195.4155 20.2069
+               a 185.4 185.4 0 0 1 81.0177 81.0177
+               c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+               L 924 627.36
+               c 0 103.8374 0 155.7561 -20.2069 195.4155
+               a 185.4 185.4 0 0 1 -81.0177 81.0177
+               c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+               L 396.64 924
+               c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+               a 185.4 185.4 0 0 1 -81.0177 -81.0177
+               c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+               L 100 396.64
+               c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+               a 185.4 185.4 0 0 1 81.0177 -81.0177
+               c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M 627.36 100
+           c 103.8374 0 155.7561 0 195.4155 20.2069
+           a 185.4 185.4 0 0 1 81.0177 81.0177
+           c 20.2069 39.6594 20.2069 91.5781 20.2069 195.4155
+           L 924 627.36
+           c 0 103.8374 0 155.7561 -20.2069 195.4155
+           a 185.4 185.4 0 0 1 -81.0177 81.0177
+           c -39.6594 20.2069 -91.5781 20.2069 -195.4155 20.2069
+           L 396.64 924
+           c -103.8374 0 -155.7561 0 -195.4155 -20.2069
+           a 185.4 185.4 0 0 1 -81.0177 -81.0177
+           c -20.2069 -39.6594 -20.2069 -91.5781 -20.2069 -195.4155
+           L 100 396.64
+           c 0 -103.8374 0 -155.7561 20.2069 -195.4155
+           a 185.4 185.4 0 0 1 81.0177 -81.0177
+           c 39.6594 -20.2069 91.5781 -20.2069 195.4155 -20.2069 Z"
+        fill="url(#body)" filter="url(#shadow)"/>
+
+  <g clip-path="url(#body-clip)">
+    <rect x="100" y="100" width="824" height="824" fill="url(#glow)"/>
+    <rect x="100" y="100" width="824" height="824" fill="url(#settle)"/>
+
+    <!--
+      Free particles: the field before it has condensed onto the bands. Six per
+      band row, converging on it — the vertical offset decays and flips sign as x
+      grows, so each row visibly gathers its own particles rather than sitting in
+      unrelated dust. The phase differs per row to keep the seven groups from
+      lining up into columns. Placed explicitly rather than generated, so every
+      size renders the same drawing.
+    -->
+    <g fill="url(#dust)">
+      <circle cx="155" cy="268" r="5" opacity="0.38"/>
+      <circle cx="192" cy="350" r="6" opacity="0.44"/>
+      <circle cx="231" cy="282" r="7" opacity="0.50"/>
+      <circle cx="272" cy="340" r="6" opacity="0.52"/>
+      <circle cx="312" cy="296" r="5" opacity="0.48"/>
+      <circle cx="352" cy="328" r="4" opacity="0.42"/>
+
+      <circle cx="168" cy="428" r="6" opacity="0.42"/>
+      <circle cx="205" cy="342" r="7" opacity="0.48"/>
+      <circle cx="245" cy="414" r="6" opacity="0.54"/>
+      <circle cx="286" cy="356" r="7" opacity="0.56"/>
+      <circle cx="326" cy="400" r="5" opacity="0.50"/>
+      <circle cx="366" cy="368" r="4" opacity="0.44"/>
+
+      <circle cx="152" cy="402" r="5" opacity="0.36"/>
+      <circle cx="190" cy="492" r="6" opacity="0.46"/>
+      <circle cx="229" cy="414" r="7" opacity="0.52"/>
+      <circle cx="270" cy="478" r="6" opacity="0.54"/>
+      <circle cx="310" cy="430" r="5" opacity="0.48"/>
+      <circle cx="350" cy="462" r="4" opacity="0.42"/>
+
+      <circle cx="146" cy="556" r="7" opacity="0.44"/>
+      <circle cx="184" cy="464" r="8" opacity="0.52"/>
+      <circle cx="224" cy="548" r="7" opacity="0.58"/>
+      <circle cx="265" cy="478" r="8" opacity="0.60"/>
+      <circle cx="306" cy="536" r="6" opacity="0.56"/>
+      <circle cx="347" cy="492" r="5" opacity="0.48"/>
+
+      <circle cx="160" cy="534" r="5" opacity="0.38"/>
+      <circle cx="198" cy="622" r="6" opacity="0.46"/>
+      <circle cx="238" cy="546" r="7" opacity="0.52"/>
+      <circle cx="279" cy="610" r="6" opacity="0.54"/>
+      <circle cx="319" cy="562" r="5" opacity="0.48"/>
+      <circle cx="359" cy="596" r="4" opacity="0.42"/>
+
+      <circle cx="172" cy="700" r="6" opacity="0.42"/>
+      <circle cx="209" cy="610" r="7" opacity="0.48"/>
+      <circle cx="249" cy="686" r="6" opacity="0.52"/>
+      <circle cx="290" cy="622" r="7" opacity="0.54"/>
+      <circle cx="330" cy="668" r="5" opacity="0.48"/>
+      <circle cx="370" cy="634" r="4" opacity="0.42"/>
+
+      <circle cx="156" cy="672" r="5" opacity="0.36"/>
+      <circle cx="194" cy="760" r="6" opacity="0.44"/>
+      <circle cx="234" cy="686" r="6" opacity="0.50"/>
+      <circle cx="275" cy="748" r="5" opacity="0.50"/>
+      <circle cx="315" cy="700" r="4" opacity="0.44"/>
+      <circle cx="355" cy="732" r="4" opacity="0.38"/>
+
+      <!-- A handful further out, to keep the field from ending on a clean line. -->
+      <circle cx="138" cy="340" r="4" opacity="0.22"/>
+      <circle cx="188" cy="232" r="4" opacity="0.24"/>
+      <circle cx="142" cy="620" r="4" opacity="0.20"/>
+      <circle cx="176" cy="806" r="5" opacity="0.24"/>
+      <circle cx="404" cy="268" r="4" opacity="0.30"/>
+      <circle cx="430" cy="352" r="3" opacity="0.26"/>
+      <circle cx="438" cy="662" r="3" opacity="0.24"/>
+      <circle cx="412" cy="784" r="4" opacity="0.26"/>
+    </g>
+
+    <!--
+      Seven strokes, each a single horizontal path whose dash pattern grows from
+      a dot to a solid: that is the whole "noise resolving" effect, and it costs
+      one attribute per band. Round caps mean a zero-length dash renders as a
+      full disc of the stroke's width. The patterns deliberately differ per band
+      so the dots do not line up into a visible grid.
+    -->
+    <g fill="none" stroke="url(#band)" stroke-linecap="round">
+      <path d="M 210 312 H 790" stroke-width="26" stroke-dasharray="1 58 2 52 4 46 9 40 18 34 32 28 320"/>
+      <path d="M 190 380 H 838" stroke-width="34" stroke-dasharray="1 74 2 68 5 60 11 52 22 44 40 36 380"/>
+      <path d="M 225 448 H 762" stroke-width="28" stroke-dasharray="1 60 3 54 6 48 12 42 24 34 300"/>
+      <path d="M 205 580 H 800" stroke-width="28" stroke-dasharray="1 60 2 54 5 48 11 42 22 36 40 30 320"/>
+      <path d="M 230 648 H 744" stroke-width="34" stroke-dasharray="1 72 3 64 7 56 15 48 30 40 280"/>
+      <path d="M 215 716 H 812" stroke-width="24" stroke-dasharray="1 54 2 48 4 44 9 38 18 32 34 26 320"/>
+    </g>
+
+    <!-- The centre band: thickest, brightest, and the only one that blooms. -->
+    <g fill="none" stroke="url(#bandHero)" stroke-linecap="round">
+      <path d="M 185 512 H 856" stroke-width="44"
+            stroke-dasharray="1 78 3 70 7 62 15 54 30 46 52 38 420"
+            opacity="0.55" filter="url(#bloom)"/>
+      <path d="M 185 512 H 856" stroke-width="44"
+            stroke-dasharray="1 78 3 70 7 62 15 54 30 46 52 38 420"/>
+    </g>
+
+    <rect x="100" y="100" width="824" height="824" fill="url(#sheen)"/>
+  </g>
+</svg>
