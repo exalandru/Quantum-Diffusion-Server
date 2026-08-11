@@ -144,9 +144,12 @@ def test_flux2_dev_is_guidance_distilled_and_prequantized():
     # Base model: 50 steps, and 1024² to avoid paying for area on a 32B.
     assert spec.default_steps == 50
     assert (spec.default_width, spec.default_height) == (1024, 1024)
-    # The upstream repo ships bf16: loading goes through a local artifact.
+    # The upstream repo ships bf16: loading goes through a saved variant, which
+    # is now a *variant* rather than the model's identity. Its source is the raw
+    # repository, like every other built-in, so it can be installed and located.
     assert spec.quantize == 8
-    assert spec.model_path is not None and spec.model_path.endswith("flux2-dev-mlx-8bit")
+    assert spec.model_path is None
+    assert spec.repo == "black-forest-labs/FLUX.2-dev"
     # Multi-image editing is not implemented.
     assert spec.edit is None
 
@@ -220,7 +223,8 @@ def test_an_empty_global_size_means_unset():
     # Same convention as `api_key` and `log_file`: an empty string is how an
     # environment variable says "leave this alone", so it must not be read as a
     # malformed size.
-    assert Settings.model_validate({"default_size": ""}).registry() == build_registry({})
+    settings = Settings.model_validate({"default_size": ""})
+    assert settings.registry() == build_registry({}, cache_root=settings.effective_cache_dir)
 
 
 def test_the_global_size_reaches_settings_registry():
@@ -278,19 +282,34 @@ def test_the_shipped_config_says_what_the_readme_says():
         assert spec.quantize == 4, spec.key
 
 
+def codes(raw: dict) -> list[str]:
+    """The runtime invariants a configuration breaks, without loading a file.
+
+    These are no longer construction errors: a document that cannot serve
+    generations is still a document model management has to be able to read and
+    repair. `load_settings(strict=True)` — what the server uses — is what turns
+    them back into refusals, and `test_catalogue_resilience.py` holds that end.
+    """
+    return [issue.code for issue in Settings.model_validate(raw).runtime_issues()]
+
+
 def test_default_model_must_exist():
-    with pytest.raises(ValueError):
-        Settings.model_validate({"default_model": "sdxl"})
+    assert codes({"default_model": "sdxl"}) == ["unknown_default_model"]
+    assert codes({"default_model": "z-image"}) == []
 
 
 def test_default_model_cannot_be_disabled():
-    with pytest.raises(ValueError):
-        Settings.model_validate({"default_model": "z-image", "models": {"z-image": {"enabled": False}}})
+    assert codes({"default_model": "z-image", "models": {"z-image": {"enabled": False}}}) == [
+        "default_model_disabled"
+    ]
+    # Disabling anything else is none of this invariant's business.
+    assert codes({"default_model": "z-image", "models": {"flux2-dev": {"enabled": False}}}) == []
 
 
 def test_non_local_binding_requires_an_api_key():
-    with pytest.raises(ValueError, match="api_key"):
-        Settings.model_validate({"server": {"host": "0.0.0.0"}})
+    assert codes({"server": {"host": "0.0.0.0"}}) == ["unauthenticated_host"]
+    assert "api_key" in Settings.model_validate({"server": {"host": "0.0.0.0"}}).runtime_issues()[0].message
 
     settings = Settings.model_validate({"server": {"host": "0.0.0.0", "api_key": "secret"}})
     assert settings.server.is_loopback is False
+    assert settings.runtime_issues() == []

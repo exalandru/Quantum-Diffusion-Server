@@ -211,6 +211,11 @@ def scan_repos(root: Path) -> tuple[dict[str, Availability], dict[str, dict[str,
     for repo in cache.repos:
         info[repo.repo_id] = {
             "size_gb": round(repo.size_on_disk / 1e9, 1),
+            # huggingface_hub's own figure, and the reason nothing here walks the
+            # snapshot: `size_on_disk` sums the *blobs*. A snapshot directory is
+            # symlinks into `blobs/`, so summing it would count every file twice —
+            # and would count a file shared between two revisions twice more.
+            "size_bytes": int(repo.size_on_disk),
             "files": repo.nb_files,
             "path": str(repo.repo_path),
         }

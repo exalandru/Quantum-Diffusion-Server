@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -73,7 +74,161 @@ def _variants_of(spec: Any, source: str) -> list[Any]:
         return []
     from mflux_server import artifacts
 
-    return artifacts.discover_variants(spec.key, source)
+    return artifacts.discover_variants(spec.key, source, base=spec.cache_root)
+
+
+def _partials_of(spec: Any, source: str) -> list[Any]:
+    """Unfinished conversions, kept strictly apart from the usable ones."""
+    if not spec.quantization.supports_prequantize:
+        return []
+    from mflux_server import artifacts
+    from mflux_server import components as comp
+
+    return artifacts.discover_partials(
+        spec.key,
+        source,
+        expected=comp.required_components(spec.family),
+        strategy=spec.quantization.prequantize_strategy,
+        base=spec.cache_root,
+    )
+
+
+def _disk_report(
+    spec: Any,
+    *,
+    source: str,
+    availability: str,
+    info: dict[str, Any],
+    variants: list[Any],
+    partials: list[Any],
+) -> dict[str, Any]:
+    """What this model actually occupies locally, split into the three questions.
+
+    Three, because they are three different numbers and the interface used to
+    show one of them for all of them:
+
+    * **source** — the weights it was converted *from*. `None` when they are not
+      on this machine, which is not the same as zero: a catalogue entry knows how
+      big its repository is on HuggingFace, and printing that as disk usage would
+      be describing storage that is not being used.
+    * **active** — the representation generation will actually load. A model set
+      to its 4-bit copy occupies 5.9 GB at load time, whatever its 20.5 GB source
+      still takes on disk.
+    * **total** — everything attributable to this model, deduplicated by path.
+      That last part matters twice over: FLUX.2-dev's *source* is its own legacy
+      8-bit artifact, which is also listed as a variant, and adding the two would
+      report 110 GB for 55 GB of files.
+    """
+    from mflux_server import artifacts
+    from mflux_server import availability as av
+
+    entries: dict[str, dict[str, Any]] = {}
+
+    source_bytes: int | None = None
+    source_path: str | None = None
+    if availability == av.PRESENT:
+        if info.get("size_bytes") is not None:
+            source_bytes = int(info["size_bytes"])
+            source_path = str(info.get("path") or source)
+        else:
+            source_path = str(Path(source).expanduser())
+            source_bytes = artifacts.directory_size(Path(source_path))
+        entries[source_path] = {
+            "kind": "source",
+            "bits": None,
+            "bytes": source_bytes,
+            "path": source_path,
+            "is_source": True,
+        }
+
+    for variant in variants:
+        if variant.size_bytes is None:
+            continue
+        # FLUX.2-dev's source *is* its 8-bit artifact. One directory, one entry,
+        # marked as both — two lines reading 54.7 GB over a total of 54.7 GB is
+        # how a breakdown teaches someone not to trust it.
+        entries[variant.path] = {
+            "kind": "variant",
+            "bits": variant.bits,
+            "bytes": variant.size_bytes,
+            "path": variant.path,
+            "is_source": variant.path in entries,
+        }
+
+    for partial in partials:
+        entries[partial.path] = {
+            "kind": "partial",
+            "bits": partial.bits,
+            "bytes": partial.size_bytes,
+            "path": partial.path,
+            "is_source": False,
+        }
+
+    active_bytes: int | None = source_bytes
+    if spec.prequantized_variant is not None:
+        chosen = [v for v in variants if v.bits == spec.prequantized_variant]
+        # A variant that is selected but not present is not a size we may guess.
+        active_bytes = chosen[0].size_bytes if chosen else None
+
+    return {
+        "source_bytes": source_bytes,
+        "active_bytes": active_bytes,
+        # Deduplicated by path: one directory contributes its bytes once, however
+        # many roles it plays.
+        "total_bytes": sum(entry["bytes"] for entry in entries.values()),
+        "breakdown": sorted(
+            entries.values(),
+            key=lambda entry: (entry["kind"] != "source", entry["bits"] or 0),
+        ),
+    }
+
+
+def catalogue_status() -> dict[str, Any]:
+    """The catalogue, plus whatever is wrong with the configuration it read.
+
+    Two outputs because there are two facts, and collapsing them is what made a
+    switched-off default model take the whole Models view down with it. The rows
+    describe sources on disk; the warnings describe invariants the *generation
+    server* needs and this configuration currently breaks. Neither is repaired
+    here — the interface shows the warning next to the controls that fix it.
+    """
+    settings = load_settings(strict=False)
+    warnings = [issue.as_dict() for issue in settings.runtime_issues()]
+    warnings.extend(_storage_warnings(settings))
+    return {"models": cache_status(), "warnings": warnings}
+
+
+def _storage_warnings(settings: Any) -> list[dict[str, str]]:
+    """Storage the configuration names and this machine cannot reach.
+
+    Only a directory the user explicitly chose is checked, and only for the two
+    states that are *not* "empty": a volume that is not mounted, and a directory
+    that cannot be read. A cache directory that simply does not exist yet is
+    normal — the first conversion creates it — and warning about that would train
+    the reader to ignore the warning that matters.
+
+    Saying nothing here is what would be wrong: an unplugged disk and an empty
+    one produce the same "no saved variants", and one of those is a model the
+    user spent hours converting.
+    """
+    from mflux_server import availability as av
+
+    chosen = settings.storage.cache_dir
+    if not chosen:
+        return []
+    state, detail = av.local_path_availability(chosen)
+    if state not in (av.VOLUME_UNMOUNTED, av.UNREADABLE):
+        return []
+    return [
+        {
+            "code": "cache_dir_unavailable",
+            "field": "storage.cache_dir",
+            "message": (
+                f"The pre-quantized model cache is unavailable: {detail}. Saved copies kept "
+                f"there cannot be found until it is back."
+            ),
+        }
+    ]
 
 
 def cache_status() -> list[dict[str, Any]]:
@@ -85,9 +240,14 @@ def cache_status() -> list[dict[str, Any]]:
     See `availability.py` for exactly what `present` does and does not claim.
     """
     from mflux_server import availability as av
+    from mflux_server import components as comp
     from mflux_server.registry import PROVENANCE_BUILT_IN
 
-    settings = load_settings()
+    # Not strict: scanning sources needs the storage root, the enabled flags and
+    # the path overrides, and none of the runtime invariants. A catalogue that
+    # refuses to render because the default model is switched off has removed the
+    # only screen that could switch it back on.
+    settings = load_settings(strict=False)
     # Idempotent: `main` already applied it. Doing it here too keeps `cache_status`
     # correct when imported directly, as the tests do.
     settings.apply_hf_home()
@@ -132,6 +292,9 @@ def cache_status() -> list[dict[str, Any]]:
             detail = None
             info = repo_info.get(target, {})
 
+        variants = _variants_of(spec, target)
+        partials = _partials_of(spec, target)
+
         rows.append(
             {
                 "key": key,
@@ -164,16 +327,46 @@ def cache_status() -> list[dict[str, Any]]:
                 # converted), availability (what exists) and activation (what is
                 # used) stay three separate facts.
                 "variants": [
-                    {"bits": v.bits, "path": v.path, "strategy": v.strategy, "legacy": v.legacy}
-                    for v in _variants_of(spec, target)
+                    {
+                        "bits": v.bits,
+                        "path": v.path,
+                        "strategy": v.strategy,
+                        "legacy": v.legacy,
+                        "size_bytes": v.size_bytes,
+                    }
+                    for v in variants
+                ],
+                # Work towards a variant that is not one yet. A separate list
+                # from `variants` because nothing may activate these.
+                "partials": [
+                    {
+                        "bits": p.bits,
+                        "path": p.path,
+                        "strategy": p.strategy,
+                        "components": p.components,
+                        "size_bytes": p.size_bytes,
+                    }
+                    for p in partials
                 ],
                 "active_variant": spec.prequantized_variant,
+                "disk": _disk_report(
+                    spec,
+                    source=target,
+                    availability=status,
+                    info=info,
+                    variants=variants,
+                    partials=partials,
+                ),
                 "quantization": {
                     "supports_quantization": spec.quantization.supports_quantization,
                     "quantize_choices": list(spec.quantization.quantize_choices),
                     "supports_prequantize": spec.quantization.supports_prequantize,
                     "prequantize_choices": list(spec.quantization.prequantize_choices),
                     "prequantize_strategy": spec.quantization.prequantize_strategy,
+                    # Which parts of this model can be converted on their own,
+                    # from the backend's table rather than from the interface's
+                    # idea of what a model is made of.
+                    "prequantize_components": comp.payload(spec.family),
                     "note": spec.quantization.note,
                 },
             }
@@ -184,7 +377,7 @@ def cache_status() -> list[dict[str, Any]]:
 def fetch(key: str) -> int:
     from mflux_server.registry import BASE_SPECS_BY_KEY
 
-    settings = load_settings()
+    settings = load_settings(strict=False)
     settings.apply_hf_home()
     # `include_disabled`: the documented workflow is to download a model *before*
     # enabling it, and the enabled-only view silently fell back to the raw
@@ -237,15 +430,42 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    # Before anything imports huggingface_hub: it freezes `HF_HUB_CACHE` at import
-    # time, so the configured root has to be in the environment first.
-    load_settings().apply_hf_home()
-
     if args.status:
         # Straight to stdout, without the logging setup: this output is parsed.
-        json.dump(cache_status(), sys.stdout)
+        #
+        # An expected configuration failure — unparseable JSON, a model override
+        # the schema refuses — is answered with a structured error on the same
+        # channel rather than with a traceback. The supervisor reads the reason
+        # out of it and the interface shows that one sentence; the traceback
+        # still goes to stderr, where it is useful for debugging and harmless.
+        try:
+            # Before anything imports huggingface_hub: it freezes `HF_HUB_CACHE`
+            # at import time, so the configured root has to be in the
+            # environment first. Lenient, like the catalogue it is about to
+            # print: which model answers a request that names none has no
+            # bearing on where the weights are kept.
+            load_settings(strict=False).apply_hf_home()
+            json.dump(catalogue_status(), sys.stdout)
+        except ValueError as exc:
+            json.dump(
+                {
+                    "error": {
+                        "code": getattr(exc, "code", "invalid_config"),
+                        "field": getattr(exc, "field", None),
+                        "message": str(exc),
+                    }
+                },
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+            traceback.print_exc()
+            return 2
         sys.stdout.write("\n")
         return 0
+
+    # Downloading is model management too: it needs the storage root and the
+    # model's own entry, and nothing about the configured default model.
+    load_settings(strict=False).apply_hf_home()
 
     if not args.model:
         parser.error("give a model key, or --status")
@@ -284,7 +504,7 @@ def run_guarded(action: Any, *, what: str, log: logging.Logger | None = None) ->
 def _known_reason(exc: BaseException) -> str | None:
     """A plain sentence for the failures we expect, or None for a genuine bug."""
     name = type(exc).__name__
-    if name == "InsufficientDisk":
+    if name in {"InsufficientDisk", "UnavailableCache"}:
         return str(exc)
     if name == "GatedRepoError":
         return (

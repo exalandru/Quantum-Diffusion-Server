@@ -594,6 +594,12 @@ def _capabilities(spec: ModelSpec) -> dict:
         "default_steps": spec.default_steps,
         "default_guidance": spec.default_guidance,
         "quantize": spec.quantize,
+        # Which saved representation *this running process* loaded its registry
+        # with. The catalogue publishes the one the configuration currently
+        # selects; the two disagreeing is precisely what a restart would fix, and
+        # without this the interface had no way to tell that a variant it had
+        # just activated was not yet the one being generated from.
+        "active_variant": spec.prequantized_variant,
         # The quantization contract, published so the app stops keeping its own
         # copy of the bit-depth rules. `prequantized` used to stand in for all of
         # this and meant three different things at once.

@@ -10,11 +10,11 @@ import { invoke } from "@tauri-apps/api/core";
 
 import type {
   Capabilities,
+  CatalogueStatus,
   Health,
   ImportVerdict,
   LocateVerdict,
   JobStatus,
-  ModelStatus,
   Overview,
   Progress,
 } from "./types";
@@ -36,7 +36,15 @@ export const prequantizeRun = (
   components: string[] = [],
   dest?: string,
 ) => invoke<void>("prequantize_run", { model, bits, components, dest: dest ?? null });
-export const modelsStatus = () => invoke<ModelStatus[]>("models_status");
+/**
+ * The catalogue and whatever is wrong with the configuration it was read from.
+ *
+ * Two outputs rather than one list: a runtime invariant the *generation server*
+ * needs — a default model that has been switched off, say — used to make this
+ * call fail outright, taking the Models view with it and removing the only
+ * screen that could repair it.
+ */
+export const modelsStatus = () => invoke<CatalogueStatus>("models_status");
 /** Starts the download and returns once the child is running, not once it is done. */
 export const modelFetch = (key: string) => invoke<void>("model_fetch", { key });
 export const jobStatus = () => invoke<JobStatus>("job_status");

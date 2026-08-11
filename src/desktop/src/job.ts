@@ -48,6 +48,43 @@ export function describeJob(job: JobStatus): string {
   return job.message ?? "starting…";
 }
 
+/**
+ * What a finished operation actually achieved, from the child's own last word.
+ *
+ * The distinction this exists to preserve: a conversion run can succeed without
+ * producing anything usable. `prequantize_done` is emitted only after Python has
+ * validated every required component and written the completion marker;
+ * `prequantize_partial` is emitted when the run did what was asked and the
+ * artifact is still incomplete. Both are successful exits, and telling them
+ * apart from an exit code is impossible — which is why nothing here looks at
+ * one.
+ *
+ * `labelFor` translates a component key into the name the backend publishes for
+ * it, so this reports "Text encoder" rather than `text_encoder` without keeping
+ * a list of its own.
+ */
+export function describeOutcome(
+  job: JobStatus,
+  labelFor: (key: string) => string = (key) => key,
+): string | null {
+  const fields = job.fields ?? {};
+  if (job.event === "prequantize_done") {
+    const { bits } = fields as { bits?: number };
+    return bits ? `${bits}-bit variant ready and selected.` : "Variant ready and selected.";
+  }
+  if (job.event === "prequantize_partial") {
+    const { completed, missing } = fields as { completed?: string[]; missing?: string[] };
+    const done = (completed ?? []).map(labelFor);
+    const left = (missing ?? []).length;
+    if (!done.length) return null;
+    return (
+      `${done.join(", ")} converted — ` +
+      `${left} component${left === 1 ? "" : "s"} remaining before this variant can be used.`
+    );
+  }
+  return null;
+}
+
 export type JobView = {
   job: JobStatus | null;
   /** Rust could not be asked. Not the same as "no job is running". */

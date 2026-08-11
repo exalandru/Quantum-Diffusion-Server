@@ -1,12 +1,12 @@
-"""Pre-quantization of FLUX.2-dev into a local MLX artifact.
+"""Pre-quantization into a local MLX artifact, one component at a time.
 
-The upstream repo ships bf16: a 64.5 GB transformer plus a 45.8 GB text encoder
-plus the VAE. That is ~111 GB of resident weights, impossible on 96 GB of
-unified memory. At 8 bits we drop to ~58 GB, comfortably within reach — but
-quantizing on the fly requires holding the bf16 in memory first. Hence this
-one-time conversion.
+The technique was built for FLUX.2-dev, whose upstream repo ships bf16: a 64.5 GB
+transformer plus a 45.8 GB text encoder plus the VAE. That is ~111 GB of resident
+weights, impossible on 96 GB of unified memory. At 8 bits we drop to ~58 GB,
+comfortably within reach — but quantizing on the fly requires holding the bf16 in
+memory first. Hence this one-time conversion.
 
-Two precautions, each bounding a different resource:
+Three precautions, each bounding a different resource:
 
 * **one component at a time.** `WeightApplier.apply_and_quantize` loads every
   component in bf16 before quantizing anything, so we go through mflux's
@@ -14,9 +14,29 @@ Two precautions, each bounding a different resource:
 * **block-by-block quantization.** A single `nn.quantize` over the whole
   transformer makes 64.5 GB of bf16 coexist with 34 GB of 8-bit, i.e. ~96 GB.
   Handling one block at a time and evaluating brings the peak down to ~66 GB.
+* **no eager evaluation of the source weights.** MLX is lazy, and staying lazy
+  between `update` and the block loop is what lets each block's source be
+  materialised only when that block is quantized. Measured on z-image's
+  transformer at 4 bits: 12.41 GB peak with an `mx.eval` after `update`, 4.68 GB
+  without, byte-identical output.
 
 The default order (transformer, then encoder, then VAE) lets you purge the HF
 cache between components: the disk peak falls from ~169 GB to ~97 GB.
+
+**Every supported family now takes this route**, not only FLUX.2-dev. The generic
+alternative was `model.save_model(dest)` after `load_model`, which is one line and
+holds the entire model resident to write it — so converting a 20 GB model peaked
+at the size of the whole thing when no single component of it is more than half
+that. Nothing about that was specific to being small; it was specific to nobody
+having generalised the FLUX.2-dev path. What made generalising it possible is that
+mflux writes a model as one directory per component (`ModelSaver.save_model` walks
+`weight_definition.get_components()` and skips what the object does not carry), so
+an artifact can be assembled across several runs — and even across several
+processes.
+
+What is family-specific is which module class each component is, and that comes
+from the family's own variant class (its annotations) and `ModelConfig`, resolved
+through `registry.family_structure`. No model maths is reimplemented here.
 
 Reloading needs no code at all: `WeightLoader._load_component` tries
 `_try_load_mflux_format` first, reads the `quantization_level` written here into
@@ -35,13 +55,15 @@ from pathlib import Path
 
 from mflux_server import artifacts
 from mflux_server import availability as av
+from mflux_server import components as comp
 from mflux_server.logs import SERVER_LOGGER, setup_logging
 from mflux_server.settings import ENV_PREFIX
 
 logger = logging.getLogger(f"{SERVER_LOGGER}.prequantize")
 
-#: Enforced order: biggest first, so the HF cache can be purged between steps
-#: and the disk peak stays bounded.
+#: FLUX.2-dev's order, kept as a name because its disk arithmetic below is
+#: written in terms of it. Every family's order — biggest first, for the same
+#: reason — is `components.components_for(family)`.
 COMPONENT_ORDER = ("transformer", "text_encoder", "vae")
 
 #: Measured sizes of each component, in GB: the bf16 download, and the 8-bit
@@ -91,19 +113,116 @@ def free_gb(path: Path) -> float:
     return usage.free / 1e9
 
 
-def _build_module(name: str, model_config):
-    from mflux.models.flux2.model.flux2_transformer.transformer import Flux2Transformer
-    from mflux.models.flux2.model.flux2_vae.vae import Flux2VAE
+def _module_class(variant_class, name: str):
+    """The module class a family uses for one component.
 
-    from mflux_server.flux2_dev.mistral3 import Mistral3TextEncoder
+    Read off the variant class's own annotations — `ZImage.transformer:
+    ZImageTransformer` — which is where every family already states it, and which
+    `test_components.py` checks stays true. The alternative was a second table
+    naming three classes per family, i.e. exactly the kind of restatement that
+    goes stale silently when mflux changes a class.
 
+    `get_type_hints` rather than `__annotations__`: a module with `from __future__
+    import annotations` (QDS's own `Flux2Dev`) stores them as strings.
+    """
+    from typing import get_type_hints
+
+    try:
+        hints = get_type_hints(variant_class)
+    except Exception:  # pragma: no cover - defensive; falls back to raw annotations
+        hints = dict(getattr(variant_class, "__annotations__", {}))
+    target = hints.get(name)
+    if not isinstance(target, type):
+        raise ValueError(
+            f"{variant_class.__name__} does not declare a module class for component {name!r}, "
+            f"so it cannot be converted on its own."
+        )
+    return target
+
+
+def _module_kwargs(model_config, name: str) -> dict:
+    """Constructor overrides for one component, from the model's own configuration.
+
+    Which model a family's class is building is carried by `ModelConfig`:
+    `flux2` and `ernie` size their transformer and text encoder from
+    `transformer_overrides` / `text_encoder_overrides`, and building those with
+    the class defaults instead would silently produce a differently shaped module
+    — one whose `update(..., strict=False)` then leaves tensors unassigned. Every
+    initializer in mflux reads exactly these two attributes, so this mirrors them
+    rather than inventing a convention.
+    """
     if name == "transformer":
-        return Flux2Transformer(**model_config.transformer_overrides)
+        return dict(getattr(model_config, "transformer_overrides", None) or {})
     if name == "text_encoder":
-        return Mistral3TextEncoder(**model_config.text_encoder_overrides)
-    if name == "vae":
-        return Flux2VAE()
-    raise ValueError(f"Unknown component: {name!r}")
+        return dict(getattr(model_config, "text_encoder_overrides", None) or {})
+    return {}
+
+
+def _build_module(variant_class, model_config, name: str):
+    return _module_class(variant_class, name)(**_module_kwargs(model_config, name))
+
+
+def single_component_definition(definition, name: str, *, with_tokenizers: bool):
+    """A weight definition exposing one component, for a one-component run.
+
+    `WeightLoader.load` and `ModelSaver.save_model` both walk *all* of a
+    definition's components; handing them a definition that has one is what keeps
+    the other components off the machine's memory and out of the download.
+
+    The download patterns are narrowed to that component's own subdirectory for
+    the same reason — a run converting the VAE must not pull 64 GB of transformer
+    onto the disk first.
+    """
+    from mflux.models.common.weights.loading.weight_definition import (  # noqa: F401
+        ComponentDefinition,
+        TokenizerDefinition,
+    )
+
+    by_name = {c.name: c for c in definition.get_components()}
+    if name not in by_name:
+        raise ValueError(f"Unknown component: {name!r}. Valid: {sorted(by_name)}")
+    component = by_name[name]
+    tokenizers = list(definition.get_tokenizers()) if with_tokenizers else []
+
+    class _SingleComponentDefinition:
+        @staticmethod
+        def get_components():
+            return [component]
+
+        @staticmethod
+        def get_tokenizers():
+            return tokenizers
+
+        @staticmethod
+        def get_download_patterns():
+            patterns = [
+                f"{component.hf_subdir}/*.safetensors",
+                f"{component.hf_subdir}/*.json",
+            ]
+            for tokenizer in tokenizers:
+                patterns.extend(tokenizer.download_patterns or [f"{tokenizer.hf_subdir}/**"])
+            return patterns
+
+        quantization_predicate = staticmethod(definition.quantization_predicate)
+
+    _SingleComponentDefinition.__name__ = (
+        f"{definition.__name__}{name.title().replace('_', '')}Only"
+    )
+    return _SingleComponentDefinition
+
+
+def tokenizers_present(dest: Path, definition) -> bool:
+    """Whether the artifact already carries every tokenizer the family declares.
+
+    Tokenizers are small, and they are not components — nothing quantizes them —
+    but an artifact without them cannot be loaded, so a run writes them whenever
+    they are absent rather than only when the text encoder happens to be the
+    component being converted.
+    """
+    return all(
+        (dest / tokenizer.hf_subdir).is_dir() and any((dest / tokenizer.hf_subdir).iterdir())
+        for tokenizer in definition.get_tokenizers()
+    )
 
 
 def _quantization_units(module) -> list:
@@ -154,25 +273,43 @@ def _memory() -> str:
     return f"mlx active {mx.get_active_memory() / 1e9:.1f} GB, peak {mx.get_peak_memory() / 1e9:.1f} GB"
 
 
-def _directory_size_gb(path: Path) -> float:
-    if not path.exists():
-        return 0.0
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) / 1e9
 
+def convert_component(
+    name: str,
+    *,
+    spec,
+    repo: str,
+    dest: Path,
+    bits: int,
+) -> int:
+    """Load one component, quantize it, save it, and release it.
 
-def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
+    The whole strategy in one function, and the order of the last two steps is
+    the point: nothing else of the model is ever resident, and this component is
+    gone before the next one is read. Returns the bytes written for it.
+
+    Family-general. What differs per family — which module class this component
+    is, what configuration sizes it, which predicate decides what may be
+    quantized — is read from that family's own mflux structures, never from a
+    table here.
+    """
     import mlx.core as mx
     from mflux.models.common.resolution.quantization_resolution import QuantizationResolution
     from mflux.models.common.tokenizer import TokenizerLoader
     from mflux.models.common.weights.loading.weight_loader import WeightLoader
     from mflux.models.common.weights.saving.model_saver import ModelSaver
 
-    from mflux_server.flux2_dev import flux2_dev_model_config, single_component_definition
-    from mflux_server.flux2_dev.weights import Flux2DevWeightDefinition
+    from mflux_server.registry import family_structure, model_config_for
 
-    definition = single_component_definition(name)
+    variant_class, family_definition = family_structure(spec.family)
+    # Tokenizers are written by whichever run first finds them missing: they are
+    # required to load the artifact and belong to no single component.
+    with_tokenizers = not tokenizers_present(dest, family_definition)
+    definition = single_component_definition(
+        family_definition, name, with_tokenizers=with_tokenizers
+    )
     component = definition.get_components()[0]
-    model_config = flux2_dev_model_config()
+    model_config = model_config_for(spec)
 
     logger.info("── %s ──────────────────────────────────────", name)
     logger.info(
@@ -198,22 +335,41 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
     if resolved_bits is None:
         raise ValueError(f"No quantization resolved for {name} (bits={bits!r})")
 
-    module = _build_module(name, model_config)
+    module = _build_module(variant_class, model_config, name)
     module.update(weights.components[component.name], strict=False)
     # Drop the loader's reference before quantizing: otherwise the bf16 arrays
     # stay alive for the whole conversion.
     weights.components.clear()
     del weights
     gc.collect()
-    mx.eval(module.parameters())
-    logger.info("bf16 weights applied — %s", _memory())
+    # Deliberately *not* `mx.eval(module.parameters())` here.
+    #
+    # MLX arrays are lazy, and that laziness is what makes this bounded: leaving
+    # the source weights unevaluated lets `_quantize_incrementally` materialise
+    # one block at a time, so the peak is the quantized result plus one block
+    # rather than the whole component in its source precision. Measured on
+    # z-image's transformer, 4-bit: 12.41 GB peak with an eval here, 4.68 GB
+    # without, and the two runs produced byte-identical shards. The eval was
+    # buying nothing but an honest-looking number in the log line below.
+    logger.info("Source weights attached (lazily) — %s", _memory())
 
-    _quantize_incrementally(
-        module,
-        bits=resolved_bits,
-        predicate=Flux2DevWeightDefinition.quantization_predicate,
-    )
-    logger.info("Quantized to %d bits — %s", resolved_bits, _memory())
+    # `skip_quantization` is the family's own statement that quantizing this
+    # component degrades it — Qwen says so of its text encoder — and mflux
+    # honours it on load as well. Quantizing it here would produce an artifact
+    # whose weights disagree with the structure mflux rebuilds for them.
+    if component.skip_quantization:
+        logger.info(
+            "%s is saved at its source precision: %s does not quantize it.",
+            name,
+            spec.family,
+        )
+    else:
+        _quantize_incrementally(
+            module,
+            bits=resolved_bits,
+            predicate=family_definition.quantization_predicate,
+        )
+        logger.info("Quantized to %d bits — %s", resolved_bits, _memory())
 
     shim = _ComponentShim(name, module)
     if definition.get_tokenizers():
@@ -222,21 +378,37 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
             model_path=repo,
         )
 
+    # Overwriting an existing component is the one case where a killed run could
+    # leave a directory that still *validates* — the previous index next to a
+    # truncated shard — so that case writes beside it and swaps. A first
+    # conversion writes straight in, which keeps the disk peak exactly what the
+    # arithmetic above assumes.
+    target = dest / component.hf_subdir
+    staging = dest / STAGING_DIRNAME if target.exists() else None
+    if staging is not None:
+        shutil.rmtree(staging, ignore_errors=True)
+
     ModelSaver.save_model(
         model=shim,
         bits=resolved_bits,
-        base_path=str(dest),
+        base_path=str(staging or dest),
         weight_definition=definition,
     )
+    if staging is not None:
+        _swap_into_place(staging, dest)
 
-    written = _directory_size_gb(dest / component.hf_subdir)
+    written_bytes = artifacts.directory_size(dest / component.hf_subdir)
     logger.info(
         "Written to %s (%.1f GB)",
         dest / component.hf_subdir,
-        written,
+        written_bytes / 1e9,
         extra={
             "event": "prequantize_component_done",
-            "fields": {"component": name, "bits": resolved_bits, "written_gb": round(written, 2)},
+            "fields": {
+                "component": name,
+                "bits": resolved_bits,
+                "written_gb": round(written_bytes / 1e9, 2),
+            },
         },
     )
 
@@ -244,80 +416,41 @@ def convert_component(name: str, *, repo: str, dest: Path, bits: int) -> None:
     gc.collect()
     mx.clear_cache()
     logger.info("Released — %s", _memory())
+    return written_bytes
 
 
 class _ComponentShim:
     """Minimal attribute holder for `ModelSaver.save_model`.
 
     The saver reads `getattr(model, component.name)` and, when present,
-    `model.tokenizers` — no need for the full model.
+    `model.tokenizers` — no need for the full model. That it accepts such an
+    object is not incidental: it is the property that makes an artifact
+    assemblable one run at a time.
     """
 
     def __init__(self, name: str, module) -> None:
         setattr(self, name, module)
 
 
-def convert_generic(spec, *, dest: Path, bits: int) -> tuple[str, ...]:
-    """Convert any model mflux can save, by loading it and calling `save_model`.
+#: Where a component is written when it is replacing one that is already there.
+STAGING_DIRNAME = ".qds-staging"
 
-    Deliberately not the FLUX.2-dev algorithm: that one exists because ~111 GB of
-    bf16 cannot be materialised at once, and paying its complexity for a model
-    that loads fine would be inventing work. `load_model` is QDS's own family
-    resolution, so this adds no second dispatch table — the requested bit depth
-    simply rides in on the spec, which is where `save_model` reads it from
-    (`self.bits`).
+
+def _swap_into_place(staging: Path, dest: Path) -> None:
+    """Move everything a staged save produced over the live artifact.
+
+    Directory by directory, and each one replaced only once it is complete in
+    staging. The window in which a component is neither the old one nor the new
+    one is a rename, rather than the length of a conversion.
     """
-    from dataclasses import replace as _replace
+    for child in sorted(staging.iterdir()):
+        if not child.is_dir():
+            continue
+        target = dest / child.name
+        shutil.rmtree(target, ignore_errors=True)
+        os.replace(child, target)
+    shutil.rmtree(staging, ignore_errors=True)
 
-    from mflux_server.registry import load_model
-
-    logger.info(
-        "Loading %s at %d bits — this holds the whole model in memory once",
-        spec.key,
-        bits,
-        extra={
-            "event": "prequantize_phase",
-            "fields": {"phase": "loading", "model": spec.key, "bits": bits},
-        },
-    )
-    model = load_model(_replace(spec, quantize=bits))
-
-    logger.info(
-        "Saving to %s",
-        dest,
-        extra={"event": "prequantize_phase", "fields": {"phase": "saving", "model": spec.key}},
-    )
-    model.save_model(str(dest))
-    del model
-
-    components = written_components(dest)
-    logger.info(
-        "Wrote %s (%.1f GB)",
-        dest,
-        _directory_size_gb(dest),
-        extra={
-            "event": "prequantize_phase",
-            "fields": {"phase": "written", "components": list(components)},
-        },
-    )
-    return components
-
-
-def written_components(dest: Path) -> tuple[str, ...]:
-    """Component directories the save actually produced.
-
-    Read off the filesystem rather than from a family table: `ModelSaver` decides
-    the subdirectories from each family's own `WeightDefinition`, and restating
-    that mapping in QDS is precisely the drift this project keeps removing. What
-    landed on disk is also what later validation has to check.
-    """
-    return tuple(
-        sorted(
-            child.name
-            for child in dest.iterdir()
-            if child.is_dir() and (child / av.INDEX_FILE).is_file()
-        )
-    )
 
 
 def main() -> int:
@@ -343,12 +476,16 @@ def main() -> int:
         choices=QUANTIZE_CHOICES,
         help="quantization bit width; must be one of the model's published choices",
     )
+    # No `choices`: which components exist is a property of the model, not of
+    # this parser, and the model is not known until `--model` has been read. The
+    # request is checked against that family's published components in `convert`,
+    # where an unknown name is named rather than turned into a parser error
+    # listing FLUX.2-dev's three.
     parser.add_argument(
         "--components",
         nargs="+",
-        default=list(COMPONENT_ORDER),
-        choices=list(COMPONENT_ORDER),
-        help="components to convert, in the given order (default: all, largest first)",
+        default=None,
+        help="components to convert (default: every component this model requires)",
     )
     parser.add_argument(
         "--json-logs",
@@ -365,20 +502,18 @@ def main() -> int:
     # huggingface_hub and its frozen cache constant.
     from mflux_server.settings import load_settings
 
-    logger.info("HuggingFace storage: %s", load_settings().apply_hf_home())
+    # Model management, like the catalogue: converting one model does not
+    # depend on which model answers a request that names none.
+    logger.info("HuggingFace storage: %s", load_settings(strict=False).apply_hf_home())
     return run_guarded(lambda: convert(args), what="conversion")
 
 
 def convert(args) -> int:
-    """Run one conversion, dispatching on the model's published strategy."""
-    from mflux_server.registry import (
-        BASE_SPECS_BY_KEY,
-        STRATEGY_MFLUX_SAVE,
-        STRATEGY_QDS_MEMORY_BOUNDED,
-    )
+    """Run one conversion of the requested components, and record what it did."""
+    from mflux_server.registry import BASE_SPECS_BY_KEY
     from mflux_server.settings import load_settings
 
-    settings = load_settings()
+    settings = load_settings(strict=False)
     spec = settings.registry(include_disabled=True).get(args.model) or BASE_SPECS_BY_KEY.get(
         args.model
     )
@@ -397,88 +532,192 @@ def convert(args) -> int:
             f"{args.bits}-bit is not available for {spec.key}. "
             f"Published choices: {list(capability.prequantize_choices)}"
         )
+    # Fails closed on the second contract too: a family with no established
+    # component list has no conversion, whatever its capability says.
+    if not comp.is_supported(spec.family):
+        raise ValueError(
+            f"No component-wise conversion is established for the {spec.family!r} family, "
+            f"so {spec.key} cannot be converted."
+        )
+
+    required = comp.required_components(spec.family)
+    requested = list(args.components) if args.components else list(required)
+    unknown = comp.unknown(spec.family, requested)
+    if unknown:
+        raise ValueError(
+            f"{spec.key} has no component called {', '.join(unknown)}. "
+            f"Its components are: {', '.join(comp.component_keys(spec.family))}."
+        )
+    ordered = comp.ordered(spec.family, requested)
 
     source = spec.model_path or spec.repo
+    _require_reachable_cache(settings)
     dest = (
         Path(args.dest).expanduser()
         if args.dest
-        else artifacts.artifact_dir(spec.key, source, args.bits)
+        else artifacts.artifact_dir(spec.key, source, args.bits, base=settings.effective_cache_dir)
     )
+    strategy = capability.prequantize_strategy
 
-    if capability.prequantize_strategy == STRATEGY_QDS_MEMORY_BOUNDED:
-        components = _run_memory_bounded(args, spec, dest=dest, source=source)
-        # A subset conversion is a legitimate way to work through FLUX.2-dev in
-        # stages, but the result is only an artifact once every component is
-        # there — otherwise `partial output != valid artifact` would not hold.
-        expected: tuple[str, ...] = av.REQUIRED_COMPONENTS
-    elif capability.prequantize_strategy == STRATEGY_MFLUX_SAVE:
-        # `save_model` writes every component of the family's definition in one
-        # call, or fails; so what landed is the whole set.
-        components = expected = _run_generic(spec, dest=dest, bits=args.bits)
-    else:  # pragma: no cover - guarded by the capability check above
-        raise ValueError(f"No conversion strategy for {spec.key}")
+    _check_disk(spec, ordered, dest=dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    _prepare_dest(dest, spec=spec, source=source, bits=args.bits, strategy=strategy)
+
+    already = artifacts.component_states(
+        dest, expected=required, source=source, bits=args.bits, strategy=strategy
+    )
+    done_before = sorted(n for n, state in already.items() if state == artifacts.COMPONENT_COMPLETE)
+    if done_before:
+        logger.info(
+            "Continuing an existing %d-bit conversion: %s already converted.",
+            args.bits,
+            ", ".join(done_before),
+            extra={
+                "event": "prequantize_continue",
+                "fields": {"bits": args.bits, "completed": done_before},
+            },
+        )
+
+    for name in ordered:
+        written = convert_component(
+            name, spec=spec, repo=args.repo or source, dest=dest, bits=args.bits
+        )
+        # The component's own directory is validated before anything records it
+        # as done: a run that exited is not evidence that a component landed.
+        if not av.component_is_complete(dest / name):
+            logger.error(
+                "%s did not produce a complete %s; leaving it unrecorded",
+                spec.key,
+                name,
+                extra={
+                    "event": "job_failed",
+                    "fields": {"reason": "component_incomplete", "component": name},
+                },
+            )
+            return 1
+        artifacts.record_component(
+            dest,
+            model_key=spec.key,
+            family=spec.family,
+            source=source,
+            bits=args.bits,
+            strategy=strategy or "",
+            component=name,
+            size_bytes=written,
+        )
+        if spec.family == "flux2-dev":
+            logger.info(
+                "The bf16 for '%s' is no longer needed: purge it from the HF cache before the "
+                "next component (`hf cache delete`, or delete %s/ inside the snapshot) to bound "
+                "the disk peak.\n",
+                name,
+                name,
+            )
 
     return _finish(
         dest,
         spec=spec,
         source=source,
         bits=args.bits,
-        strategy=capability.prequantize_strategy,
-        components=components,
-        expected=expected,
+        strategy=strategy or "",
+        required=required,
     )
 
 
-def _run_memory_bounded(args, spec, *, dest: Path, source: str) -> tuple[str, ...]:
-    """FLUX.2-dev, unchanged: component by component, block by block."""
-    needed = required_free_gb(args.components)
-    available = free_gb(dest)
-    if available < needed:
-        raise InsufficientDisk(
-            f"needs about {needed:.0f} GB free to convert {', '.join(args.components)}, "
-            f"but only {available:.0f} GB is available on {dest}. That figure assumes the bf16 "
-            f"source is purged from the HuggingFace cache between components; keeping all of it "
-            f"cached needs roughly 169 GB."
+def _require_reachable_cache(settings) -> None:
+    """Refuse before any heavy work if the chosen cache cannot be reached.
+
+    Only a directory the user explicitly chose is checked. Falling back to the
+    derived default would be the worst possible response: the conversion would
+    appear to succeed, tens of gigabytes would land somewhere the user did not
+    choose, and the artifact would be invisible the moment the volume came back.
+    An unplugged disk is a temporary fact about storage, and the honest answer is
+    to stop and say so.
+
+    A directory that merely does not exist yet is not unreachable — the first
+    conversion creates it — so only an absent volume or an unreadable path
+    refuses.
+    """
+    chosen = settings.storage.cache_dir
+    if not chosen:
+        return
+    state, detail = av.local_path_availability(chosen)
+    if state in (av.VOLUME_UNMOUNTED, av.UNREADABLE):
+        raise UnavailableCache(
+            f"the pre-quantized model cache is unavailable: {detail}. Reconnect it, or choose "
+            f"another folder under Configuration → Storage. Nothing was converted and the "
+            f"configured location was left unchanged."
         )
-    logger.info(
-        "Disk check: %.0f GB free, about %.0f GB required — %s",
-        available,
-        needed,
-        dest,
-        extra={
-            "event": "prequantize_disk_check",
-            "fields": {"free_gb": round(available, 1), "required_gb": needed},
-        },
-    )
-    dest.mkdir(parents=True, exist_ok=True)
-    for name in args.components:
-        convert_component(name, repo=args.repo or source, dest=dest, bits=args.bits)
-        logger.info(
-            "The bf16 for '%s' is no longer needed: purge it from the HF cache before the next "
-            "component (`hf cache delete`, or delete %s/ inside the snapshot) to bound the disk "
-            "peak.\n",
-            name,
-            name,
-        )
-    return written_components(dest)
 
 
-def _run_generic(spec, *, dest: Path, bits: int) -> tuple[str, ...]:
-    """Every other supported family, through mflux's own saved-model support.
+def _check_disk(spec, ordered: tuple[str, ...], *, dest: Path) -> None:
+    """Refuse to start a conversion that cannot fit.
 
-    No honest per-model output estimate exists here — the catalogue carries no
-    size — so the check is a floor rather than a promise: enough room that a
-    conversion cannot start on a volume that is already full.
+    FLUX.2-dev has measured figures per component, so its check is arithmetic.
+    Nothing else does — the catalogue carries no per-component size — so theirs
+    is a floor: enough room that a conversion cannot begin on a full volume.
+    Inventing a number for the second case would be worse than admitting there
+    is none.
     """
     available = free_gb(dest)
-    if available < GENERIC_MIN_FREE_GB:
+    if spec.family == "flux2-dev":
+        needed = required_free_gb(ordered)
+        if available < needed:
+            raise InsufficientDisk(
+                f"needs about {needed:.0f} GB free to convert {', '.join(ordered)}, "
+                f"but only {available:.0f} GB is available on {dest}. That figure assumes the bf16 "
+                f"source is purged from the HuggingFace cache between components; keeping all of it "
+                f"cached needs roughly 169 GB."
+            )
+    elif available < GENERIC_MIN_FREE_GB:
         raise InsufficientDisk(
             f"only {available:.0f} GB free where {dest} would be written. A saved copy of "
             f"{spec.key} is a large fraction of its source, and QDS has no exact figure for it, "
             f"so it refuses to start below {GENERIC_MIN_FREE_GB:.0f} GB."
         )
-    dest.mkdir(parents=True, exist_ok=True)
-    return convert_generic(spec, dest=dest, bits=bits)
+    logger.info(
+        "Disk check: %.0f GB free — %s",
+        available,
+        dest,
+        extra={
+            "event": "prequantize_disk_check",
+            "fields": {"free_gb": round(available, 1)},
+        },
+    )
+
+
+def _prepare_dest(dest: Path, *, spec, source: str, bits: int, strategy: str | None) -> None:
+    """Make the destination safe to write one component into.
+
+    Two things are cleared. Staging left by a killed run is garbage and is
+    removed. And a *completion* marker is removed before the artifact is
+    modified — with the components it vouched for carried into the progress
+    record first, so nothing is forgotten. An artifact being rewritten is not a
+    complete artifact, and leaving the marker in place would let a run cancelled
+    halfway keep advertising a model that is no longer all there.
+    """
+    shutil.rmtree(dest / STAGING_DIRNAME, ignore_errors=True)
+
+    record = artifacts.read_record(dest)
+    if record is None:
+        return
+
+    for name in record.expected:
+        if av.component_is_complete(dest / name):
+            artifacts.record_component(
+                dest,
+                model_key=spec.key,
+                family=spec.family,
+                source=record.source or source,
+                bits=record.bits if record.bits is not None else bits,
+                strategy=record.strategy or strategy or "",
+                component=name,
+            )
+    (dest / av.COMPLETION_MARKER).unlink(missing_ok=True)
+    logger.info(
+        "Rewriting an artifact that was complete; it is marked unusable until this run finishes.",
+        extra={"event": "prequantize_reopen", "fields": {"dest": str(dest)}},
+    )
 
 
 def _finish(
@@ -488,34 +727,69 @@ def _finish(
     source: str,
     bits: int,
     strategy: str,
-    components: tuple[str, ...],
-    expected: tuple[str, ...],
+    required: tuple[str, ...],
 ) -> int:
-    """Validate what was written, then record completion — in that order.
+    """Validate what is on disk, then record completion — in that order.
 
     A process that exited zero is not evidence: the marker goes down only after
-    the shards referenced by every index are on disk and the precision mflux
+    the shards referenced by every index are present and the precision mflux
     stamped matches the one that was asked for.
+
+    A run that converted only some of the required set is a **success**, not a
+    failure: converting a model in stages is the point of the exercise. It
+    leaves progress recorded and no completion marker, which is exactly the
+    state that says "not usable yet, carry on from here".
     """
-    if not components:
-        logger.warning("Nothing was written to %s", dest)
-        return 1
+    states = artifacts.component_states(
+        dest, expected=required, source=source, bits=bits, strategy=strategy
+    )
+    present = tuple(name for name in required if states.get(name) == artifacts.COMPONENT_COMPLETE)
+    missing = [name for name in required if name not in present]
 
-    missing = [name for name in expected if name not in components]
     if missing:
-        logger.warning(
-            "Converted %s, but %s still missing — no completion marker written",
-            ", ".join(components),
+        logger.info(
+            "Converted %s. Still missing: %s — %s stays partial until those are converted too.",
+            ", ".join(present) or "nothing",
             ", ".join(missing),
+            dest,
+            extra={
+                "event": "prequantize_partial",
+                "fields": {
+                    # The counterpart of `prequantize_done`, and the reason an
+                    # exit code cannot be read as a result: this run succeeded
+                    # and the artifact is still not usable.
+                    "model": spec.key,
+                    "variant_ready": False,
+                    "dest": str(dest),
+                    "bits": bits,
+                    "completed": list(present),
+                    "missing": missing,
+                },
+            },
         )
-        return 1
+        return 0
 
-    ok, detail = artifacts.components_are_complete(dest, components)
-    if not ok:
+    ok, detail = artifacts.components_are_complete(dest, present)
+    if not ok:  # pragma: no cover - `component_states` already checked each one
         logger.warning("Conversion incomplete at %s (%s); no completion marker written", dest, detail)
         return 1
 
-    stored = artifacts.stored_bits(dest, components)
+    missing_tokenizers = _missing_tokenizers(dest, spec)
+    if missing_tokenizers:
+        # An artifact without its tokenizer cannot be loaded, so it is not
+        # complete however many components validated.
+        logger.error(
+            "%s has every component but no %s directory; refusing to mark it complete",
+            dest,
+            ", ".join(missing_tokenizers),
+            extra={
+                "event": "job_failed",
+                "fields": {"reason": "tokenizer_missing", "missing": missing_tokenizers},
+            },
+        )
+        return 1
+
+    stored = artifacts.stored_bits(dest, present)
     if stored != bits:
         # Never record a precision the artifact does not actually carry.
         logger.error(
@@ -530,6 +804,7 @@ def _finish(
         )
         return 1
 
+    size_bytes = artifacts.directory_size(dest)
     artifacts.write_record(
         dest,
         model_key=spec.key,
@@ -537,24 +812,57 @@ def _finish(
         source=source,
         bits=bits,
         strategy=strategy,
-        components=components,
+        components=present,
+        required=required,
+        size_bytes=size_bytes,
     )
+    artifacts.clear_progress(dest)
     logger.info(
         "Done — %s: %.1f GB, %d-bit",
         dest,
-        _directory_size_gb(dest),
+        size_bytes / 1e9,
         bits,
         extra={
             "event": "prequantize_done",
-            "fields": {"dest": str(dest), "bits": bits, "components": list(components)},
+            "fields": {
+                # Named here because this event is the *only* statement that an
+                # artifact is complete and usable, and the supervisor acts on it:
+                # a run that converted a subset emits `prequantize_partial`
+                # instead and never reaches this line. Which model and which
+                # depth are therefore part of the claim, not context — without
+                # them the reader would have to parse a human-readable label to
+                # know what became ready.
+                "model": spec.key,
+                "variant_ready": True,
+                "dest": str(dest),
+                "bits": bits,
+                "components": list(present),
+                "size_bytes": size_bytes,
+            },
         },
     )
     logger.info("Select it for %s in the Models tab to generate with it.", spec.key)
     return 0
 
 
+def _missing_tokenizers(dest: Path, spec) -> list[str]:
+    """Tokenizer directories the family declares and the artifact does not have."""
+    from mflux_server.registry import family_structure
+
+    _, definition = family_structure(spec.family)
+    return [
+        tokenizer.hf_subdir
+        for tokenizer in definition.get_tokenizers()
+        if not (dest / tokenizer.hf_subdir).is_dir()
+    ]
+
+
 class InsufficientDisk(RuntimeError):
     """Not enough free space to attempt the conversion."""
+
+
+class UnavailableCache(RuntimeError):
+    """The configured pre-quantization cache cannot be reached right now."""
 
 
 def run_guarded(action, *, what: str) -> int:

@@ -51,14 +51,47 @@ def test_status_reports_the_licence_and_the_gate(monkeypatch, tmp_path):
 
 
 def test_a_local_artifact_is_not_a_download(monkeypatch, tmp_path):
+    """A path source is not a download, whichever model carries it.
+
+    The subject used to be flux2-dev, whose catalogue entry pointed at a
+    directory *our own converter* writes. That was the defect, not the example:
+    a built-in's source is a repository, and a saved artifact is a variant of it.
+    The property still holds — it is now witnessed by an entry that genuinely
+    reads from a local path, because the user pointed it there.
+    """
+    config = tmp_path / "server-config.json"
+    located = tmp_path / "weights"
+    located.mkdir()
+    (located / "config.json").write_text("{}", encoding="utf-8")
+    config.write_text(
+        json.dumps({"models": {"flux2-dev": {"model_path": str(located)}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    rows = {row["key"]: row for row in cache_status()}
+
+    assert rows["flux2-dev"]["local"] is True
+    assert rows["flux2-dev"]["can_download"] is False
+    assert rows["z-image-turbo"]["local"] is False
+
+
+def test_flux2_dev_is_a_downloadable_repository_like_every_other_built_in(monkeypatch, tmp_path):
+    """The corrective slice's subject, as the catalogue reports it.
+
+    Its source used to be a QDS-generated 8-bit artifact under the old
+    development cache, so the model could never be installed, located, or shown
+    as anything but present-or-broken.
+    """
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "absent.json"))
     rows = {row["key"]: row for row in cache_status()}
 
-    # flux2-dev points at a directory produced by `mflux-server-prequantize`, not
-    # at a repo: offering to "install" it would send the user down the wrong path.
-    assert rows["flux2-dev"]["local"] is True
-    assert rows["z-image-turbo"]["local"] is False
+    assert rows["flux2-dev"]["repo"] == "black-forest-labs/FLUX.2-dev"
+    assert rows["flux2-dev"]["local"] is False
+    # Install and Locate are both offered off this one field.
+    assert rows["flux2-dev"]["can_download"] is True
+    assert rows["flux2-dev"]["availability"] == "missing"
+    assert "mflux-server" not in rows["flux2-dev"]["repo"]
 
 
 def test_a_model_path_override_is_what_gets_reported(monkeypatch, tmp_path):
@@ -139,9 +172,9 @@ def test_a_local_artifact_path_is_checked_on_disk_not_guessed_from_its_shape(mon
     monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "absent.json"))
 
     rows = {row["key"]: row for row in cache_status()}
-    assert rows["flux2-dev"]["local"] is True
-    # The default artifact path is not created by this test, so it cannot be ready.
-    assert rows["flux2-dev"]["availability"] in {av.MISSING, av.PARTIAL, av.PRESENT}
+    # A repo id is not a local path, and the raw weights are not in this cache.
+    assert rows["flux2-dev"]["local"] is False
+    assert rows["flux2-dev"]["availability"] == av.MISSING
 
 
 def test_a_completed_artifact_makes_flux2_dev_present(monkeypatch, tmp_path):

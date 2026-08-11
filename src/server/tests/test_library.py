@@ -175,9 +175,9 @@ def test_an_imported_model_may_be_the_default(tmp_path, monkeypatch):
 def test_a_forgotten_imported_default_is_refused_with_a_reason(tmp_path, monkeypatch):
     monkeypatch.setattr(library, "library_path", lambda base=None: tmp_path / library.LIBRARY_FILENAME)
     library.save([], base=str(tmp_path))
-    with pytest.raises(ValueError) as raised:
-        Settings.model_validate({"default_model": "local-forgotten"})
-    assert "still be registered" in str(raised.value)
+    issues = Settings.model_validate({"default_model": "local-forgotten"}).runtime_issues()
+    assert [issue.code for issue in issues] == ["unknown_default_model"]
+    assert "still be registered" in issues[0].message
 
 
 def test_the_imported_source_is_what_slice6_identifies_variants_by(tmp_path):

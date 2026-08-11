@@ -1,6 +1,6 @@
 [project]
 name = "mflux-server"
-version = "0.2.0"
+version = "1.0.0"
 description = "Local server exposing mflux behind an OpenAI-Images-compatible API"
 readme = "README.md"
 license = "MIT"

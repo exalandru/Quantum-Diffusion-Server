@@ -169,3 +169,82 @@ pub fn port(paths: &Paths) -> u16 {
 }
 
 pub const DEFAULT_PORT: u16 = 8765;
+
+/// Refuse a document that would switch off the model it also nominates by default.
+///
+/// The invariant is the generation server's — it will not start with a default
+/// model that is disabled — and the Enabled switch could create exactly that
+/// state with one click, from the one screen that could then no longer be
+/// trusted to render. Checked here, at the write, because that is where every
+/// path meets: the switch, the Configuration form, and anything added later.
+///
+/// A pure property of the document, deliberately: no catalogue is consulted and
+/// no replacement default is chosen. Silently promoting another model to default
+/// would be this process deciding something the user did not ask for, and the
+/// refusal names the fix instead.
+///
+/// The same shape as `local_model_forget`'s refusal for the current default, and
+/// for the same reason — the state is invalid whichever way it is reached.
+pub fn refuse_disabled_default(value: &Value) -> Result<(), String> {
+    let Some(default_model) = value.get("default_model").and_then(Value::as_str) else {
+        // No default named: this document cannot break the invariant. A missing
+        // key means the server's own default applies, and that model is not the
+        // one being disabled here.
+        return Ok(());
+    };
+    let disabled = value
+        .get("models")
+        .and_then(|models| models.get(default_model))
+        .and_then(|entry| entry.get("enabled"))
+        .and_then(Value::as_bool)
+        .is_some_and(|enabled| !enabled);
+    if disabled {
+        return Err(format!(
+            "\"{default_model}\" is currently the default model. Choose another default model \
+             in Configuration before disabling it."
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn disabling_the_current_default_is_refused_and_names_the_fix() {
+        let refused = refuse_disabled_default(&json!({
+            "default_model": "z-image-turbo",
+            "models": {"z-image-turbo": {"enabled": false}}
+        }))
+        .expect_err("must be refused");
+        assert!(refused.contains("z-image-turbo"), "names the model: {refused}");
+        assert!(refused.contains("Choose another default model"), "names the fix: {refused}");
+    }
+
+    #[test]
+    fn disabling_any_other_model_is_allowed() {
+        assert!(refuse_disabled_default(&json!({
+            "default_model": "z-image-turbo",
+            "models": {"z-image-turbo": {"enabled": true}, "flux2-dev": {"enabled": false}}
+        }))
+        .is_ok());
+    }
+
+    #[test]
+    fn a_document_that_names_no_default_cannot_break_the_invariant() {
+        assert!(refuse_disabled_default(&json!({"models": {"z-image": {"enabled": false}}})).is_ok());
+        assert!(refuse_disabled_default(&json!({})).is_ok());
+    }
+
+    #[test]
+    fn an_entry_with_no_enabled_key_is_enabled() {
+        // `enabled` defaults to true on the Python side; absence is not disabled.
+        assert!(refuse_disabled_default(&json!({
+            "default_model": "z-image",
+            "models": {"z-image": {"quantize": 4}}
+        }))
+        .is_ok());
+    }
+}

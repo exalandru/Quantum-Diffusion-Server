@@ -13,7 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { App } from "./App";
-import { job, model, overview } from "./test-fixtures";
+import { catalogue, job, model, overview } from "./test-fixtures";
 import type { BootstrapState, JobStatus, Overview } from "./types";
 
 const mockInvoke = vi.mocked(invoke);
@@ -32,14 +32,14 @@ function backend(handlers: Backend) {
       case "config_read":
         return {};
       case "models_status":
-        return [
+        return catalogue([
           model({
             key: "local-abc",
             display_name: "My local model",
             provenance: "imported_local",
             can_download: false,
           }),
-        ];
+        ]);
       case "job_status":
         return handlers.jobStatus ? handlers.jobStatus() : job();
       case "local_model_forget":
@@ -123,8 +123,8 @@ it.each([
           bootstrap: {
             ready: false,
             state,
-            installedVersion: state === "uninitialized" ? null : "0.2.0",
-            appVersion: "0.2.0",
+            installedVersion: state === "uninitialized" ? null : "1.0.0",
+            appVersion: "1.0.0",
             envPath: "/data/env",
             failure: null,
           },
@@ -147,8 +147,8 @@ it("reports what the last interrupted install said", async () => {
         bootstrap: {
           ready: false,
           state: "broken",
-          installedVersion: "0.2.0",
-          appVersion: "0.2.0",
+          installedVersion: "1.0.0",
+          appVersion: "1.0.0",
           envPath: "/data/env",
           failure: "uv sync failed (code Some(1))",
         },
@@ -173,10 +173,14 @@ it("does not offer per-model controls in Configuration as well as Models", async
   await screen.findByText(/Generation defaults/i);
 
   expect(screen.queryByRole("switch")).toBeNull();
-  expect(screen.queryByLabelText(/^Quantization for /)).toBeNull();
+  expect(screen.queryByLabelText(/quantization for /i)).toBeNull();
   expect(screen.queryByLabelText(/^Steps for /)).toBeNull();
   expect(screen.queryByLabelText(/^Guidance for /)).toBeNull();
-  expect(screen.queryByLabelText(/^Editing for /)).toBeNull();
+  expect(screen.queryByLabelText(/edits endpoint for /i)).toBeNull();
+
+  // The reverse split, made in this slice: one account-wide secret, and it is
+  // configured here rather than beside a catalogue of per-model controls.
+  expect(screen.getByLabelText("Hugging Face token")).toBeTruthy();
   // And it says where they went, rather than leaving a hole.
   expect(screen.getByText(/live on each model's row/i)).toBeTruthy();
 
@@ -187,4 +191,6 @@ it("does not offer per-model controls in Configuration as well as Models", async
   // The same controls exist on the model's row in Models.
   await user.click(screen.getByRole("tab", { name: /Models/ }));
   expect(await screen.findByRole("switch", { name: /Enable/ })).toBeTruthy();
+  // And the token is not offered a second time here: one field, one owner.
+  expect(screen.queryByLabelText("Hugging Face token")).toBeNull();
 });

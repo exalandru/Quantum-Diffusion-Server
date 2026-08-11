@@ -10,10 +10,11 @@ from __future__ import annotations
 import json
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from mflux_server.registry import QUANTIZE_CHOICES, ModelSpec, build_registry
 
@@ -100,11 +101,11 @@ DEFAULT_HF_HOME = "~/.cache/huggingface"
 
 
 class StorageSettings(BaseModel):
-    """Where large, long-lived files live. Currently only the HuggingFace cache.
+    """Where large, long-lived files live: what is downloaded, and what is made.
 
     Separate from `server` on purpose: this is about the machine's disks, not
-    about the HTTP surface, and the next things to land here — an import
-    directory, a conversion destination — are the same kind of fact.
+    about the HTTP surface. The two roots here are independent — either can sit
+    on an external volume without the other following it.
     """
 
     #: Root for downloaded weights, i.e. `HF_HOME`. `None` keeps
@@ -112,17 +113,26 @@ class StorageSettings(BaseModel):
     #: this setting existed. An absolute path is required: this is resolved by
     #: processes whose working directory is `/` when launched from Finder.
     hf_home: str | None = None
+    #: Root for what QDS *generates* — pre-quantized copies, their completion
+    #: markers, component progress. `None` derives the application's own data
+    #: directory (`artifacts.default_cache_root`).
+    #:
+    #: Independent of `hf_home` on purpose, and not merely as a convenience: one
+    #: holds weights that can be downloaded again and the other holds hours of
+    #: conversion that cannot, so they are the two directories a user is most
+    #: likely to want on different disks.
+    cache_dir: str | None = None
 
-    @field_validator("hf_home")
+    @field_validator("hf_home", "cache_dir")
     @classmethod
-    def _absolute_storage_path(cls, value: str | None) -> str | None:
+    def _absolute_storage_path(cls, value: str | None, info) -> str | None:
         if value is None or value.strip() == "":
             return None
         path = Path(value).expanduser()
         if not path.is_absolute():
             raise ValueError(
-                f"storage.hf_home must be an absolute path (got {value!r}). A relative path "
-                f"would resolve against the working directory, which is '/' for an app "
+                f"storage.{info.field_name} must be an absolute path (got {value!r}). A relative "
+                f"path would resolve against the working directory, which is '/' for an app "
                 f"launched from Finder."
             )
         # Deliberately not `.resolve()`: that walks symlinks and would fail on a
@@ -163,6 +173,37 @@ class ModelOverride(BaseModel):
         return value
 
 
+@dataclass(frozen=True)
+class RuntimeIssue:
+    """One broken runtime invariant, as data rather than as an exception.
+
+    Structured because both consumers need different things from it: the server
+    raises it as a message, and the catalogue publishes it for an interface that
+    has to say what to do about it. A traceback served neither.
+    """
+
+    code: str
+    field: str
+    message: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"code": self.code, "field": self.field, "message": self.message}
+
+
+class ConfigError(ValueError):
+    """An expected configuration failure, carrying a code for the interface.
+
+    A `ValueError` subclass so every existing caller — `run_guarded`, the CLI
+    entry points, the tests that assert on invalid configuration — keeps working
+    unchanged.
+    """
+
+    def __init__(self, message: str, *, code: str = "invalid_config", field: str | None = None):
+        super().__init__(message)
+        self.code = code
+        self.field = field
+
+
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
@@ -183,27 +224,73 @@ class Settings(BaseModel):
     default_quantize: int | None = Field(default=None, ge=0, le=8)
     models: dict[str, ModelOverride] = Field(default_factory=dict)
 
-    @model_validator(mode="after")
-    def _check_default_model(self) -> Settings:
+    def runtime_issues(self) -> list[RuntimeIssue]:
+        """Invariants a *generation server* must satisfy before it may serve.
+
+        Deliberately not `@model_validator`, and that distinction is the whole
+        point of this method. Every check below is about serving generations:
+        which model answers a request that names none, and whether a socket open
+        to the network is authenticated. None of them is about *scanning
+        sources* — which repositories are cached, how big they are, where a
+        `model_path` points — and all of them used to be enforced at
+        construction, so `Settings(...)` raised and every reader died with it.
+
+        The reader that suffered was model management. `mflux-server-fetch
+        --status` builds the catalogue, and a configuration whose
+        `default_model` had been switched off made the whole catalogue
+        unreadable: a traceback instead of a list, and no way to reach the
+        controls that would have repaired it. The invariant was real and the
+        blast radius was wrong.
+
+        So the checks live here, returned as data. `load_settings(strict=True)`
+        — the server's path — raises on the first one. `strict=False` — the
+        catalogue's path — carries them alongside the rows as warnings the
+        interface can act on. Nothing is repaired here, silently or otherwise:
+        a broken invariant stays broken until the user fixes it.
+        """
+        issues: list[RuntimeIssue] = []
         # The effective catalogue, not the built-in one: an imported model is a
         # perfectly good default, and validating against `BASE_SPECS` alone made
         # it impossible to choose one. Membership decides — never the shape of
         # the key.
         effective = self.registry(include_disabled=True)
         if self.default_model not in effective:
-            raise ValueError(
-                f"Unknown default_model: {self.default_model!r}. Valid keys: {sorted(effective)}. "
-                f"An imported model must still be registered; if it was forgotten, choose another."
+            issues.append(
+                RuntimeIssue(
+                    code="unknown_default_model",
+                    field="default_model",
+                    message=(
+                        f"Unknown default_model: {self.default_model!r}. Valid keys: "
+                        f"{sorted(effective)}. An imported model must still be registered; "
+                        f"if it was forgotten, choose another."
+                    ),
+                )
             )
-        override = self.models.get(self.default_model)
-        if override is not None and not override.enabled:
-            raise ValueError(f"default_model {self.default_model!r} is disabled in the models section.")
+        else:
+            override = self.models.get(self.default_model)
+            if override is not None and not override.enabled:
+                issues.append(
+                    RuntimeIssue(
+                        code="default_model_disabled",
+                        field="default_model",
+                        message=(
+                            f'Default model "{self.default_model}" is disabled. Enable it or '
+                            f"choose another default model."
+                        ),
+                    )
+                )
         if not self.server.is_loopback and not self.server.api_key:
-            raise ValueError(
-                f"host={self.server.host!r} exposes the server beyond this machine: "
-                f"an api_key is mandatory (config or {ENV_PREFIX}API_KEY)."
+            issues.append(
+                RuntimeIssue(
+                    code="unauthenticated_host",
+                    field="server.api_key",
+                    message=(
+                        f"host={self.server.host!r} exposes the server beyond this machine: "
+                        f"an api_key is mandatory (config or {ENV_PREFIX}API_KEY)."
+                    ),
+                )
             )
-        return self
+        return issues
 
     @property
     def effective_hf_home(self) -> str:
@@ -233,6 +320,19 @@ class Settings(BaseModel):
         from mflux_server.availability import hub_cache_for
 
         return str(hub_cache_for(self.effective_hf_home))
+
+    @property
+    def effective_cache_dir(self) -> str:
+        """Where generated artifacts are read from and written to.
+
+        The configured directory, or the application's own. Changing the setting
+        changes where *future* artifacts are created and where discovery looks;
+        nothing is moved, copied or deleted, because tens of gigabytes are not
+        something to relocate as a side effect of a form field.
+        """
+        from mflux_server import artifacts
+
+        return self.storage.cache_dir or str(artifacts.default_cache_root())
 
     def apply_hf_home(self) -> str:
         """Publish the effective root into the environment, and return it.
@@ -273,6 +373,7 @@ class Settings(BaseModel):
             default_quantize=self.default_quantize,
             include_disabled=include_disabled,
             imported=imported,
+            cache_root=self.effective_cache_dir,
         )
 
 
@@ -339,7 +440,7 @@ def configured_default_model(path: Path | None = None) -> str:
 missing_config_path: Path | None = None
 
 
-def load_settings(path: Path | None = None) -> Settings:
+def load_settings(path: Path | None = None, *, strict: bool = True) -> Settings:
     """Read `server-config.json`, apply environment overrides, validate.
 
     A missing config is not an error: the catalogue defaults are enough to
@@ -347,6 +448,19 @@ def load_settings(path: Path | None = None) -> Settings:
     `DEFAULT_CONFIG_PATH` lands in `site-packages/`: we would silently fall back
     to every default. Hence `missing_config_path`, which `create_app` logs as a
     `warning`.
+
+    `strict` selects which of the two contracts this call is asking for. The
+    structural one — what the file says, whether it parses, whether each model
+    override is well formed — is always enforced, because a caller cannot do
+    anything sensible with a document it cannot read. The *runtime* one —
+    `runtime_issues`, the invariants a generation server must satisfy before it
+    serves — is enforced only when `strict`.
+
+    Model management passes `strict=False` and reports those issues instead. A
+    configuration whose default model is switched off is genuinely invalid for
+    the server and perfectly readable for the catalogue, and the catalogue is
+    where the controls to repair it live: failing there took away the only route
+    back to a working configuration.
     """
     global missing_config_path
 
@@ -380,5 +494,13 @@ def load_settings(path: Path | None = None) -> Settings:
         # request.
         settings.registry()
     except (ValidationError, ValueError) as exc:
-        raise ValueError(f"Invalid configuration ({path}):\n{exc}") from exc
+        raise ConfigError(f"Invalid configuration ({path}):\n{exc}") from exc
+
+    if strict:
+        for issue in settings.runtime_issues():
+            raise ConfigError(
+                f"Invalid configuration ({path}): {issue.message}",
+                code=issue.code,
+                field=issue.field,
+            )
     return settings

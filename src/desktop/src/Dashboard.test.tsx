@@ -24,7 +24,7 @@ function idleJobs(): JobView {
 function health(patch: Partial<Health> = {}): Health {
   return {
     status: "ok",
-    version: "0.2.0",
+    version: "1.0.0",
     default_model: "z-image",
     models: ["z-image"],
     loaded_model: null,
@@ -188,4 +188,62 @@ it("keeps an action's result independent of the stream's state", async () => {
   await act(async () => emit({ step: 2 }));
   expect(screen.queryByText("reconnecting")).toBeNull();
   expect(screen.getByText("the server did not stop in time")).toBeTruthy();
+});
+
+// ── Lifecycle feedback ─────────────────────────────────────────────────────
+
+it("says nothing when the server starts, stops or restarts: the pill already did", async () => {
+  // Three buttons that each used to leave a permanent "Server started." behind,
+  // stacked under a status pill saying the same thing. The pill is the
+  // authority — it is read back from the supervisor rather than from what a
+  // button believes it did — so a second statement is at best redundant and at
+  // worst a stale contradiction of it.
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "server_start" || command === "server_restart") return 8765;
+    if (command === "server_stop") return null;
+    throw new Error(`unexpected ${command}`);
+  });
+  const stopped = overview();
+  const running = overview({ server: { running: true, port: 8765, lastExit: null } });
+  const view = render(
+    <Dashboard state={stopped} client={null} jobs={idleJobs()} onChanged={() => {}} />,
+  );
+
+  await userEvent.click(screen.getByRole("button", { name: "Start" }));
+  view.rerender(
+    <Dashboard state={running} client={null} jobs={idleJobs()} onChanged={() => {}} />,
+  );
+  await userEvent.click(screen.getByRole("button", { name: "Restart" }));
+  await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+
+  // Not "one note per operation" — none at all, and so nothing to accumulate.
+  expect(screen.queryAllByRole("status")).toHaveLength(0);
+  expect(screen.queryByText(/Server (started|stopped|restarted)/)).toBeNull();
+  expect(screen.getByText("Running")).toBeTruthy();
+});
+
+it("keeps a failed server action on screen while the next one succeeds", async () => {
+  // The other half of the same rule: nothing else reports a refusal, so it
+  // survives until the same button runs again or it is dismissed. A later
+  // success is not evidence about the earlier failure.
+  mockInvoke.mockImplementation(async (command: string) => {
+    if (command === "server_stop") throw new Error("the server did not stop in time");
+    if (command === "server_restart") return 8765;
+    throw new Error(`unexpected ${command}`);
+  });
+  const running = overview({ server: { running: true, port: 8765, lastExit: null } });
+  render(<Dashboard state={running} client={null} jobs={idleJobs()} onChanged={() => {}} />);
+
+  await userEvent.click(screen.getByRole("button", { name: "Stop" }));
+  await screen.findByText("the server did not stop in time");
+
+  await userEvent.click(screen.getByRole("button", { name: "Restart" }));
+
+  expect(screen.getByText("the server did not stop in time")).toBeTruthy();
+  // The failure, and nothing beside it.
+  expect(screen.queryAllByRole("status")).toHaveLength(1);
+
+  // Dismissing is the user's, and it is the only thing that clears it.
+  await userEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+  expect(screen.queryByText("the server did not stop in time")).toBeNull();
 });

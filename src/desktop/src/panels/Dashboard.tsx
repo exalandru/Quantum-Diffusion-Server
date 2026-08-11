@@ -148,26 +148,27 @@ export function Dashboard({
             )}
           </div>
 
+          {/* No success message on any of the three: the pill beside the heading
+              is the authoritative statement that the server is running or
+              stopped, and it updates from the status poll rather than from what
+              a button believes it did. "Server started." under a pill reading
+              Running says the same thing twice, and three of them stacked up is
+              a log of the session nobody asked for. A failure still speaks,
+              because nothing else reports it. */}
           <div className="actions">
             {running ? (
               <>
-                <button
-                  onClick={() => void act("stop", api.serverStop, "Server stopped.")}
-                  disabled={anyBusy}
-                >
+                <button onClick={() => void act("stop", api.serverStop)} disabled={anyBusy}>
                   {busy("stop") ? "Stopping…" : "Stop"}
                 </button>
-                <button
-                  onClick={() => void act("restart", api.serverRestart, "Server restarted.")}
-                  disabled={anyBusy}
-                >
+                <button onClick={() => void act("restart", api.serverRestart)} disabled={anyBusy}>
                   {busy("restart") ? "Restarting…" : "Restart"}
                 </button>
               </>
             ) : (
               <button
                 className="primary"
-                onClick={() => void act("start", api.serverStart, "Server started.")}
+                onClick={() => void act("start", api.serverStart)}
                 disabled={anyBusy}
               >
                 {busy("start") ? "Starting…" : "Start"}
@@ -176,8 +177,8 @@ export function Dashboard({
           </div>
         </div>
 
-        {/* Lifecycle outcomes live next to the buttons that produced them, and
-            stay until the same button runs again or they are dismissed. */}
+        {/* Failures only, and they stay until the same button runs again or they
+            are dismissed — never cleared by a poll that happened to succeed. */}
         {["start", "stop", "restart"].map((key) => (
           <ActionNote key={key} state={stateOf(key)} onDismiss={() => dismiss(key)} />
         ))}
@@ -199,8 +200,8 @@ export function Dashboard({
         {!state.hfTokenPresent && (
           <p className="note">
             <span className="pill pill-warn">no token</span> Half the catalogue sits in gated
-            repositories. The models enabled by default are not among them; add a token in Models
-            before installing one that is.
+            repositories. The models enabled by default are not among them; add a token under
+            Configuration → Hugging Face before installing one that is.
           </p>
         )}
       </section>

@@ -62,9 +62,24 @@ def test_flux2_dev_publishes_prequantization_with_its_own_strategy():
     assert q.prequantize_choices == QUANTIZE_CHOICES
 
 
-def test_generic_candidates_declare_the_generic_strategy():
+def test_every_convertible_family_declares_the_memory_bounded_strategy():
+    """One route, for the same reason FLUX.2-dev has always had it.
+
+    These used to declare `mflux_save`: load the model whole, call `save_model`,
+    hold every component resident to write them. Whether a model *fits* was never
+    the right test for how to convert it, and their components were independently
+    convertible all along — see `components.py`.
+    """
     for key in ("flux2-klein", "qwen-image-2512", "z-image-turbo", "ernie-image-turbo", "fibo-lite"):
-        assert BASE_SPECS_BY_KEY[key].quantization.prequantize_strategy == STRATEGY_MFLUX_SAVE
+        assert (
+            BASE_SPECS_BY_KEY[key].quantization.prequantize_strategy
+            == STRATEGY_QDS_MEMORY_BOUNDED
+        )
+
+
+def test_the_superseded_strategy_name_survives_for_artifacts_that_recorded_it():
+    """Markers written before this slice say `mflux_save`, and stay readable."""
+    assert STRATEGY_MFLUX_SAVE == "mflux_save"
 
 
 def test_ideogram_declares_no_conversion_at_all():

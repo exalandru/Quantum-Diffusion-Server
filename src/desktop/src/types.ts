@@ -39,6 +39,8 @@ export type Overview = {
   bootstrap: BootstrapStatus;
   hfTokenPresent: boolean;
   hfHome: string;
+  /** Where generated artifacts go when `storage.cache_dir` names nothing. */
+  defaultCacheDir: string;
   dataDir: string;
   configPath: string;
 };
@@ -72,6 +74,14 @@ export type ModelCapabilities = {
   default_steps: number;
   default_guidance: number | null;
   quantize: number | null;
+  /**
+   * The saved variant *this running process* loaded, or null for the source.
+   *
+   * Compared against the catalogue's `active_variant`, which is what the
+   * configuration currently selects. They differ exactly when a restart is
+   * needed for the live process to use what has been chosen.
+   */
+  active_variant: number | null;
   /** Does the runtime quantize setting change anything for this model? */
   supports_quantization: boolean;
   /** Bit depths worth offering. Empty when unsupported — the app owns no list. */
@@ -142,6 +152,24 @@ export type Availability =
   | "volume_unmounted"
   | "unreadable";
 
+/**
+ * One independently convertible part of a model, as the backend describes it.
+ *
+ * The app owns no family→component table. It used to: three FLUX.2-dev names in
+ * a `const` in `Models.tsx`, shown for whatever model reached that branch.
+ */
+export type ComponentSpec = {
+  /** mflux's own name for it, which is also what a conversion request sends. */
+  key: string;
+  label: string;
+  /** Part of the set a usable artifact must carry. */
+  required: boolean;
+  independently_convertible: boolean;
+  /** False when the family declines to quantize it: saved, but not smaller. */
+  quantized: boolean;
+  note: string | null;
+};
+
 /** The quantization contract, published per catalogue row. */
 export type QuantizationCapability = {
   supports_quantization: boolean;
@@ -149,6 +177,8 @@ export type QuantizationCapability = {
   supports_prequantize: boolean;
   prequantize_choices: number[];
   prequantize_strategy: "mflux_save" | "qds_memory_bounded" | null;
+  /** Empty for a family whose components have not been established. */
+  prequantize_components: ComponentSpec[];
   note: string | null;
 };
 
@@ -159,6 +189,48 @@ export type Variant = {
   strategy: string | null;
   /** Recognised by the pre-marker rules rather than by a completion record. */
   legacy: boolean;
+  /** Bytes it actually occupies. `null` when nothing measured it. */
+  size_bytes: number | null;
+};
+
+/**
+ * Components converted towards a variant that does not exist yet.
+ *
+ * Deliberately a separate list from `variants`: nothing here may be activated,
+ * and merging the two is exactly how a half-converted model would come to be
+ * offered as usable.
+ */
+export type PartialConversion = {
+  bits: number;
+  path: string;
+  strategy: string | null;
+  /** Component key → `"complete"` / `"missing"`, judged from disk. */
+  components: Record<string, string>;
+  size_bytes: number;
+};
+
+/** One thing on disk attributable to a model. Deduplicated by path upstream. */
+export type DiskEntry = {
+  kind: "source" | "variant" | "partial";
+  bits: number | null;
+  bytes: number;
+  path: string;
+  /** This directory is also the model's source — FLUX.2-dev's 8-bit artifact. */
+  is_source: boolean;
+};
+
+/**
+ * Three different questions about storage, kept apart.
+ *
+ * `null` means unknown — a source that is not on this machine has no disk usage,
+ * and its catalogue size is not an answer to how much room it is taking.
+ */
+export type DiskReport = {
+  source_bytes: number | null;
+  /** What generation will actually load: the active variant, or the source. */
+  active_bytes: number | null;
+  total_bytes: number;
+  breakdown: DiskEntry[];
 };
 
 /** Python's verdict on a directory. Advisory: registration revalidates. */
@@ -216,9 +288,24 @@ export type ModelStatus = {
   quantization: QuantizationCapability;
   /** Saved variants that exist and validate for the CURRENT source. */
   variants: Variant[];
+  /** Conversions in progress towards a variant. Never activatable. */
+  partials: PartialConversion[];
   /** The bit depth generation is set to use, or null for the source itself. */
   active_variant: number | null;
+  disk: DiskReport;
 };
+
+/**
+ * A runtime invariant this configuration breaks, named by the backend.
+ *
+ * Not an error: the catalogue is perfectly readable, and these are the reasons
+ * the generation server would refuse to start. They travel with the rows so the
+ * view that can repair them is also the view that reports them.
+ */
+export type ConfigWarning = { code: string; field: string; message: string };
+
+/** What one catalogue read answers: the rows, and what is wrong with the config. */
+export type CatalogueStatus = { models: ModelStatus[]; warnings: ConfigWarning[] };
 
 /**
  * The long model operation Rust owns: a weight download or the FLUX.2-dev
