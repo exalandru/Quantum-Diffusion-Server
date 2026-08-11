@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 from mflux_server.logs import SERVER_LOGGER, setup_logging
@@ -47,54 +48,134 @@ def _cache_dir() -> str:
     explicit = os.environ.get("HF_HUB_CACHE")
     if explicit:
         return explicit
+    from mflux_server.availability import hub_cache_for
+
     home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
-    return os.path.join(home, "hub")
+    # The same normalisation `apply_hf_home` publishes, so a caller that reached
+    # here without it cannot scan a different directory from the one downloads
+    # land in.
+    return str(hub_cache_for(home))
+
+
+def resolved_target(spec: Any) -> str:
+    """The repo or path this spec will actually load from.
+
+    One function, so what the catalogue *reports* and what a download *fetches*
+    cannot disagree — they used to, for any disabled model carrying a `model_path`
+    override, because the reporting applied overrides and the fetch did not.
+    """
+    return spec.model_path or spec.repo
+
+
+def _variants_of(spec: Any, source: str) -> list[Any]:
+    """Saved variants for this spec, or none when the model cannot have any."""
+    if not spec.quantization.supports_prequantize:
+        return []
+    from mflux_server import artifacts
+
+    return artifacts.discover_variants(spec.key, source)
 
 
 def cache_status() -> list[dict[str, Any]]:
-    """Every catalogue entry, with its repo's presence and size in the HF cache.
+    """Every catalogue entry with an explicit availability, not a boolean.
 
-    Reads the config so `enabled` reflects what the server would actually expose,
-    and so a `model_path` override is the repo we report on.
+    Reads the config so `enabled` reflects what the server would expose, and so a
+    `model_path` override is both what we report on and what we would fetch.
 
-    `scan_cache_dir` tells us what is cached, not whether every file mflux needs is
-    there: a download interrupted halfway still shows up. That is acceptable —
-    fetching again completes it, and mflux checks snapshot completeness itself at
-    load time — but it means "cached" reads as "already downloaded, probably", not
-    as a guarantee.
+    See `availability.py` for exactly what `present` does and does not claim.
     """
-    from huggingface_hub import scan_cache_dir
-
-    from mflux_server.registry import BASE_SPECS_BY_KEY
+    from mflux_server import availability as av
+    from mflux_server.registry import PROVENANCE_BUILT_IN
 
     settings = load_settings()
+    # Idempotent: `main` already applied it. Doing it here too keeps `cache_status`
+    # correct when imported directly, as the tests do.
+    settings.apply_hf_home()
     enabled = set(settings.registry())
-    overrides = settings.models
+    # Disabled entries included on purpose: you download a model before turning it
+    # on, so this is the spec whose `model_path` the Install button will use.
+    configured = settings.registry(include_disabled=True)
 
-    try:
-        cache = {repo.repo_id: repo for repo in scan_cache_dir(cache_dir=_cache_dir()).repos}
-    except Exception:  # pragma: no cover - a missing cache dir is not an error
-        logger.debug("HuggingFace cache unreadable", exc_info=True)
-        cache = {}
+    root = Path(_cache_dir())
+    repo_availability, repo_info, state = av.scan_repos(root)
 
     rows = []
-    for key, spec in BASE_SPECS_BY_KEY.items():
-        override = overrides.get(key)
-        repo = (override.model_path if override and override.model_path else spec.model_path) or spec.repo
-        entry = cache.get(repo)
+    # The effective catalogue, not the built-in one: imported models are part of
+    # what the user has, and iterating `BASE_SPECS` alone made them invisible in
+    # the Models tab even though the registry knew about them.
+    for key, spec in configured.items():
+        target = resolved_target(spec)
+        # Two different questions, deliberately kept apart. Whether the source is
+        # a filesystem path decides *how availability is measured*; whether the
+        # model came from HuggingFace at all decides *what may be offered*, and
+        # that is provenance, never the shape of the string.
+        is_path_source = not av.looks_like_repo_id(target)
+        can_download = spec.provenance == PROVENANCE_BUILT_IN and not is_path_source
+
+        if is_path_source:
+            # A path is a filesystem question, answered as one. For our own
+            # pre-quantized output the question is stricter — a directory holding a
+            # half-finished conversion is not an artifact — and the spec's family is
+            # what says which rule applies, rather than the shape of the string.
+            if spec.family == "flux2-dev":
+                status, detail = av.flux2_dev_artifact_state(target)
+            else:
+                status, detail = av.local_path_availability(target)
+            info: dict[str, Any] = {}
+        elif not state.usable:
+            # The cache root itself is gone or unreadable: that is one fact about
+            # the storage, not ten separate "not downloaded" verdicts.
+            status, detail = state.availability, state.detail
+            info = {}
+        else:
+            status = repo_availability.get(target, av.MISSING)
+            detail = None
+            info = repo_info.get(target, {})
+
         rows.append(
             {
                 "key": key,
-                "repo": repo,
+                "repo": target,
                 "license": spec.license,
                 "gated": spec.gated,
                 "enabled": key in enabled,
-                "cached": entry is not None,
-                # A local artifact (flux2-dev) is not in the HF cache at all: the
-                # app reports on it separately.
-                "local": "/" not in repo or repo.startswith(("~", "/", ".")),
-                "size_gb": round(entry.size_on_disk / 1e9, 1) if entry else 0.0,
-                "files": entry.nb_files if entry else 0,
+                "availability": status,
+                "detail": detail,
+                # Retained for display only, and derived — never recomputed from
+                # the string by a consumer.
+                "local": is_path_source,
+                "provenance": spec.provenance,
+                "display_name": spec.display_name or key,
+                # What an API request must send. A built-in publishes its key; an
+                # imported model publishes its alias rather than its opaque id.
+                "api_name": spec.public_name,
+                "base_profile_key": spec.base_profile_key,
+                "family": spec.family,
+                # The single authority for offering Install/Resume.
+                "can_download": can_download,
+                "size_gb": info.get("size_gb", 0.0),
+                "files": info.get("files", 0),
+                # The quantization contract travels with the catalogue, not only
+                # with `/v1/capabilities`: that endpoint publishes enabled models
+                # only, while the Configuration form has to configure the disabled
+                # ones too — and must keep working with the server stopped.
+                # Which saved variants actually exist for this source, and which
+                # one generation is set to use. Capability (what *could* be
+                # converted), availability (what exists) and activation (what is
+                # used) stay three separate facts.
+                "variants": [
+                    {"bits": v.bits, "path": v.path, "strategy": v.strategy, "legacy": v.legacy}
+                    for v in _variants_of(spec, target)
+                ],
+                "active_variant": spec.prequantized_variant,
+                "quantization": {
+                    "supports_quantization": spec.quantization.supports_quantization,
+                    "quantize_choices": list(spec.quantization.quantize_choices),
+                    "supports_prequantize": spec.quantization.supports_prequantize,
+                    "prequantize_choices": list(spec.quantization.prequantize_choices),
+                    "prequantize_strategy": spec.quantization.prequantize_strategy,
+                    "note": spec.quantization.note,
+                },
             }
         )
     return rows
@@ -104,11 +185,19 @@ def fetch(key: str) -> int:
     from mflux_server.registry import BASE_SPECS_BY_KEY
 
     settings = load_settings()
-    # The configured spec, not the raw catalogue one: quantization and any
-    # `model_path` override change what gets downloaded.
-    spec = settings.registry().get(key) or BASE_SPECS_BY_KEY.get(key)
+    settings.apply_hf_home()
+    # `include_disabled`: the documented workflow is to download a model *before*
+    # enabling it, and the enabled-only view silently fell back to the raw
+    # catalogue spec for those — dropping the very `model_path` the Models tab had
+    # just reported. `resolved_target` is now the single answer to "which repo".
+    spec = settings.registry(include_disabled=True).get(key) or BASE_SPECS_BY_KEY.get(key)
     if spec is None:
-        logger.error("Unknown model %r. Valid keys: %s", key, sorted(BASE_SPECS_BY_KEY))
+        logger.error(
+            "Unknown model %r. Valid keys: %s",
+            key,
+            sorted(BASE_SPECS_BY_KEY),
+            extra={"event": "job_failed", "fields": {"reason": "unknown_model", "model": key}},
+        )
         return 2
 
     if spec.gated:
@@ -117,7 +206,7 @@ def fetch(key: str) -> int:
             spec.repo,
             spec.license,
         )
-    logger.info("Fetching %s (%s) — %s", key, spec.repo, spec.license)
+    logger.info("Fetching %s (%s) — %s", key, resolved_target(spec), spec.license)
 
     from mflux_server.registry import load_model
 
@@ -148,6 +237,10 @@ def main() -> int:
     )
     args = parser.parse_args()
 
+    # Before anything imports huggingface_hub: it freezes `HF_HUB_CACHE` at import
+    # time, so the configured root has to be in the environment first.
+    load_settings().apply_hf_home()
+
     if args.status:
         # Straight to stdout, without the logging setup: this output is parsed.
         json.dump(cache_status(), sys.stdout)
@@ -158,7 +251,56 @@ def main() -> int:
         parser.error("give a model key, or --status")
 
     setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
-    return fetch(args.model)
+    return run_guarded(lambda: fetch(args.model), what="download")
+
+
+def run_guarded(action: Any, *, what: str, log: logging.Logger | None = None) -> int:
+    """Run `action`, turning a known failure into a structured terminal event.
+
+    The supervisor watching this stream had nothing to report but the exit code,
+    so every failure — a gated repo, a full disk, a bad config — reached the user
+    as "exited with code 1". An expected failure now names itself on the JSON
+    stream before the non-zero exit; the traceback still goes to stderr, because
+    for an unexpected one that is the useful artefact.
+    """
+    log = log or logger
+    try:
+        return action()
+    except Exception as exc:
+        reason = _known_reason(exc)
+        log.error(
+            "%s failed: %s",
+            what,
+            reason or f"{type(exc).__name__}: {exc}",
+            exc_info=reason is None,
+            extra={
+                "event": "job_failed",
+                "fields": {"reason": type(exc).__name__, "what": what},
+            },
+        )
+        return 1
+
+
+def _known_reason(exc: BaseException) -> str | None:
+    """A plain sentence for the failures we expect, or None for a genuine bug."""
+    name = type(exc).__name__
+    if name == "InsufficientDisk":
+        return str(exc)
+    if name == "GatedRepoError":
+        return (
+            "this repository is gated. Request access on its model card, then save a "
+            "HuggingFace token in the Models tab."
+        )
+    if name in {"RepositoryNotFoundError", "EntryNotFoundError", "RevisionNotFoundError"}:
+        return f"the repository or file was not found ({exc})."
+    if name in {"HfHubHTTPError", "LocalEntryNotFoundError", "ConnectionError"}:
+        return f"HuggingFace could not be reached ({exc})."
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) == 28:
+        return "the disk is full."
+    if isinstance(exc, ValueError):
+        # `load_settings` raises this for an invalid server-config.json.
+        return str(exc)
+    return None
 
 
 if __name__ == "__main__":  # pragma: no cover

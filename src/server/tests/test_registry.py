@@ -70,22 +70,28 @@ def test_flux2_klein_is_distilled():
 
 
 def test_quantization_is_only_advertised_where_it_happens():
-    """`prequantized` is the difference between a real setting and a no-op.
+    """The runtime setting is published only where it changes something.
 
-    `nn.quantize` cannot touch weights that already carry their precision — mflux
-    resolves the conflict in favour of the file and merely prints "Ignoring -q".
-    Advertising a bit depth for those models would be a lie, so the catalogue
-    marks them instead.
+    `prequantized` used to carry this, plus two unrelated claims. The facts are
+    now separate: whether the load-time setting does anything, and whether the
+    model can be converted into a saved artifact.
     """
     # bf16 upstream: quantizing at load is real work.
     assert BASE_SPECS_BY_KEY["flux2-klein"].quantize == 8
-    assert BASE_SPECS_BY_KEY["flux2-klein"].prequantized is False
+    assert BASE_SPECS_BY_KEY["flux2-klein"].quantization.supports_quantization is True
 
-    # Our own 8-bit artifact, and Ideogram's fp8 layout whose heavy components are
-    # all `skip_quantization=True`.
-    assert BASE_SPECS_BY_KEY["flux2-dev"].prequantized is True
-    assert BASE_SPECS_BY_KEY["ideogram-4"].prequantized is True
+    # Ideogram's fp8 layout: the heavy components are all `skip_quantization=True`.
+    assert BASE_SPECS_BY_KEY["ideogram-4"].quantization.supports_quantization is False
     assert BASE_SPECS_BY_KEY["ideogram-4"].quantize is None
+
+    # FLUX.2-dev loads a stored-quantized artifact, so the setting is equally
+    # inert — but for a different reason, and unlike Ideogram it *can* be
+    # converted, by the memory-bounded path.
+    flux2_dev = BASE_SPECS_BY_KEY["flux2-dev"].quantization
+    assert flux2_dev.supports_quantization is False
+    assert flux2_dev.supports_prequantize is True
+    assert flux2_dev.prequantize_strategy == "qds_memory_bounded"
+    assert BASE_SPECS_BY_KEY["ideogram-4"].quantization.supports_prequantize is False
 
 
 def test_flux2_edit_shares_weights_and_is_on_by_default():
@@ -112,7 +118,7 @@ def test_qwen_does_not_use_from_name():
     assert spec.model_path == "Qwen/Qwen-Image-2512"
     # The raw bf16 repo, not the 8-bit conversion: only raw weights can honour
     # `default_quantize`.
-    assert spec.prequantized is False
+    assert spec.quantization.supports_quantization is True
 
 
 def test_qwen_follows_its_own_card_not_the_mflux_defaults():

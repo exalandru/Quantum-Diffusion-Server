@@ -3,6 +3,8 @@ import { open as openExternal } from "@tauri-apps/plugin-shell";
 
 import * as api from "../api";
 import { messageOf, type ServerClient } from "../api";
+import { ActionNote, useActions } from "../actions";
+import { describeJob, type JobView } from "../job";
 import type { Health, Overview, Progress } from "../types";
 
 const IDLE: Progress = {
@@ -17,20 +19,37 @@ const IDLE: Progress = {
   memory: {},
 };
 
+/**
+ * The operational home: what the server is doing, what it is doing it with, and
+ * what it is using.
+ *
+ * Three groups, and the middle one is the reason the screen exists. Two very
+ * different long things can be in flight — a generation, owned by the Python
+ * engine and reported over SSE, and a download or conversion, owned by Rust and
+ * reported by `job_status`. They have separate owners, separate cancellation and
+ * separate failure modes, so they are shown as two things rather than merged into
+ * a single invented "activity".
+ */
 export function Dashboard({
   state,
   client,
+  jobs,
   onChanged,
-  onError,
 }: {
   state: Overview;
   client: ServerClient | null;
+  jobs: JobView;
   onChanged: () => void;
-  onError: (message: string) => void;
 }) {
-  const [busy, setBusy] = useState<string | null>(null);
+  const { run, dismiss, stateOf, busy, anyBusy } = useActions();
   const [health, setHealth] = useState<Health | null>(null);
   const [progress, setProgress] = useState<Progress>(IDLE);
+  // Background readouts, reported where they are read rather than swallowed.
+  // `/health` is a different question from `overview`: the supervisor can hold a
+  // live child that is no longer serving, and `/v1/*` can 401 after an API-key
+  // change while the process is perfectly healthy.
+  const [healthNote, setHealthNote] = useState<string | null>(null);
+  const [streamNote, setStreamNote] = useState<string | null>(null);
 
   // Progress arrives over Server-Sent Events, so without polling: we only
   // re-query `/health` for the warm model and idle memory.
@@ -38,126 +57,160 @@ export function Dashboard({
     if (!client) {
       setHealth(null);
       setProgress(IDLE);
+      setHealthNote(null);
+      setStreamNote(null);
       return;
     }
-    const stop = client.subscribeProgress(setProgress, () => {
-      /* A dropped stream is not a visible error: the `overview` poll will notice
-         a stopped server. */
-    });
-    void client.health().then(setHealth).catch(() => setHealth(null));
+    setStreamNote(null);
+    const stop = client.subscribeProgress(
+      (next) => {
+        setProgress(next);
+        setStreamNote(null);
+      },
+      // The transport retries on its own now; this only reports that it is
+      // currently disconnected. A frame arriving clears it, and one arrives
+      // immediately on a successful reconnect because `/v1/progress` emits the
+      // current snapshot as its first event.
+      (message) => setStreamNote(message),
+    );
+    void client
+      .health()
+      .then((value) => {
+        setHealth(value);
+        setHealthNote(null);
+      })
+      .catch((cause) => {
+        setHealth(null);
+        setHealthNote(messageOf(cause));
+      });
     return stop;
   }, [client]);
 
   useEffect(() => {
     if (!client) return;
     const timer = setInterval(() => {
-      void client.health().then(setHealth).catch(() => undefined);
+      void client
+        .health()
+        .then((value) => {
+          setHealth(value);
+          setHealthNote(null);
+        })
+        .catch((cause) => setHealthNote(messageOf(cause)));
     }, 5000);
     return () => clearInterval(timer);
   }, [client]);
 
-  async function act(label: string, action: () => Promise<unknown>) {
-    setBusy(label);
-    try {
-      await action();
-      onChanged();
-    } catch (cause) {
-      onError(messageOf(cause));
-    } finally {
-      setBusy(null);
-    }
+  // Each button gets its own slot, so a failed Stop cannot erase what Start said,
+  // and nothing the status poll does can erase either.
+  async function act(key: string, action: () => Promise<unknown>, success?: string) {
+    if (await run(key, action, success)) onChanged();
   }
 
   const running = state.server.running;
   const memory = progress.memory.active_gb !== undefined ? progress.memory : (health?.memory ?? {});
   const loaded = progress.loaded_model ?? health?.loaded_model ?? null;
+  const job = jobs.job;
+  const generating = progress.state !== "idle";
+  const idleUnload = health?.idle_unload_s;
 
   return (
-    <>
-      <div className="card">
+    <div className="panel">
+      {/* One surface, three sections. The dashboard is read top to bottom — what
+          the server is, what it is doing, what it is using — and three
+          equal-height cards side by side made those look like three unrelated
+          readings while padding the shortest out to match the tallest. A rule
+          between sections separates them without the false symmetry. */}
+
+      {/* ── Server ──────────────────────────────────────────────────────── */}
+      <section className="section">
         <div className="row spread">
           <div className="row">
             <h2 style={{ margin: 0 }}>Server</h2>
-            <span className={`badge ${running ? "ok" : ""}`}>
-              <span className="dot" />
-              {running ? `running · port ${state.server.port}` : "stopped"}
+            <span className={running ? "pill pill-live" : "pill pill-down"}>
+              {running ? "Running" : "Stopped"}
             </span>
+            {running && state.server.port !== null && (
+              <span className="library-spec" style={{ marginLeft: 0 }}>
+                port {state.server.port}
+              </span>
+            )}
             {loaded ? (
-              <span className="badge ok">warm model · {loaded}</span>
+              <span className="pill pill-ok">warm · {loaded}</span>
             ) : (
-              running && <span className="badge">no model loaded</span>
+              running && <span className="pill">no model loaded</span>
             )}
             {/* Without this, an automatic release reads as a model that failed to
                 stay loaded. */}
-            {running && health?.idle_unload_s !== null && health?.idle_unload_s !== undefined && (
-              <span className="badge">
-                {health.idle_unload_s === 0
-                  ? "frees after each request"
-                  : `frees after ${health.idle_unload_s}s idle`}
+            {running && idleUnload !== null && idleUnload !== undefined && (
+              <span className="pill">
+                {idleUnload === 0 ? "frees after each request" : `frees after ${idleUnload}s idle`}
               </span>
             )}
           </div>
-          <div className="row">
+
+          <div className="actions">
             {running ? (
               <>
-                <button onClick={() => void act("stop", api.serverStop)} disabled={busy !== null}>
-                  {busy === "stop" ? "Stopping…" : "Stop"}
+                <button
+                  onClick={() => void act("stop", api.serverStop, "Server stopped.")}
+                  disabled={anyBusy}
+                >
+                  {busy("stop") ? "Stopping…" : "Stop"}
                 </button>
                 <button
-                  onClick={() => void act("restart", api.serverRestart)}
-                  disabled={busy !== null}
+                  onClick={() => void act("restart", api.serverRestart, "Server restarted.")}
+                  disabled={anyBusy}
                 >
-                  Restart
+                  {busy("restart") ? "Restarting…" : "Restart"}
                 </button>
               </>
             ) : (
               <button
                 className="primary"
-                onClick={() => void act("start", api.serverStart)}
-                disabled={busy !== null}
+                onClick={() => void act("start", api.serverStart, "Server started.")}
+                disabled={anyBusy}
               >
-                {busy === "start" ? "Starting…" : "Start"}
+                {busy("start") ? "Starting…" : "Start"}
               </button>
             )}
           </div>
         </div>
 
-        {/* An unexpected exit is otherwise invisible: the status poll flips the
-            badge back to "stopped" with nothing to say why. */}
+        {/* Lifecycle outcomes live next to the buttons that produced them, and
+            stay until the same button runs again or they are dismissed. */}
+        {["start", "stop", "restart"].map((key) => (
+          <ActionNote key={key} state={stateOf(key)} onDismiss={() => dismiss(key)} />
+        ))}
+
+        {/* An unexpected exit is otherwise invisible: the poll flips the pill
+            back to Stopped with nothing to say why. */}
         {!running && state.server.lastExit && (
-          <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
-            <span className="badge warn">
-              <span className="dot" />
-              {state.server.lastExit}
-            </span>{" "}
-            See the Logs tab for the reason.
+          <p className="note">
+            <span className="pill pill-warn">exited</span> {state.server.lastExit} — the reason is in
+            Logs.
           </p>
         )}
 
-        <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
+        <p className="note">
           The server listens within a second but loads no weights at startup: the first generation
           pays for loading the model, which can take several minutes.
         </p>
 
         {!state.hfTokenPresent && (
-          <p className="hint" style={{ marginTop: 10, marginBottom: 0 }}>
-            <span className="badge warn">
-              <span className="dot" />
-              no HuggingFace token
-            </span>{" "}
-            Half the catalogue sits in gated repos. The two models enabled by default are not
-            among them, but add a token in the Models tab before installing one that is.
+          <p className="note">
+            <span className="pill pill-warn">no token</span> Half the catalogue sits in gated
+            repositories. The models enabled by default are not among them; add a token in Models
+            before installing one that is.
           </p>
         )}
-      </div>
+      </section>
 
-      <div className="card">
-        <h2>Activity</h2>
-        {progress.state === "idle" ? (
-          <p className="hint" style={{ marginBottom: 0 }}>
-            {running ? "Idle." : "Server stopped."}
-          </p>
-        ) : (
+      {/* ── Current activity ────────────────────────────────────────────── */}
+      <section className="section">
+        <h2>Current activity</h2>
+
+        {/* Generation: owned by the Python engine, cancelled through it. */}
+        {generating ? (
           <>
             <div className="row spread" style={{ marginBottom: 8 }}>
               <span>
@@ -173,44 +226,100 @@ export function Dashboard({
                 )}
               </span>
               {progress.elapsed_s !== null && (
-                <span className="badge">{progress.elapsed_s.toFixed(1)} s</span>
+                <span className="library-spec">{progress.elapsed_s.toFixed(1)} s</span>
               )}
             </div>
-            {/* Loading has no steps: indeterminate bar. */}
+            {/* Loading reports no steps, so it gets a stripe rather than a
+                fraction it cannot know. */}
             {progress.state === "generating" && progress.total > 0 ? (
-              <progress value={progress.step} max={progress.total} />
+              <div className="bar">
+                <div
+                  className="bar-fill"
+                  style={{ width: `${(progress.step / progress.total) * 100}%` }}
+                />
+              </div>
             ) : (
-              <progress />
+              <div className="bar bar-indeterminate" />
             )}
           </>
+        ) : (
+          <p className="empty">{running ? "No generation running." : "Server stopped."}</p>
         )}
 
-        <div className="row" style={{ marginTop: 12 }}>
+        {/* The Rust-owned operation, which has nothing to do with the server
+            being up: downloads and conversions run with it stopped. */}
+        {job && jobs.active && (
+          <div style={{ marginTop: 14 }}>
+            <div className="row" style={{ marginBottom: 6 }}>
+              <span className="pill pill-accent">
+                {job.kind === "prequantize" ? "Converting" : "Downloading"}
+              </span>
+              {job.target && <strong>{job.target}</strong>}
+              {job.state === "cancelling" && <span className="pill pill-warn">stopping</span>}
+            </div>
+            <p className="note" style={{ marginTop: 0, marginBottom: 8 }}>
+              {describeJob(job)}
+            </p>
+            <div className="bar bar-indeterminate" />
+            <p className="note">Manage it in Models, where it was started.</p>
+          </div>
+        )}
+
+        <div className="actions" style={{ marginTop: 14 }}>
           <button
-            onClick={() => void act("cancel", () => client!.cancel())}
-            disabled={!client || busy !== null || progress.state !== "generating"}
+            onClick={() => void act("cancel", () => client!.cancel(), "Cancellation requested.")}
+            disabled={!client || anyBusy || progress.state !== "generating"}
+            title={
+              progress.state === "generating" ? undefined : "Available while a generation is running."
+            }
           >
-            Cancel generation
+            {busy("cancel") ? "Cancelling…" : "Cancel generation"}
           </button>
           <button
-            onClick={() => void act("unload", () => client!.unload())}
-            disabled={!client || busy !== null || !loaded}
+            onClick={() => void act("unload", () => client!.unload(), "Model released.")}
+            disabled={!client || anyBusy || !loaded}
+            title={loaded ? undefined : "No model is loaded."}
           >
-            {busy === "unload" ? "Releasing…" : "Free memory"}
+            {busy("unload") ? "Releasing…" : "Free memory"}
           </button>
-          <button onClick={() => void openExternal(client!.docsUrl())} disabled={!client}>
+          {/* Was a floating promise: a refused `shell:allow-open` rejected into
+              nowhere. */}
+          <button
+            onClick={() => void run("docs", () => openExternal(client!.docsUrl()))}
+            disabled={!client || anyBusy}
+            title={client ? undefined : "Available while the server is running."}
+          >
             Open /docs
           </button>
         </div>
-        <p className="hint" style={{ marginTop: 8, marginBottom: 0 }}>
+        {["cancel", "unload", "docs"].map((key) => (
+          <ActionNote key={key} state={stateOf(key)} onDismiss={() => dismiss(key)} />
+        ))}
+
+        {/* Shown only while actually disconnected: the transport retries with a
+            bounded backoff and the first frame of a recovered stream clears this.
+            A silently stopped bar would be the lie; so would telling someone to
+            go and fix it by hand. */}
+        {streamNote && (
+          <p className="note">
+            <span className="pill pill-warn">reconnecting</span> Live progress stopped updating:{" "}
+            {streamNote}. Retrying automatically.
+          </p>
+        )}
+        <p className="note">
           MLX cannot be interrupted from outside: cancellation takes effect at the next denoising
           step.
         </p>
-      </div>
+      </section>
 
-      <div className="card">
-        <h2>Memory and environment</h2>
+      {/* ── Runtime ─────────────────────────────────────────────────────── */}
+      <section className="section">
+        <h2>Runtime</h2>
         <dl className="stats">
+          <div className="stat">
+            <dt>Warm model</dt>
+            <dd>{loaded ?? "none"}</dd>
+          </div>
           <div className="stat">
             <dt>MLX active</dt>
             <dd>{memory.active_gb !== undefined ? `${memory.active_gb.toFixed(2)} GB` : "—"}</dd>
@@ -227,11 +336,42 @@ export function Dashboard({
             <dt>Server version</dt>
             <dd>{health?.version ?? "—"}</dd>
           </div>
+          <div className="stat">
+            <dt>Release policy</dt>
+            {/* Three states, not two. `null` from a *running* server means "keep
+                the model warm forever"; no reading at all means we do not know,
+                and printing "keep warm" for it asserted the opposite of a
+                configured 10-second release — observed with the server stopped. */}
+            <dd>
+              {!health
+                ? "—"
+                : idleUnload === null || idleUnload === undefined
+                  ? "keep warm"
+                  : idleUnload === 0
+                    ? "after each request"
+                    : `after ${idleUnload}s idle`}
+            </dd>
+          </div>
+          <div className="stat wide">
+            <dt>Working directory</dt>
+            <dd>{state.dataDir}</dd>
+          </div>
+          <div className="stat wide">
+            <dt>Model storage</dt>
+            <dd>{state.hfHome}</dd>
+          </div>
         </dl>
-        <p className="path" style={{ marginTop: 12 }}>
-          {state.dataDir}
-        </p>
-      </div>
-    </>
+        {healthNote && (
+          <p className="note">
+            <span className="pill pill-warn">/health unreachable</span> {healthNote}
+          </p>
+        )}
+        {jobs.error && (
+          <p className="note">
+            <span className="pill pill-warn">operation status unreadable</span> {jobs.error}
+          </p>
+        )}
+      </section>
+    </div>
   );
 }

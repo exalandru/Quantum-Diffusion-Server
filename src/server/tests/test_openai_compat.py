@@ -423,7 +423,8 @@ def test_capabilities_publish_the_new_flags(client):
     assert models["flux2-klein"]["gated"] is True
     assert models["z-image-turbo"]["gated"] is False
     assert models["z-image-turbo"]["license"] == "Apache-2.0"
-    assert models["ideogram-4"]["prequantized"] is True
+    assert models["ideogram-4"]["supports_quantization"] is False
+    assert models["ideogram-4"]["quantize_choices"] == []
 
 
 # ── Automatic release of the warm model ────────────────────────────────────

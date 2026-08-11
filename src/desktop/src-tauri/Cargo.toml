@@ -21,6 +21,10 @@ serde_json = "1"
 tokio = { version = "1", features = ["process", "io-util", "net", "time", "macros", "sync"] }
 # Sending signals to the server's process group: SIGTERM then SIGKILL.
 libc = "0.2"
+tauri-plugin-dialog = "2.7.2"
+# Content identity for the bundled Python payload, so "up to date" is a statement
+# about bytes rather than about a version string or a timestamp.
+sha2 = "0.10"
 
 [profile.release]
 codegen-units = 1

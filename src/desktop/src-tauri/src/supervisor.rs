@@ -29,6 +29,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
+use crate::job::{self, JobKind, SharedJobs};
 use crate::paths::Paths;
 
 /// Margin added to `shutdown_grace_s` before escalating to SIGKILL.
@@ -123,7 +124,7 @@ impl Supervisor {
         // `ensure_exists` just ran, so the file is on disk and readable here.
         let port = crate::config::port(paths);
         ensure_port_free(port)?;
-        let hf_home = Paths::default_hf_home();
+        let hf_home = paths.effective_hf_home();
         let mut command = Command::new(paths.server_bin());
         command
             // The current directory is set explicitly: we never rely on the
@@ -155,10 +156,10 @@ impl Supervisor {
             .map_err(|error| format!("could not launch the server: {error}"))?;
 
         if let Some(stdout) = child.stdout.take() {
-            pump(app.clone(), stdout, true);
+            pump(app.clone(), stdout, true, None);
         }
         if let Some(stderr) = child.stderr.take() {
-            pump(app.clone(), stderr, false);
+            pump(app.clone(), stderr, false, None);
         }
 
         self.child = Some(child);
@@ -206,7 +207,10 @@ impl Supervisor {
 }
 
 /// Send a signal to the whole process group (`-pgid`).
-fn signal_group(pid: u32, signal: libc::c_int) {
+///
+/// Shared with `job.rs`: the long model operations are signalled through exactly
+/// this ladder rather than a second mechanism.
+pub fn signal_group(pid: u32, signal: libc::c_int) {
     // `process_group(0)` makes the child its group leader, so its pid is also
     // its pgid.
     unsafe {
@@ -215,7 +219,12 @@ fn signal_group(pid: u32, signal: libc::c_int) {
 }
 
 /// Relay a stream to the interface, line by line.
-fn pump<R>(app: AppHandle, reader: R, structured: bool)
+///
+/// `jobs` is `Some` for the long model operations: their structured lines are
+/// also folded into the job status, so a terminal failure can report the reason
+/// the child gave instead of only its exit code. The raw line still reaches the
+/// Logs tab either way.
+fn pump<R>(app: AppHandle, reader: R, structured: bool, jobs: Option<SharedJobs>)
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -228,6 +237,11 @@ where
             // On stderr, tqdm rewrites its bar with carriage returns and no
             // newline: we re-split so as not to accumulate one giant line.
             for fragment in line.split('\r').filter(|part| !part.trim().is_empty()) {
+                if structured {
+                    if let Some(jobs) = jobs.as_ref() {
+                        job::note_line(jobs, fragment).await;
+                    }
+                }
                 let _ = app.emit(
                     "server-line",
                     ServerLine {
@@ -281,10 +295,18 @@ pub async fn wait_healthy(port: u16, timeout: Duration) -> Result<(), String> {
     Err(format!("the server is not listening on {address}"))
 }
 
-/// Run the pre-quantization and relay its output like the server's.
-pub async fn run_prequantize(
+/// Start the pre-quantization as an owned job, and return once it is running.
+///
+/// Deliberately not awaited to completion: this runs for hours, and the caller
+/// used to be a `#[tauri::command]` whose promise was the only record that it was
+/// happening. Progress and the terminal outcome are read back through
+/// `job_status`, so a tab switch no longer loses the operation.
+pub async fn start_prequantize(
     app: AppHandle,
+    jobs: &SharedJobs,
     paths: &Paths,
+    model: String,
+    bits: u8,
     components: Vec<String>,
     dest: Option<String>,
 ) -> Result<(), String> {
@@ -296,13 +318,22 @@ pub async fn run_prequantize(
     let mut command = Command::new(&binary);
     command
         .current_dir(&paths.data)
-        .env("HF_HOME", Paths::default_hf_home())
+        .env("HF_HOME", paths.effective_hf_home())
         .env("PYTHONUNBUFFERED", "1")
         .arg("--json-logs")
+        // Which model and which precision are the job's, not the script's
+        // defaults: the capability contract decides what is offered, and the
+        // request has to say what was chosen.
+        .args(["--model", &model])
+        .args(["--bits", &bits.to_string()])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
-        .process_group(0);
+        .process_group(0)
+        // Defence in depth only. The explicit kill in `RunEvent::Exit` is what
+        // actually guarantees the child dies; this covers the paths where the
+        // manager is dropped without one.
+        .kill_on_drop(true);
     if let Some(dest) = dest.as_deref().filter(|value| !value.is_empty()) {
         command.args(["--dest", dest]);
     }
@@ -310,25 +341,8 @@ pub async fn run_prequantize(
         command.arg("--components").args(&components);
     }
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("could not launch the conversion: {error}"))?;
-    if let Some(stdout) = child.stdout.take() {
-        pump(app.clone(), stdout, true);
-    }
-    if let Some(stderr) = child.stderr.take() {
-        pump(app.clone(), stderr, false);
-    }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("conversion interrupted: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("the conversion failed (code {:?})", status.code()))
-    }
+    let target = format!("{model} @ {bits}-bit");
+    spawn_job(app, jobs, command, JobKind::Prequantize, target, "conversion").await
 }
 
 /// Catalogue with cache state, straight from `mflux-server-fetch --status`.
@@ -345,7 +359,7 @@ pub async fn models_status(paths: &Paths) -> Result<serde_json::Value, String> {
     let output = Command::new(&binary)
         .current_dir(&paths.data)
         .env("MFLUX_SERVER_CONFIG", &paths.config)
-        .env("HF_HOME", Paths::default_hf_home())
+        .env("HF_HOME", paths.effective_hf_home())
         .arg("--status")
         .stdin(Stdio::null())
         .output()
@@ -362,19 +376,57 @@ pub async fn models_status(paths: &Paths) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("unreadable catalogue status: {error}"))
 }
 
-/// Download one model's weights, relaying progress like a conversion.
-pub async fn run_fetch(app: AppHandle, paths: &Paths, key: String) -> Result<(), String> {
+/// Run one `mflux-server-import` subcommand and hand back its JSON.
+///
+/// Plumbing only: this opens no directory, reads no `config.json`, and knows
+/// nothing about families or profiles. Every verdict is Python's, and the answer
+/// is parsed as JSON rather than scraped from human output.
+pub async fn run_import(paths: &Paths, args: &[String]) -> Result<serde_json::Value, String> {
+    let binary = paths.import_bin();
+    if !binary.is_file() {
+        return Err(format!("{} is missing.", binary.display()));
+    }
+    let output = Command::new(&binary)
+        .current_dir(&paths.data)
+        .env("MFLUX_SERVER_CONFIG", &paths.config)
+        .env("HF_HOME", paths.effective_hf_home())
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .await
+        .map_err(|error| format!("could not run the importer: {error}"))?;
+
+    // A non-zero exit still carries a structured verdict, and that verdict is far
+    // more useful than the exit code — so parse first, and fall back to stderr
+    // only when there is nothing to parse.
+    match serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+        Ok(value) => Ok(value),
+        Err(_) => Err(format!(
+            "the importer failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )),
+    }
+}
+
+/// Start a weight download as an owned job, and return once it is running.
+pub async fn start_fetch(
+    app: AppHandle,
+    jobs: &SharedJobs,
+    paths: &Paths,
+    key: String,
+) -> Result<(), String> {
     let binary = paths.fetch_bin();
     if !binary.is_file() {
         return Err(format!("{} is missing.", binary.display()));
     }
 
-    let mut child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .current_dir(&paths.data)
         // The same config the server reads, so an overridden `model_path` or
         // quantization is the one we fetch.
         .env("MFLUX_SERVER_CONFIG", &paths.config)
-        .env("HF_HOME", Paths::default_hf_home())
+        .env("HF_HOME", paths.effective_hf_home())
         .env("PYTHONUNBUFFERED", "1")
         // Left on, unlike for the server: the download progress bar *is* the
         // feedback here.
@@ -385,25 +437,44 @@ pub async fn run_fetch(app: AppHandle, paths: &Paths, key: String) -> Result<(),
         .stderr(Stdio::piped())
         .stdin(Stdio::null())
         .process_group(0)
+        .kill_on_drop(true);
+
+    spawn_job(app, jobs, command, JobKind::Fetch, key, "download").await
+}
+
+/// Spawn a child under the job manager: single-flight check, adoption, output
+/// relay and the monitor task, all in the order that keeps them consistent.
+async fn spawn_job(
+    app: AppHandle,
+    jobs: &SharedJobs,
+    mut command: Command,
+    kind: JobKind,
+    target: String,
+    what: &str,
+) -> Result<(), String> {
+    // The lock is taken *before* the spawn and held across it, so two commands
+    // arriving together cannot both pass the check and leave one child
+    // unreferenced — which is precisely what a React `disabled` attribute could
+    // not prevent.
+    let mut guard = jobs.lock().await;
+    guard.ensure_free()?;
+
+    let mut child = command
         .spawn()
-        .map_err(|error| format!("could not launch the download: {error}"))?;
+        .map_err(|error| format!("could not launch the {what}: {error}"))?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    guard.begin(kind, target, child);
+    drop(guard);
 
-    if let Some(stdout) = child.stdout.take() {
-        pump(app.clone(), stdout, true);
+    if let Some(stdout) = stdout {
+        pump(app.clone(), stdout, true, Some(jobs.clone()));
     }
-    if let Some(stderr) = child.stderr.take() {
-        pump(app.clone(), stderr, false);
+    if let Some(stderr) = stderr {
+        pump(app.clone(), stderr, false, None);
     }
-
-    let status = child
-        .wait()
-        .await
-        .map_err(|error| format!("download interrupted: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("the download failed (code {:?})", status.code()))
-    }
+    job::monitor(jobs.clone());
+    Ok(())
 }
 
 /// `true` when a HuggingFace token is available for the *gated* repos.
