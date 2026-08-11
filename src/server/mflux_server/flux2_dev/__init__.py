@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any
 
 from mflux_server.flux2_dev.config import (
-    DEFAULT_MODEL_PATH,
     MAX_SEQUENCE_LENGTH,
     REPO,
     TEXT_ENCODER_OUT_LAYERS,
@@ -30,7 +29,6 @@ _LAZY: dict[str, str] = {
 }
 
 __all__ = [
-    "DEFAULT_MODEL_PATH",
     "MAX_SEQUENCE_LENGTH",
     "REPO",
     "SYSTEM_MESSAGE",

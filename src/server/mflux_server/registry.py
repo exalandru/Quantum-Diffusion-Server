@@ -93,6 +93,12 @@ class ModelSpec:
     #: built-in, whose catalogue `key` already *is* its public name — which is
     #: exactly why an imported model may not take one.
     api_name: str | None = None
+    #: Where this installation keeps generated artifacts, from
+    #: `storage.cache_dir`. Carried on the spec because resolving a saved variant
+    #: is a property of the model, and threading a directory through every call
+    #: site is what keeps that location the configuration's rather than a
+    #: module-level default nobody chose.
+    cache_root: str | None = None
 
     @property
     def default_size(self) -> str:
@@ -126,7 +132,19 @@ class ModelSpec:
             return self.model_path
         from mflux_server import artifacts
 
-        return str(artifacts.artifact_dir(self.key, self.source, self.prequantized_variant))
+        # Resolved through discovery rather than computed: activation has to
+        # reach the artifact that *exists*, and a directory the user pointed the
+        # model at can hold one that the layout would not have placed there.
+        for variant in artifacts.discover_variants(self.key, self.source, base=self.cache_root):
+            if variant.bits == self.prequantized_variant:
+                return variant.path
+        # Nothing validated at that depth: the canonical location is the honest
+        # answer, and `_require_variant` names it when it refuses.
+        return str(
+            artifacts.artifact_dir(
+                self.key, self.source, self.prequantized_variant, base=self.cache_root
+            )
+        )
 
     @property
     def quantization(self) -> QuantizationCapability:
@@ -176,10 +194,14 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # No factory on `ModelConfig`: mflux 0.18.0 does not know FLUX.2-dev.
         # Resolved through `_LOCAL_MODEL_CONFIGS`.
         model_config_name="flux2_dev",
-        # The upstream repo ships bf16 (~111 GB of weights): only an already
-        # quantized artifact fits in unified memory, see
-        # `mflux-server-prequantize`.
-        model_path=flux2_dev_config.DEFAULT_MODEL_PATH,
+        # The raw repository, like every other built-in. It used to be a
+        # directory *our own* converter writes, which made a QDS-generated
+        # artifact the model's identity: the catalogue reported the model as
+        # installed when only the conversion existed, Install and Locate had
+        # nothing to act on, and the 8-bit copy could never be listed as what it
+        # is, one saved variant among the possible ones. Source and saved
+        # representation are two facts, and this is the source.
+        model_path=None,
         # 1024² rather than 1920x1072: 32B over 50 steps, area is expensive.
         default_width=1024,
         default_height=1024,
@@ -413,10 +435,15 @@ PRESET_STEPS: dict[str, int] = {"V4_DEFAULT_20": 20, "V4_QUALITY_48": 48, "V4_TU
 #: Values accepted by nn.quantize through mflux (cli/defaults/defaults.py:59).
 QUANTIZE_CHOICES = (3, 4, 5, 6, 8)
 
-#: Conversion routes. `MFLUX_SAVE` is the ordinary one — load the model with a
-#: bit depth and call its own `save_model`. `QDS_MEMORY_BOUNDED` is FLUX.2-dev's:
-#: its bf16 is ~111 GB and cannot be materialised whole, so `prequantize.py`
-#: converts one component at a time and quantizes block by block.
+#: The conversion route. `QDS_MEMORY_BOUNDED` is now the only one: one component
+#: loaded, quantized, saved and released at a time, so peak memory is bounded by
+#: the largest single component rather than by the whole model.
+#:
+#: `MFLUX_SAVE` was the other — load the model at a bit depth and call its own
+#: `save_model`, which holds every component resident to write them. Nothing
+#: selects it any more, and the name survives because artifacts converted by it
+#: recorded it in their completion markers; those artifacts are still valid, and
+#: reading their strategy back must not become an unknown value.
 STRATEGY_MFLUX_SAVE = "mflux_save"
 STRATEGY_QDS_MEMORY_BOUNDED = "qds_memory_bounded"
 
@@ -481,12 +508,18 @@ _FLUX2_DEV = QuantizationCapability(
 #: quantizable. Verified per family against mflux 0.18.0: `save_model` present on
 #: the exact class `load_model` instantiates, no `skip_quantization` on the
 #: transformer, and `ModelSaver`/`WeightLoader` round-trip the level generically.
+#:
+#: They convert component by component like FLUX.2-dev does. Whether a model
+#: *fits* in memory was never the right test for how to convert it: loading a
+#: 20 GB model whole to write it peaked at 20 GB when no component of it is more
+#: than half that, and the components were independently convertible all along —
+#: see `components.py` for the evidence, per family.
 _GENERIC = QuantizationCapability(
     supports_quantization=True,
     quantize_choices=QUANTIZE_CHOICES,
     supports_prequantize=True,
     prequantize_choices=QUANTIZE_CHOICES,
-    prequantize_strategy=STRATEGY_MFLUX_SAVE,
+    prequantize_strategy=STRATEGY_QDS_MEMORY_BOUNDED,
 )
 
 #: Qwen skips only its text encoder, so runtime quantization still applies to the
@@ -550,6 +583,7 @@ def build_registry(
     default_quantize: int | None = None,
     include_disabled: bool = False,
     imported: list[Any] | None = None,
+    cache_root: str | None = None,
 ) -> dict[str, ModelSpec]:
     """Apply the `server-config.json` overrides on top of the base catalogue.
 
@@ -583,7 +617,9 @@ def build_registry(
 
     registry: dict[str, ModelSpec] = {}
     for key, base in BASE_SPECS_BY_KEY.items():
-        spec = base
+        # Every row learns where this installation keeps generated artifacts, so
+        # that resolving a saved variant needs no second lookup and no default.
+        spec = replace(base, cache_root=cache_root)
         if global_size is not None:
             spec = replace(spec, default_width=global_size[0], default_height=global_size[1])
         # The global default only reaches models where it would actually do
@@ -602,7 +638,7 @@ def build_registry(
     # source-code truth, and one unusable row may not cost the others.
     for model in imported or []:
         try:
-            spec = imported_spec(model)
+            spec = replace(imported_spec(model), cache_root=cache_root)
         except ValueError as exc:
             logger.warning("Skipping imported model %s: %s", getattr(model, "id", "?"), exc)
             continue
@@ -751,15 +787,16 @@ def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
         if state == av.PRESENT:
             return
     else:
-        state, detail = av.MISSING, "no model_path configured"
+        state, detail = av.MISSING, "no saved variant is selected"
 
     from mflux_server.errors import APIError
 
     raise APIError(
-        f"Model '{spec.key}' requires a completed pre-quantized artifact at {model_path!r} "
-        f"({state}: {detail}). Run `mflux-server-prequantize --dest {model_path}` (a one-time "
-        f"download of about 113 GB from {spec.repo}, yielding an artifact of about 58 GB), or set "
-        f"models.{spec.key}.model_path in server-config.json.",
+        f"Model '{spec.key}' cannot be generated from its source: {spec.repo} ships bf16, about "
+        f"111 GB of weights, which does not fit in unified memory. It needs a saved quantized "
+        f"copy, and the one currently selected is {state} ({detail}). Convert it from the "
+        f"Quantization dialog in the Models tab, or select an existing saved variant with "
+        f"models.{spec.key}.prequantized_variant.",
         status_code=503,
         error_type="server_error",
         param="model",
@@ -793,6 +830,69 @@ def _require_variant(spec: ModelSpec) -> None:
         param="model",
         code="variant_not_prepared",
     )
+
+
+def family_structure(family: str) -> tuple[Any, Any]:
+    """The pair of mflux classes a family is built from: model, weight definition.
+
+    The classes rather than an instance, because component-wise conversion needs
+    the *structure* — which module class each component is, and what the family
+    declares about loading and saving it — without materialising a model whose
+    whole point is that it does not fit in memory.
+
+    Family dispatch lives here, next to `load_model`, so there is one place that
+    knows what `"z-image"` means. Imports stay inside the branches for the same
+    reason they do there: this module is imported by the catalogue path, which
+    must not pull in torch.
+    """
+    if family == "flux2":
+        from mflux.models.flux2.variants.txt2img.flux2_klein import Flux2Klein
+        from mflux.models.flux2.weights.flux2_weight_definition import Flux2KleinWeightDefinition
+
+        return Flux2Klein, Flux2KleinWeightDefinition
+
+    if family == "flux2-dev":
+        from mflux_server.flux2_dev import Flux2Dev, Flux2DevWeightDefinition
+
+        return Flux2Dev, Flux2DevWeightDefinition
+
+    if family == "qwen":
+        from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
+        from mflux.models.qwen.weights.qwen_weight_definition import QwenWeightDefinition
+
+        return QwenImage, QwenWeightDefinition
+
+    if family == "z-image":
+        from mflux.models.z_image import ZImage
+        from mflux.models.z_image.weights.z_image_weight_definition import ZImageWeightDefinition
+
+        return ZImage, ZImageWeightDefinition
+
+    if family == "ernie":
+        from mflux.models.ernie_image import ErnieImage
+        from mflux.models.ernie_image.weights.ernie_weight_definition import ErnieWeightDefinition
+
+        return ErnieImage, ErnieWeightDefinition
+
+    if family == "fibo":
+        from mflux.models.fibo.variants.txt2img.fibo import FIBO
+        from mflux.models.fibo.weights.fibo_weight_definition import FIBOWeightDefinition
+
+        return FIBO, FIBOWeightDefinition
+
+    raise ValueError(f"No component-wise conversion is established for family {family!r}")
+
+
+def model_config_for(spec: ModelSpec) -> Any:
+    """The `ModelConfig` this spec generates with.
+
+    Exposed because conversion needs exactly the configuration generation uses:
+    `flux2` and `ernie` build their transformer and text encoder with overrides
+    read off it, and building those modules with the class defaults instead would
+    produce a differently shaped module for a model whose weights then no longer
+    fit it.
+    """
+    return _model_config(spec.model_config_name)
 
 
 def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:

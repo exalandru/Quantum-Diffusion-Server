@@ -134,6 +134,15 @@ impl Paths {
     /// volume must stay absent so the availability rules can report
     /// `volume_unmounted`, rather than being quietly materialised as an empty
     /// directory on the boot disk.
+    /// Where QDS keeps what it generates, when the configuration names nothing.
+    ///
+    /// The same derivation the Python side makes from `MFLUX_SERVER_CONFIG`'s
+    /// parent — both start from this data directory, so the app and the child
+    /// processes it launches cannot disagree about where artifacts live.
+    pub fn default_cache_dir(&self) -> PathBuf {
+        self.data.join("cache")
+    }
+
     pub fn effective_hf_home(&self) -> PathBuf {
         crate::config::hf_home(self).unwrap_or_else(Self::default_hf_home)
     }

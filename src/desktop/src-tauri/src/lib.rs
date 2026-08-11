@@ -34,6 +34,10 @@ struct Overview {
     /// download fails with a 401.
     hf_token_present: bool,
     hf_home: String,
+    /// Where generated artifacts go when `storage.cache_dir` names nothing. Sent
+    /// so the Configuration form can show the real default rather than describe
+    /// it, and so the two sides derive it in one place each.
+    default_cache_dir: String,
     data_dir: String,
     config_path: String,
 }
@@ -59,6 +63,7 @@ fn overview(
         bootstrap: bootstrap::status(&app, installer.is_running())?,
         hf_token_present: supervisor::hf_token_present(&hf_home),
         hf_home: hf_home.display().to_string(),
+        default_cache_dir: paths.default_cache_dir().display().to_string(),
         data_dir: paths.data.display().to_string(),
         config_path: paths.config.display().to_string(),
     })
@@ -116,6 +121,7 @@ fn config_read(app: AppHandle) -> Result<Value, String> {
 
 #[tauri::command]
 fn config_write(app: AppHandle, value: Value) -> Result<(), String> {
+    config::refuse_disabled_default(&value)?;
     config::write(&Paths::new(&app)?, &value)
 }
 

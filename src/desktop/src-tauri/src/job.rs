@@ -115,6 +115,16 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
+/// Work to do the moment a job is judged to have succeeded.
+///
+/// Run inside `reap`, under the manager's lock, and that placement is the whole
+/// point. A conversion that completes has to be recorded as active *before*
+/// anything can observe the job as finished — otherwise the first status read
+/// wins the race, the interface refreshes against a configuration that has not
+/// been written yet, and the newly built variant appears inactive until
+/// something else happens to reload.
+pub type OnComplete = Box<dyn FnOnce(&JobStatus) + Send + 'static>;
+
 #[derive(Default)]
 pub struct JobManager {
     /// Held here rather than by the awaiting task on purpose: reading the pid,
@@ -128,18 +138,30 @@ pub struct JobManager {
     /// Last ERROR-level message from the structured stream, kept as the terminal
     /// reason candidate. Exit codes alone said "code Some(1)" and nothing else.
     error_message: Option<String>,
+    /// Taken and run exactly once, when this job reaches `Completed`.
+    on_complete: Option<OnComplete>,
     status: JobStatus,
 }
 
 pub type SharedJobs = Arc<Mutex<JobManager>>;
 
 impl JobManager {
-    /// Adopt a freshly spawned child. The caller has already checked that no
-    /// other job is active, under the same lock.
-    pub fn begin(&mut self, kind: JobKind, target: String, child: Child) {
+    /// Adopt a freshly spawned child, with something to do if it succeeds.
+    ///
+    /// The caller has already checked that no other job is active, under the
+    /// same lock. `on_complete` is `None` for a download: nothing about the
+    /// application's configuration follows from weights arriving.
+    pub fn begin_with(
+        &mut self,
+        kind: JobKind,
+        target: String,
+        child: Child,
+        on_complete: Option<OnComplete>,
+    ) {
         self.child = Some(child);
         self.cancelling = false;
         self.error_message = None;
+        self.on_complete = on_complete;
         self.status = JobStatus {
             state: JobState::Running,
             kind: Some(kind),
@@ -195,6 +217,17 @@ impl JobManager {
             self.status.message = Some(failure_message(self.error_message.as_deref(), exit.code()));
         }
         self.cancelling = false;
+
+        // Still holding the lock, and the status is already terminal: whatever
+        // this does is done before any reader can be told the job finished.
+        // Failure and cancellation drop the hook without running it — there is
+        // nothing to record about a conversion that did not produce anything.
+        let hook = self.on_complete.take();
+        if self.status.state == JobState::Completed {
+            if let Some(hook) = hook {
+                hook(&self.status);
+            }
+        }
     }
 
     /// SIGTERM the child's process group. `Err` when nothing is running.
@@ -391,5 +424,112 @@ mod tests {
         let mut jobs = running();
         jobs.status.state = JobState::Cancelled;
         assert!(jobs.ensure_free().is_ok());
+    }
+
+    /// Drive `reap`'s terminal decision without a real child.
+    ///
+    /// `reap` needs a `Child` to notice, which a unit test has no cheap way to
+    /// produce; this exercises the same three lines it runs afterwards — the
+    /// part with the decision in it.
+    fn settle(jobs: &mut JobManager, state: JobState) {
+        jobs.status.state = state;
+        let taken = jobs.on_complete.take();
+        if jobs.status.state == JobState::Completed {
+            if let Some(taken) = taken {
+                taken(&jobs.status);
+            }
+        }
+    }
+
+    /// A hook that records the terminal status it was handed.
+    fn recorder() -> (Arc<std::sync::Mutex<Vec<String>>>, OnComplete) {
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let record = seen.clone();
+        let hook: OnComplete = Box::new(move |status: &JobStatus| {
+            let model = status
+                .fields
+                .as_ref()
+                .and_then(|fields| fields.get("model"))
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_owned();
+            let bits = status
+                .fields
+                .as_ref()
+                .and_then(|fields| fields.get("bits"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            record
+                .lock()
+                .unwrap()
+                .push(format!("{model}@{bits} {:?}", status.event.as_deref()));
+        });
+        (seen, hook)
+    }
+
+    #[test]
+    fn completion_work_runs_with_the_terminal_status_in_hand() {
+        // What the activation reads: the last structured event, which for a
+        // finished conversion is the one saying the artifact validated — and it
+        // is already on the status when the hook runs.
+        let mut jobs = running();
+        jobs.note_line(
+            r#"{"level":"INFO","message":"Done","event":"prequantize_done","fields":{"model":"z-image","bits":4,"variant_ready":true}}"#,
+        );
+        let (seen, hook) = recorder();
+        jobs.on_complete = Some(hook);
+
+        settle(&mut jobs, JobState::Completed);
+
+        assert_eq!(
+            seen.lock().unwrap().first().map(String::as_str),
+            Some(r#"z-image@4 Some("prequantize_done")"#)
+        );
+    }
+
+    #[test]
+    fn a_partial_run_completes_without_claiming_a_variant() {
+        // The run succeeded; the artifact is still missing components. The hook
+        // runs — it is the thing that decides — and finds an event that makes no
+        // claim of readiness.
+        let mut jobs = running();
+        jobs.note_line(
+            r#"{"level":"INFO","message":"Converted vae","event":"prequantize_partial","fields":{"bits":4,"completed":["vae"],"missing":["transformer"]}}"#,
+        );
+        let (seen, hook) = recorder();
+        jobs.on_complete = Some(hook);
+
+        settle(&mut jobs, JobState::Completed);
+
+        assert_eq!(
+            seen.lock().unwrap().first().map(String::as_str),
+            Some(r#"?@4 Some("prequantize_partial")"#),
+            "the hook must see the partial event rather than a readiness claim"
+        );
+    }
+
+    #[test]
+    fn a_failed_or_cancelled_job_does_no_completion_work() {
+        // A conversion that did not finish has produced nothing to select.
+        for state in [JobState::Failed, JobState::Cancelled] {
+            let mut jobs = running();
+            let (seen, hook) = recorder();
+            jobs.on_complete = Some(hook);
+            settle(&mut jobs, state);
+            assert!(
+                seen.lock().unwrap().is_empty(),
+                "{state:?} must not run completion work"
+            );
+        }
+    }
+
+    #[test]
+    fn completion_work_runs_at_most_once() {
+        let mut jobs = running();
+        let (seen, hook) = recorder();
+        jobs.on_complete = Some(hook);
+        settle(&mut jobs, JobState::Completed);
+        settle(&mut jobs, JobState::Completed);
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 }

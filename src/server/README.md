@@ -442,7 +442,7 @@ A pleasant consequence: **no Torch at inference**. Everything stays in MLX, the 
 **The repo ships bf16, and it does not fit.** A 64.5 GB transformer plus a 45.8 GB encoder plus the VAE, i.e. ~111 GB of resident weights. At 8 bits we drop to ~58 GB, comfortable on 96 GB of unified memory — but quantizing at load time requires holding the bf16 in memory first. Hence a one-time conversion up front:
 
 ```bash
-uv run mflux-server-prequantize            # → ~/.cache/mflux-server/flux2-dev-mlx-8bit
+uv run mflux-server-prequantize            # → <app data>/cache/artifacts/
 ```
 
 The repo is *gated*: you need a HuggingFace token that has been granted access (`hf auth login`). Expect ~113 GB of download and ~58 GB written. The script works **one component at a time**, and quantizes the transformer **block by block**: without that the memory peak would reach ~96 GB, against ~66 GB this way. The default order (transformer, encoder, VAE) lets you purge the bf16 from the HF cache between steps — the disk peak falls from ~169 GB to ~97 GB, and the script reminds you what to delete.

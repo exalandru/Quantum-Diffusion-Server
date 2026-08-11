@@ -732,24 +732,78 @@ select {
 
 /* Off is a state, not a disabled control: the row stays fully legible and
    operable, because turning it back on is done from here. */
-.model.off .model-title {
+.model.off .model-name {
   color: var(--muted);
 }
 
+/* One band per question, and the name has a band to itself.
+
+   The name used to share a baseline with every pill the row could produce —
+   availability, size, default, gated, imported, fixed precision, restart
+   required — so the thing you scan for was the shortest item in a line of
+   seven. Nothing sits beside it now but the switch that turns it on, which is
+   the one control that acts on the model as a whole. */
 .model-head {
   display: flex;
   align-items: center;
-  gap: var(--s2);
-  flex-wrap: wrap;
+  gap: var(--s3);
 }
 
-.model-title {
-  font-size: var(--font-base);
+.model-name {
+  margin: 0;
+  font-size: var(--font-lg);
   font-weight: 600;
+  line-height: 1.3;
+  color: var(--text);
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-/* Pushed right, so the switches line up down the list whatever each name and
-   pill set happen to measure. */
+/* State, under the name rather than around it. */
+.model-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: var(--s2);
+}
+
+.model-badges:empty {
+  display: none;
+}
+
+/* Which representation generation will use, carried out of the dialog because
+   it is the one thing in there that changes what this model *does*. */
+.model-summary {
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+/* ── Catalogue groups ───────────────────────────────────────────────────── */
+
+/* Gated and open built-ins are not interleaved: whether a repository needs
+   granted access decides whether Install can work at all, so it decides where
+   the row is read rather than being one pill among several. */
+.catalogue-group {
+  margin-top: var(--s4);
+}
+
+.catalogue-heading {
+  margin: 0 0 var(--s1);
+  font-size: var(--font-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+}
+
+.catalogue-group .models {
+  margin-top: 10px;
+}
+
+/* Pushed right, so the switches line up down the list whatever each name
+   happens to measure — and `flex: 0 0 auto` is what makes a long name shrink
+   instead of pushing the switch off a narrow window. */
 .model-enable {
   margin-left: auto;
   display: flex;
@@ -784,41 +838,16 @@ select {
   opacity: 0.5;
 }
 
+/* Wrapped rather than scrolled: a horizontal scrollbar inside a row is a thing
+   nobody finds. Every item here is a button of the same size, so the row needs
+   no separators to group them — what used to need them, the bit-depth selector
+   and its Pre-quantize button, is behind a dialog. */
 .model-actions {
   display: flex;
   align-items: center;
   gap: var(--s2);
   flex-wrap: wrap;
-  margin-top: 10px;
-}
-
-/* A group of controls that belong together, kept visually apart from its
-   neighbours so "Pre-quantize to 8 bits" cannot read as part of Install. */
-.model-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.model-group + .model-group {
-  padding-left: var(--s2);
-  border-left: 1px solid var(--line);
-}
-
-/* Wrapped rather than scrolled: a horizontal scrollbar inside a row is a thing
-   nobody finds. */
-@media (max-width: 760px) {
-  .model-group + .model-group {
-    padding-left: 0;
-    border-left: 0;
-  }
-}
-
-.model-advanced {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  margin-top: 12px;
 }
 
 /* ── Switch ─────────────────────────────────────────────────────────────── */
@@ -864,6 +893,108 @@ select {
   .switch::after {
     transition: none;
   }
+}
+
+/* A boolean that is a sentence, given the width a sentence needs.
+
+   In the four-column settings grid, "Expose the edits endpoint" wrapped into
+   three short lines beside a 14px checkbox, which reads as a paragraph that
+   happens to have a box next to it rather than as the name of a control. Its
+   own full-width row keeps the label on one line at any normal window and puts
+   the switch where every other switch in the app is: hard right. */
+.switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  width: 100%;
+  min-height: var(--control-h);
+}
+
+.switch-row-label {
+  min-width: 0;
+  font-size: var(--font-md);
+}
+
+/* ── Modal ──────────────────────────────────────────────────────────────── */
+
+/* Where a model's technical controls went. The row states what a model is; a
+   dialog is where you change how it is loaded, so a two-hour conversion cannot
+   be started by a control that looked like part of the catalogue. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--s5) var(--s4);
+  background: rgba(10, 11, 14, 0.7);
+  overflow-y: auto;
+}
+
+.modal {
+  display: flex;
+  flex-direction: column;
+  width: min(660px, 100%);
+  max-height: calc(100vh - 2 * var(--s5));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+}
+
+.modal-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-title {
+  margin: 0;
+  font-size: var(--font-base);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.modal-subtitle {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.modal-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.modal-body {
+  padding: 4px 16px 16px;
+  overflow-y: auto;
+}
+
+/* The two concepts inside the quantization dialog are the sections themselves,
+   so the first one does not need a gap above it to say it has begun. */
+.modal-body > .settings-group:first-child {
+  margin-top: var(--s3);
+}
+
+/* The Rust-owned conversion, mirrored where it was started. */
+.job-inline {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.job-inline .note {
+  margin: 6px 0 8px;
 }
 
 /* ── Settings form ──────────────────────────────────────────────────────── */
@@ -922,6 +1053,14 @@ select {
 .setting-row select {
   flex: 1;
   min-width: 0;
+}
+
+/* The same rule `.section` and `.model` use between things that belong together
+   but are not the same thing. Inside a fieldset, so the group survives. */
+.setting-divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: var(--s4) 0;
 }
 
 .setting-help {
@@ -1134,4 +1273,144 @@ main.view-logs > .notice {
   font-size: var(--font-sm);
   text-transform: uppercase;
   letter-spacing: 0.6px;
+}
+
+/* ── Components ─────────────────────────────────────────────────────────── */
+
+/* One line per part of the model, each saying what it is and whether it has
+   been converted. A conversion can be done in stages, so "already converted" is
+   a state the interface has to be able to show rather than a thing it can
+   assume from the artifact existing. */
+.components {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* One reading order: box, name, note — then the status, hard right.
+
+   The identity was previously centred by a `flex: 1` label between a left-hand
+   checkbox and a right-hand pill, which pushed "Text encoder" into the middle of
+   the row and wrapped it over two lines with empty space on both sides. The
+   label still spans the row — it is the click target — but its contents start at
+   the left and the status is what the free space sits before. */
+.component {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 6px 10px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.component-id {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  justify-content: flex-start;
+  gap: var(--s2);
+  /* Deliberately wraps only when the row genuinely cannot hold it. */
+  flex-wrap: wrap;
+}
+
+.component-id input[type="checkbox"] {
+  flex: 0 0 auto;
+  align-self: center;
+}
+
+.component-name {
+  white-space: nowrap;
+}
+
+.component-note {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  min-width: 0;
+}
+
+.component > .pill {
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+/* ── Disk usage ─────────────────────────────────────────────────────────── */
+
+/* A disclosure rather than a tooltip: hover is not a way everyone can reach
+   information, and this is the only place the breakdown exists. */
+.size-pop {
+  position: relative;
+  display: inline-block;
+}
+
+.size-pop > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.size-pop > summary::-webkit-details-marker {
+  display: none;
+}
+
+.size-pop-hint {
+  opacity: 0.7;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.size-pop-body {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 260px;
+  padding: 10px 12px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+}
+
+.size-breakdown {
+  display: block;
+  margin: 0;
+}
+
+.size-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s4);
+  padding: 3px 0;
+}
+
+.size-line dt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--font-md);
+}
+
+.size-line dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.size-total {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  font-weight: 600;
+}
+
+.size-total dt {
+  color: var(--text);
 }

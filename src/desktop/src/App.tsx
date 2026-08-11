@@ -205,6 +205,8 @@ export function App() {
           config={config}
           serverRunning={running}
           effectiveHfHome={state.hfHome}
+          defaultCacheDir={state.defaultCacheDir}
+          hfTokenPresent={state.hfTokenPresent}
           onSaved={onConfigChanged}
         />
       )}

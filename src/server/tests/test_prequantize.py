@@ -79,7 +79,7 @@ def test_a_finished_conversion_writes_the_marker_last(tmp_path, monkeypatch):
 
     dest = tmp_path / "artifact"
 
-    def fake_convert(name, *, repo, dest, bits):
+    def fake_convert(name, *, spec, repo, dest, bits):
         component = dest / name
         component.mkdir(parents=True, exist_ok=True)
         (component / "0.safetensors").write_bytes(b"tensor")
@@ -87,6 +87,10 @@ def test_a_finished_conversion_writes_the_marker_last(tmp_path, monkeypatch):
             '{"metadata": {"quantization_level": "8"}, "weight_map": {"w": "0.safetensors"}}',
             encoding="utf-8",
         )
+        # Every family declares one, and an artifact without it cannot load.
+        (dest / "tokenizer").mkdir(parents=True, exist_ok=True)
+        (dest / "tokenizer" / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+        return 6
 
     monkeypatch.setattr("mflux_server.prequantize.convert_component", fake_convert)
 
@@ -108,7 +112,7 @@ def test_a_partial_conversion_leaves_no_marker_and_is_not_present(tmp_path, monk
 
     dest = tmp_path / "artifact"
 
-    def fake_convert(name, *, repo, dest, bits):
+    def fake_convert(name, *, spec, repo, dest, bits):
         component = dest / name
         component.mkdir(parents=True, exist_ok=True)
         (component / "0.safetensors").write_bytes(b"tensor")
@@ -116,11 +120,24 @@ def test_a_partial_conversion_leaves_no_marker_and_is_not_present(tmp_path, monk
             '{"metadata": {"quantization_level": "8"}, "weight_map": {"w": "0.safetensors"}}',
             encoding="utf-8",
         )
+        # Every family declares one, and an artifact without it cannot load.
+        (dest / "tokenizer").mkdir(parents=True, exist_ok=True)
+        (dest / "tokenizer" / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+        return 6
 
     monkeypatch.setattr("mflux_server.prequantize.convert_component", fake_convert)
 
-    # Only one component requested: a real artifact needs all three.
-    # Only one component converted: the artifact is not complete, so no marker.
-    assert convert(_Args(dest, ["vae"])) == 1
+    # Only one component requested: a real artifact needs all three. Converting
+    # a subset is a legitimate way to work through a model in stages, so the run
+    # *succeeds* — what it must not do is leave anything claiming to be usable.
+    assert convert(_Args(dest, ["vae"])) == 0
     assert not (dest / av.COMPLETION_MARKER).exists()
     assert av.flux2_dev_artifact_state(str(dest))[0] == av.PARTIAL
+    assert artifacts.artifact_state(dest)[0] == av.PARTIAL
+
+    # And the one component that did convert is recorded, so the next run can
+    # continue rather than start again.
+    progress = artifacts.read_progress(dest)
+    assert progress is not None
+    assert progress.completed() == ("vae",)
+    assert progress.bits == 8

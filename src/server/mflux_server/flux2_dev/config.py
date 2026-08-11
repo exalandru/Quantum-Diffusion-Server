@@ -17,11 +17,6 @@ from typing import Any
 
 REPO = "black-forest-labs/FLUX.2-dev"
 
-#: Default destination of `mflux-server-prequantize`. The upstream repo ships
-#: bf16 (~111 GB of weights): on unified memory, only an already quantized
-#: artifact is loadable.
-DEFAULT_MODEL_PATH = "~/.cache/mflux-server/flux2-dev-mlx-8bit"
-
 #: The repo's `transformer/config.json`. Every key is a kwarg of
 #: `Flux2Transformer.__init__` — the architecture is klein's, just bigger.
 #: `guidance_embeds` is not in the JSON, but the

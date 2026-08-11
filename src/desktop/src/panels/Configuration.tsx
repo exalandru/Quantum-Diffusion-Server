@@ -41,17 +41,30 @@ export function Configuration({
   config,
   serverRunning,
   effectiveHfHome,
+  defaultCacheDir,
+  hfTokenPresent,
   onSaved,
 }: {
   config: unknown;
   serverRunning: boolean;
   /** Where weights are actually being read from right now. */
   effectiveHfHome: string | null;
+  /** Where generated artifacts go when nothing is configured. Derived by Rust
+      from the application's data directory, so the placeholder is the real
+      path rather than a description of one. */
+  defaultCacheDir: string;
+  /** Whether a token exists where `hf auth login` writes it. Not its value. */
+  hfTokenPresent: boolean;
   onSaved: () => void | Promise<void>;
 }) {
   const [draft, setDraft] = useState<Json | null>(null);
   const { run, dismiss, stateOf, busy } = useActions();
   const [dirty, setDirty] = useState(false);
+  // Deliberately not part of the configuration draft: the token is not written to
+  // `server-config.json` at all. It goes where `hf auth login` puts it, so a
+  // secret that already sits there in plaintext is not duplicated into a second
+  // file, and it is saved on its own rather than by the form's Save button.
+  const [token, setToken] = useState("");
   // The catalogue, so the rows below are the models the backend actually has.
   // They used to be the config file's key set, which meant a model added in a new
   // release stayed invisible — and unconfigurable — on every existing install.
@@ -61,7 +74,7 @@ export function Configuration({
   useEffect(() => {
     void api
       .modelsStatus()
-      .then(setCatalogue)
+      .then((status) => setCatalogue(status.models))
       .catch(() => setCatalogue(null));
   }, []);
 
@@ -107,6 +120,28 @@ export function Configuration({
     edit({ ...draft, server: { ...server, [key]: value } });
   const patchStorage = (key: string, value: unknown) =>
     edit({ ...draft, storage: { ...storage, [key]: value } });
+
+  /** Its own action, its own result: nothing about it belongs to the form's save. */
+  async function saveToken() {
+    await run(
+      "token",
+      async () => {
+        await api.hfTokenWrite(token);
+        setToken("");
+        // So the "token present" state stops contradicting what was just saved.
+        await onSaved();
+      },
+      "Token saved.",
+    );
+  }
+
+  async function chooseCacheFolder() {
+    await run("cache", async () => {
+      const chosen = await api.pickDirectory(String(storage.cache_dir ?? defaultCacheDir));
+      // Cancelling is not a failure, and must not look like one.
+      if (chosen) patchStorage("cache_dir", chosen);
+    });
+  }
 
   async function chooseFolder() {
     await run("storage", async () => {
@@ -331,9 +366,58 @@ export function Configuration({
           </p>
         </fieldset>
 
-        {/* ── Storage ─────────────────────────────────────────────────── */}
+        {/* ── Hugging Face ────────────────────────────────────────────── */}
+        {/* Where models come from and what proves we may have them: one source,
+            configured once for the application. Both used to live in Models —
+            the token beside the catalogue, the folder here — which put an
+            account-wide secret among per-model controls and split one subject
+            across two views. */}
         <fieldset className="settings-group">
-          <legend>Storage</legend>
+          <legend>Hugging Face</legend>
+
+          <div className="setting">
+            {/* The field names itself — "Hugging Face token" rather than
+                "Access token" — because a label queried on its own has to say
+                which token it is. This heading is for the eye. */}
+            <span className="setting-label">Access token</span>
+            <div className="setting-row">
+              <span className={hfTokenPresent ? "pill pill-ok" : "pill pill-warn"}>
+                {hfTokenPresent ? "token present" : "no token"}
+              </span>
+              <input
+                type="password"
+                aria-label="Hugging Face token"
+                placeholder="hf_…"
+                value={token}
+                onChange={(event) => {
+                  setToken(event.target.value);
+                  // Typing a new token supersedes the previous save's result.
+                  dismiss("token");
+                }}
+              />
+              <button
+                onClick={() => void saveToken()}
+                disabled={token.trim().length === 0 || busy("token")}
+              >
+                {busy("token") ? "Saving…" : "Save token"}
+              </button>
+            </div>
+            <ActionNote state={stateOf("token")} onDismiss={() => dismiss("token")} />
+            <p className="setting-help">
+              Gated repositories need a token whose account has been granted access on each model's
+              card. It is stored where <code>hf auth login</code> writes it, so as not to duplicate a
+              secret that already sits there in plaintext, and it is never copied into this
+              configuration file.
+            </p>
+            <code className="library-path">{effectiveHfHome ?? "~/.cache/huggingface"}/token</code>
+          </div>
+
+          {/* Two settings, one subject. What proves we may fetch weights and
+              where they land are related enough to share a section and separate
+              enough that running them together reads as one long form — so they
+              get the rule this interface already uses between sections, rather
+              than a second card that would deny the relationship. */}
+          <hr className="setting-divider" />
 
           <div className="setting">
             {/* Not a <label>: it wraps buttons, and a label both mis-targets
@@ -372,6 +456,46 @@ export function Configuration({
           </div>
         </fieldset>
 
+        {/* ── Storage ─────────────────────────────────────────────────── */}
+        {/* A separate section from Hugging Face, because these are two
+            different kinds of file with two different lifetimes: one holds
+            weights that can be downloaded again, the other holds hours of
+            conversion that cannot. Either can live on its own disk. */}
+        <fieldset className="settings-group">
+          <legend>Storage</legend>
+
+          <div className="setting">
+            {/* Not a <label>: it wraps buttons, and a label both mis-targets
+                clicks and lends its own text to the buttons' accessible names. */}
+            <span className="setting-label" id="cache-label">
+              Pre-quantized model cache
+            </span>
+            <div className="setting-row">
+              <input
+                type="text"
+                readOnly
+                aria-labelledby="cache-label"
+                value={String(storage.cache_dir ?? "")}
+                placeholder={defaultCacheDir}
+              />
+              <button onClick={() => void chooseCacheFolder()} disabled={busy("cache")}>
+                {busy("cache") ? "Choosing…" : "Choose Folder…"}
+              </button>
+              {storage.cache_dir && (
+                <button onClick={() => patchStorage("cache_dir", null)}>Use default</button>
+              )}
+            </div>
+            <ActionNote state={stateOf("cache")} onDismiss={() => dismiss("cache")} />
+            <p className="setting-help">
+              Where QDS stores the pre-quantized copies it generates, with their completion records
+              and component progress. Changing it moves nothing: existing copies stay where they
+              are, and only new conversions — and what the Models tab finds — follow the new folder.
+              A folder on a volume that is not mounted is reported as unavailable rather than
+              treated as empty.
+            </p>
+          </div>
+        </fieldset>
+
         {/* Per-model settings used to sit here as a second table, which meant a
             model appeared twice under two names: its availability and conversion
             in Models, its `enabled`/quantize/steps in a form here. They now live
@@ -380,6 +504,7 @@ export function Configuration({
         <p className="setting-help" style={{ marginTop: 16 }}>
           Per-model settings — enabled, quantization, steps, guidance, editing — live on each
           model's row in the <strong>Models</strong> view, beside its weights and saved variants.
+          What is here is what applies to every model at once.
         </p>
       </section>
     </>

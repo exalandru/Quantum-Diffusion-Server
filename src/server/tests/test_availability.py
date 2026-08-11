@@ -135,7 +135,7 @@ def test_an_empty_local_directory_is_not_present(tmp_path):
 
 def test_repo_ids_and_paths_are_told_apart_the_way_mflux_does():
     assert av.looks_like_repo_id("mlx-community/Z-Image-bf16")
-    assert not av.looks_like_repo_id("~/.cache/mflux-server/flux2-dev-mlx-8bit")
+    assert not av.looks_like_repo_id("~/Library/Application Support/com.exalandru.qds/cache")
     assert not av.looks_like_repo_id("/tmp/weights")
     assert not av.looks_like_repo_id("./weights")
     assert not av.looks_like_repo_id("org/name/extra")

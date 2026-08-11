@@ -12,7 +12,7 @@ import pathlib
 
 import pytest
 
-from mflux_server import artifacts
+from mflux_server import artifacts, components
 from mflux_server import availability as av
 from mflux_server.prequantize import convert
 from mflux_server.registry import (
@@ -55,13 +55,42 @@ def make_artifact(base, key, source, bits, *, components=("vae", "transformer", 
     return dest
 
 
+def write_tokenizer(root):
+    """What every family declares and every real artifact carries.
+
+    Not a component and never quantized, but an artifact without it cannot be
+    loaded — so a conversion is not complete until it is there.
+    """
+    tokenizer = root / "tokenizer"
+    tokenizer.mkdir(parents=True, exist_ok=True)
+    (tokenizer / "tokenizer_config.json").write_text("{}", encoding="utf-8")
+
+
 class _Args:
-    def __init__(self, model, bits, *, dest=None, components=("transformer", "text_encoder", "vae")):
+    def __init__(self, model, bits, *, dest=None, components=None):
         self.model = model
         self.bits = bits
         self.dest = str(dest) if dest else None
-        self.components = list(components)
+        self.components = list(components) if components else None
         self.repo = None
+
+
+def component_writer(seen, *, stored_bits=None, tokenizer=True):
+    """A stand-in for one component's conversion, writing what the real one writes.
+
+    `stored_bits` differing from the requested depth is the case where mflux
+    stamped something other than what was asked for, which must never be recorded
+    as the request.
+    """
+
+    def fake_component(name, *, spec, repo, dest, bits):
+        seen.append(name)
+        write_component(dest, name, bits=str(bits if stored_bits is None else stored_bits))
+        if tokenizer:
+            write_tokenizer(dest)
+        return 6
+
+    return fake_component
 
 
 # ── Dispatch ───────────────────────────────────────────────────────────────
@@ -77,50 +106,47 @@ def test_an_unsupported_model_cannot_start_a_conversion(monkeypatch):
 def test_an_unpublished_bit_depth_is_refused_before_any_work(monkeypatch, tmp_path):
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     called = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_generic", lambda *a, **k: called.append(a))
+    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(called))
     with pytest.raises(ValueError) as raised:
         convert(_Args("z-image", 7, dest=tmp_path / "out"))
     assert "not available" in str(raised.value)
     assert not called
 
 
-def test_a_generic_model_uses_mflux_save_and_never_the_incremental_path(monkeypatch, tmp_path):
+def test_a_component_this_model_does_not_have_is_named_rather_than_ignored(monkeypatch, tmp_path):
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    seen = {}
+    called = []
+    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(called))
+    with pytest.raises(ValueError) as raised:
+        convert(_Args("z-image", 4, dest=tmp_path / "out", components=["unet"]))
+    assert "unet" in str(raised.value)
+    assert not called
 
-    def fake_generic(spec, *, dest, bits):
-        seen["generic"] = (spec.key, bits)
-        for name in ("vae", "transformer", "text_encoder"):
-            write_component(dest, name, bits=str(bits))
-        return ("text_encoder", "transformer", "vae")
 
-    monkeypatch.setattr("mflux_server.prequantize.convert_generic", fake_generic)
-    monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
-        lambda *a, **k: pytest.fail("a generic model must never enter the FLUX.2-dev path"),
-    )
+def test_a_generic_model_converts_component_by_component(monkeypatch, tmp_path):
+    """The slice's whole point: not only FLUX.2-dev takes the bounded route.
+
+    z-image used to be loaded whole and written with `save_model`. It now goes
+    through the same one-component-at-a-time path, and records that it did.
+    """
+    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    seen: list[str] = []
+    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
 
     assert convert(_Args("z-image", 4, dest=tmp_path / "out")) == 0
-    assert seen["generic"] == ("z-image", 4)
+    # Every required component, one call each, largest first.
+    assert seen == list(components.required_components("z-image"))
     record = artifacts.read_record(tmp_path / "out")
-    assert record.strategy == STRATEGY_MFLUX_SAVE
+    assert record.strategy == STRATEGY_QDS_MEMORY_BOUNDED
+    assert set(record.components) == set(components.required_components("z-image"))
 
 
-def test_flux2_dev_uses_the_memory_bounded_path_and_never_generic(monkeypatch, tmp_path):
+def test_flux2_dev_still_converts_component_by_component(monkeypatch, tmp_path):
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.setattr(
-        "mflux_server.prequantize.convert_generic",
-        lambda *a, **k: pytest.fail("FLUX.2-dev must never enter generic dispatch"),
-    )
-    seen = []
-
-    def fake_component(name, *, repo, dest, bits):
-        seen.append(name)
-        write_component(dest, name, bits=str(bits))
-
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", fake_component)
+    seen: list[str] = []
+    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
 
     assert convert(_Args("flux2-dev", 8, dest=tmp_path / "out")) == 0
     assert set(seen) == set(av.REQUIRED_COMPONENTS)
@@ -131,15 +157,17 @@ def test_capability_choices_and_the_accepted_choices_cannot_drift(monkeypatch, t
     """Anything the capability publishes must be accepted, and nothing else."""
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.setattr("mflux_server.prequantize.convert_generic", lambda *a, **k: ())
+    monkeypatch.setattr(
+        "mflux_server.prequantize.convert_component",
+        component_writer([], tokenizer=False),
+    )
     spec = BASE_SPECS_BY_KEY["z-image"]
     for bits in spec.quantization.prequantize_choices:
-        # Rejected later for producing nothing, but never for the bit depth.
-        with pytest.raises(Exception) as raised:  # noqa: B017
-            result = convert(_Args("z-image", bits, dest=tmp_path / f"out{bits}"))
-            if result == 1:
-                raise RuntimeError("no components")
-        assert "not available" not in str(raised.value)
+        # Refused later for the missing tokenizer, but never for the bit depth.
+        assert convert(_Args("z-image", bits, dest=tmp_path / f"out{bits}")) == 1
+    with pytest.raises(ValueError) as raised:
+        convert(_Args("z-image", 7, dest=tmp_path / "out7"))
+    assert "not available" in str(raised.value)
 
 
 # ── Identity ───────────────────────────────────────────────────────────────
@@ -197,24 +225,26 @@ def test_the_marker_is_only_written_after_validation(monkeypatch, tmp_path):
     """A conversion that writes nothing usable must not be recorded as done."""
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.setattr("mflux_server.prequantize.convert_generic", lambda spec, *, dest, bits: ())
+    monkeypatch.setattr(
+        "mflux_server.prequantize.convert_component",
+        lambda name, *, spec, repo, dest, bits: 0,  # returns, writes nothing
+    )
 
     dest = tmp_path / "out"
     assert convert(_Args("z-image", 4, dest=dest)) == 1
     assert not (dest / av.COMPLETION_MARKER).exists()
+    # And nothing was recorded as converted either.
+    assert artifacts.read_progress(dest) is None
 
 
 def test_stored_bits_must_equal_the_requested_bits(monkeypatch, tmp_path):
     monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
     monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-
-    def wrong_bits(spec, *, dest, bits):
-        # Asked for 4, the weights say 8: never record the request as truth.
-        for name in ("vae", "transformer", "text_encoder"):
-            write_component(dest, name, bits="8")
-        return ("text_encoder", "transformer", "vae")
-
-    monkeypatch.setattr("mflux_server.prequantize.convert_generic", wrong_bits)
+    # Asked for 4, the weights say 8: never record the request as truth.
+    monkeypatch.setattr(
+        "mflux_server.prequantize.convert_component",
+        component_writer([], stored_bits=8),
+    )
     dest = tmp_path / "out"
     assert convert(_Args("z-image", 4, dest=dest)) == 1
     assert not (dest / av.COMPLETION_MARKER).exists()

@@ -50,7 +50,37 @@ CLASS_NAME_TO_FAMILY: dict[str, str] = {
     "FluxTransformer2DModel": "flux2",
     "Flux2Transformer2DModel": "flux2",
     "FIBOTransformer2DModel": "fibo",
+    # Read from `ideogram-ai/ideogram-4-fp8`'s own `transformer/config.json`
+    # rather than assumed: QDS ships an `ideogram4` family and an Ideogram 4
+    # catalogue entry, and this table's omission was the only reason a genuine
+    # Ideogram 4 directory was refused as an unsupported architecture. What a
+    # family can be *quantized* into is a different question, answered by
+    # `registry.capability_for` — this table is about identity alone, and using
+    # the capability table as the gate here is what would keep a perfectly
+    # loadable model unusable.
+    "Ideogram4Transformer2DModel": "ideogram4",
 }
+
+#: Detected families a catalogue family will accept, beyond its own name.
+#:
+#: One entry, and it is not a convenience: FLUX.2-dev and FLUX.2-klein are the
+#: *same* diffusers class — both declare `Flux2Transformer2DModel` — so a raw
+#: FLUX.2-dev source detects as `flux2` while its catalogue entry is `flux2-dev`.
+#: Refusing that comparison would make FLUX.2-dev the one built-in that can never
+#: be located. What distinguishes the two models is their configuration (layer
+#: counts, attention dimensions), which a directory does not have to declare, so
+#: identity beyond the class comes from the cache metadata — `repo_verified` —
+#: and is reported rather than assumed.
+FAMILY_ALIASES: dict[str, frozenset[str]] = {
+    "flux2-dev": frozenset({"flux2"}),
+}
+
+
+def family_matches(catalogue_family: str, detected: str | None) -> bool:
+    """Whether a detected source family may be bound to a catalogue entry."""
+    if detected is None:
+        return False
+    return detected == catalogue_family or detected in FAMILY_ALIASES.get(catalogue_family, ())
 
 #: Where the architecture is declared in a source model.
 CONFIG_FILE = "config.json"
@@ -373,7 +403,7 @@ def locate(raw_path: str, model_key: str) -> LocateVerdict:
             reason=verdict.reason,
         )
 
-    if verdict.family != spec.family:
+    if not family_matches(spec.family, verdict.family):
         return LocateVerdict(
             ok=False,
             path=verdict.path,

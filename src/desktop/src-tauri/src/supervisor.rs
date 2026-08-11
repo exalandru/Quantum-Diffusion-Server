@@ -124,13 +124,8 @@ impl Supervisor {
         // `ensure_exists` just ran, so the file is on disk and readable here.
         let port = crate::config::port(paths);
         ensure_port_free(port)?;
-        let hf_home = paths.effective_hf_home();
-        let mut command = Command::new(paths.server_bin());
+        let mut command = qds_command(&paths.server_bin(), paths);
         command
-            // The current directory is set explicitly: we never rely on the
-            // inherited one, which is `/` when launched from Finder.
-            .current_dir(&paths.data)
-            .env("MFLUX_SERVER_CONFIG", &paths.config)
             .env("MFLUX_SERVER_HOST", "127.0.0.1")
             .env("MFLUX_SERVER_PORT", port.to_string())
             .env("MFLUX_SERVER_IMAGE_STORE", &paths.images)
@@ -138,7 +133,6 @@ impl Supervisor {
             .env("MFLUX_SERVER_LOG_FILE", "")
             // stdout becomes a JSON Lines stream, stderr keeps tqdm.
             .env("MFLUX_SERVER_LOG_JSON", "1")
-            .env("HF_HOME", &hf_home)
             // Cuts down the progress-bar noise on stderr.
             .env("HF_HUB_DISABLE_PROGRESS_BARS", "1")
             // Without this, a redirected stdout would be block-buffered and
@@ -315,10 +309,8 @@ pub async fn start_prequantize(
         return Err(format!("{} is missing.", binary.display()));
     }
 
-    let mut command = Command::new(&binary);
+    let mut command = qds_command(&binary, paths);
     command
-        .current_dir(&paths.data)
-        .env("HF_HOME", paths.effective_hf_home())
         .env("PYTHONUNBUFFERED", "1")
         .arg("--json-logs")
         // Which model and which precision are the job's, not the script's
@@ -342,7 +334,82 @@ pub async fn start_prequantize(
     }
 
     let target = format!("{model} @ {bits}-bit");
-    spawn_job(app, jobs, command, JobKind::Prequantize, target, "conversion").await
+    let paths_for_completion = paths.clone();
+    spawn_job_with(
+        app,
+        jobs,
+        command,
+        JobKind::Prequantize,
+        target,
+        "conversion",
+        Some(Box::new(move |status: &job::JobStatus| {
+            activate_if_variant_ready(&paths_for_completion, status);
+        })),
+    )
+    .await
+}
+
+/// Select a variant the conversion has just declared complete.
+///
+/// **Who decides, and where.** Python is the only thing that can say an artifact
+/// is whole: it validates every required component, checks the precision the
+/// weights actually carry, and only then writes the completion marker and emits
+/// `prequantize_done`. A run that converted a subset emits `prequantize_partial`
+/// and never reaches that line — so "exited 0" is *not* the signal, and neither
+/// the interface nor this function re-derives completeness. This reads the claim
+/// and acts on it.
+///
+/// The configuration is written here rather than in the child because the
+/// desktop process owns that file: two writers would race, and one of them would
+/// be a short-lived subprocess with no knowledge of what the app had in flight.
+///
+/// A failure to write is logged and dropped on purpose. The conversion itself
+/// succeeded and its artifact is on disk and valid; refusing to record the
+/// selection is a smaller loss than failing a job that did what it was asked.
+fn activate_if_variant_ready(paths: &Paths, status: &job::JobStatus) {
+    if status.event.as_deref() != Some("prequantize_done") {
+        return;
+    }
+    let Some(fields) = status.fields.as_ref() else {
+        return;
+    };
+    let (Some(model), Some(bits)) = (
+        fields.get("model").and_then(serde_json::Value::as_str),
+        fields.get("bits").and_then(serde_json::Value::as_u64),
+    ) else {
+        eprintln!("a completed conversion named no model and bit depth; nothing selected");
+        return;
+    };
+
+    if let Err(error) = select_variant(paths, model, bits) {
+        eprintln!("{model}'s {bits}-bit copy is ready but could not be selected: {error}");
+    } else {
+        eprintln!("{model} now uses its {bits}-bit copy on the next server start");
+    }
+}
+
+/// Write `models.<key>.prequantized_variant`, leaving every other key alone.
+///
+/// Read-modify-write of the whole document, which is what `config::write` takes.
+/// Only this one key changes: other bit depths' artifacts are untouched on disk
+/// and unmentioned here, and nothing else in the model's entry is rewritten.
+fn select_variant(paths: &Paths, model: &str, bits: u64) -> Result<(), String> {
+    let mut document = crate::config::read(paths)?;
+    let root = document
+        .as_object_mut()
+        .ok_or_else(|| "the configuration is not an object".to_owned())?;
+    let models = root
+        .entry("models")
+        .or_insert_with(|| serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| "models is not an object".to_owned())?;
+    let entry = models
+        .entry(model)
+        .or_insert_with(|| serde_json::Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| format!("models.{model} is not an object"))?;
+    entry.insert("prequantized_variant".to_owned(), serde_json::json!(bits));
+    crate::config::write(paths, &document)
 }
 
 /// Catalogue with cache state, straight from `mflux-server-fetch --status`.
@@ -356,10 +423,7 @@ pub async fn models_status(paths: &Paths) -> Result<serde_json::Value, String> {
     if !binary.is_file() {
         return Err(format!("{} is missing.", binary.display()));
     }
-    let output = Command::new(&binary)
-        .current_dir(&paths.data)
-        .env("MFLUX_SERVER_CONFIG", &paths.config)
-        .env("HF_HOME", paths.effective_hf_home())
+    let output = qds_command(&binary, paths)
         .arg("--status")
         .stdin(Stdio::null())
         .output()
@@ -367,6 +431,22 @@ pub async fn models_status(paths: &Paths) -> Result<serde_json::Value, String> {
         .map_err(|error| format!("could not read the catalogue: {error}"))?;
 
     if !output.status.success() {
+        // An expected configuration failure answers on stdout with a structured
+        // reason. Reading it is what puts one actionable sentence in front of
+        // the user instead of a Python traceback, which is what the whole
+        // stderr used to become. The traceback is still on stderr for the Logs.
+        if let Some(reason) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+            .ok()
+            .and_then(|value| {
+                value
+                    .get("error")
+                    .and_then(|error| error.get("message"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+        {
+            return Err(reason);
+        }
         return Err(format!(
             "mflux-server-fetch --status failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -386,10 +466,7 @@ pub async fn run_import(paths: &Paths, args: &[String]) -> Result<serde_json::Va
     if !binary.is_file() {
         return Err(format!("{} is missing.", binary.display()));
     }
-    let output = Command::new(&binary)
-        .current_dir(&paths.data)
-        .env("MFLUX_SERVER_CONFIG", &paths.config)
-        .env("HF_HOME", paths.effective_hf_home())
+    let output = qds_command(&binary, paths)
         .args(args)
         .stdin(Stdio::null())
         .output()
@@ -420,13 +497,8 @@ pub async fn start_fetch(
         return Err(format!("{} is missing.", binary.display()));
     }
 
-    let mut command = Command::new(&binary);
+    let mut command = qds_command(&binary, paths);
     command
-        .current_dir(&paths.data)
-        // The same config the server reads, so an overridden `model_path` or
-        // quantization is the one we fetch.
-        .env("MFLUX_SERVER_CONFIG", &paths.config)
-        .env("HF_HOME", paths.effective_hf_home())
         .env("PYTHONUNBUFFERED", "1")
         // Left on, unlike for the server: the download progress bar *is* the
         // feedback here.
@@ -447,10 +519,24 @@ pub async fn start_fetch(
 async fn spawn_job(
     app: AppHandle,
     jobs: &SharedJobs,
+    command: Command,
+    kind: JobKind,
+    target: String,
+    what: &str,
+) -> Result<(), String> {
+    spawn_job_with(app, jobs, command, kind, target, what, None).await
+}
+
+/// As `spawn_job`, with work to run the moment the child is judged successful.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_job_with(
+    app: AppHandle,
+    jobs: &SharedJobs,
     mut command: Command,
     kind: JobKind,
     target: String,
     what: &str,
+    on_complete: Option<job::OnComplete>,
 ) -> Result<(), String> {
     // The lock is taken *before* the spawn and held across it, so two commands
     // arriving together cannot both pass the check and leave one child
@@ -464,7 +550,7 @@ async fn spawn_job(
         .map_err(|error| format!("could not launch the {what}: {error}"))?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    guard.begin(kind, target, child);
+    guard.begin_with(kind, target, child, on_complete);
     drop(guard);
 
     if let Some(stdout) = stdout {
@@ -477,6 +563,35 @@ async fn spawn_job(
     Ok(())
 }
 
+/// A child process that reads this installation's state.
+///
+/// Every QDS child — the server, the catalogue reader, the importer, the
+/// downloader, the converter — needs the same two facts: which configuration
+/// file is this installation's, and where its weights are kept. Handing them
+/// out in one place is not tidiness; it is the fix for a release blocker.
+///
+/// `mflux-server-prequantize` was spawned without `MFLUX_SERVER_CONFIG`. Its
+/// `load_settings()` therefore fell back to the packaged default path, found
+/// nothing, and ran on catalogue defaults — so a configured
+/// `storage.cache_dir` was invisible to it and every conversion wrote to the
+/// derived default instead. The same silence covered every model override the
+/// converter should have honoured: `model_path`, `quantize`,
+/// `prequantized_variant`.
+///
+/// Four of the five children set it and one did not, which is exactly the kind
+/// of omission a shared constructor makes impossible rather than unlikely.
+/// `no_bare_command_new` below keeps it that way.
+fn qds_command(program: &Path, paths: &Paths) -> Command {
+    let mut command = Command::new(program);
+    command
+        // Never the inherited working directory: it is `/` when the app is
+        // launched from Finder.
+        .current_dir(&paths.data)
+        .env("MFLUX_SERVER_CONFIG", &paths.config)
+        .env("HF_HOME", paths.effective_hf_home());
+    command
+}
+
 /// `true` when a HuggingFace token is available for the *gated* repos.
 pub fn hf_token_present(hf_home: &Path) -> bool {
     if std::env::var("HF_TOKEN").is_ok_and(|value| !value.trim().is_empty()) {
@@ -485,4 +600,193 @@ pub fn hf_token_present(hf_home: &Path) -> bool {
     std::fs::read_to_string(Paths::hf_token_file(hf_home))
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// A `Paths` pointing at a temporary directory. Only `config` is read here.
+    fn paths_in(dir: &std::path::Path) -> Paths {
+        let empty = dir.join("unused");
+        Paths {
+            data: dir.to_path_buf(),
+            server: empty.clone(),
+            env: empty.clone(),
+            python: empty.clone(),
+            uv_cache: empty.clone(),
+            images: dir.join("images"),
+            config: dir.join("server-config.json"),
+            staging: empty.clone(),
+            install_lock: empty.clone(),
+            install_record: empty.clone(),
+            stamp: empty,
+        }
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("qds-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        dir
+    }
+
+    fn done_status(model: &str, bits: u64) -> job::JobStatus {
+        job::JobStatus {
+            event: Some("prequantize_done".to_owned()),
+            fields: Some(json!({"model": model, "bits": bits, "variant_ready": true})),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_ready_variant_is_selected_without_disturbing_anything_else() {
+        // §10's requirement, as a write: other bit depths are artifacts on disk
+        // and are not mentioned here at all, and the rest of the model's entry
+        // survives untouched.
+        let dir = temp_dir("select");
+        let paths = paths_in(&dir);
+        crate::config::write(
+            &paths,
+            &json!({
+                "default_model": "z-image",
+                "server": {"port": 8765},
+                "models": {
+                    "z-image": {"enabled": true, "quantize": 4, "prequantized_variant": 3},
+                    "flux2-dev": {"enabled": false}
+                }
+            }),
+        )
+        .expect("seed");
+
+        activate_if_variant_ready(&paths, &done_status("z-image", 8));
+
+        let written = crate::config::read(&paths).expect("read back");
+        let models = written.get("models").expect("models");
+        let entry = models.get("z-image").expect("the model's entry");
+        assert_eq!(entry.get("prequantized_variant"), Some(&json!(8)));
+        // Everything else in the entry, and every other entry, is as it was.
+        assert_eq!(entry.get("enabled"), Some(&json!(true)));
+        assert_eq!(entry.get("quantize"), Some(&json!(4)));
+        assert_eq!(models.get("flux2-dev"), Some(&json!({"enabled": false})));
+        assert_eq!(written.get("default_model"), Some(&json!("z-image")));
+        assert_eq!(written.get("server"), Some(&json!({"port": 8765})));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_partial_run_selects_nothing() {
+        // The whole reason the decision is the child's: this run exited
+        // successfully and the artifact is not usable.
+        let dir = temp_dir("partial");
+        let paths = paths_in(&dir);
+        crate::config::write(&paths, &json!({"models": {"z-image": {"enabled": true}}}))
+            .expect("seed");
+
+        activate_if_variant_ready(
+            &paths,
+            &job::JobStatus {
+                event: Some("prequantize_partial".to_owned()),
+                fields: Some(json!({"model": "z-image", "bits": 8, "variant_ready": false})),
+                ..Default::default()
+            },
+        );
+
+        let written = crate::config::read(&paths).expect("read back");
+        assert!(
+            written["models"]["z-image"].get("prequantized_variant").is_none(),
+            "a partial run must not select a variant"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_event_without_a_model_selects_nothing() {
+        let dir = temp_dir("nameless");
+        let paths = paths_in(&dir);
+        crate::config::write(&paths, &json!({"models": {}})).expect("seed");
+
+        activate_if_variant_ready(
+            &paths,
+            &job::JobStatus {
+                event: Some("prequantize_done".to_owned()),
+                fields: Some(json!({"bits": 8})),
+                ..Default::default()
+            },
+        );
+
+        let written = crate::config::read(&paths).expect("read back");
+        assert_eq!(written["models"], json!({}));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_model_with_no_entry_yet_gains_one() {
+        let dir = temp_dir("fresh");
+        let paths = paths_in(&dir);
+        crate::config::write(&paths, &json!({"default_model": "z-image"})).expect("seed");
+
+        activate_if_variant_ready(&paths, &done_status("z-image", 4));
+
+        let written = crate::config::read(&paths).expect("read back");
+        assert_eq!(written["models"]["z-image"]["prequantized_variant"], json!(4));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod child_env_tests {
+    /// Every child must be built by `qds_command`, and this is what enforces it.
+    ///
+    /// The release blocker was one spawn site out of five that set `HF_HOME` and
+    /// forgot `MFLUX_SERVER_CONFIG`, so the converter ran on catalogue defaults
+    /// and wrote to the derived cache instead of the configured one. A reviewer
+    /// reading that call site saw an environment being configured and had no
+    /// reason to count the variables.
+    ///
+    /// A source check rather than a runtime one, because `tokio::process::Command`
+    /// exposes no way to read back the environment it will apply — and because
+    /// the property worth holding is about *every* spawn, including the next one
+    /// somebody adds.
+    #[test]
+    fn no_bare_command_new_outside_the_shared_constructor() {
+        // Only the production half: the tests below quote the name in their own
+        // assertions, and a guard that counted its own text would be measuring
+        // itself.
+        let source = include_str!("supervisor.rs");
+        let production = source.split("#[cfg(test)]").next().expect("a production half");
+        let occurrences: Vec<&str> = production
+            .lines()
+            .filter(|line| line.contains("Command::new("))
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        assert_eq!(
+            occurrences.len(),
+            1,
+            "every child process must come from `qds_command`; found {occurrences:#?}"
+        );
+        assert!(
+            occurrences[0].contains("let mut command = Command::new(program)"),
+            "the one bare construction must be the shared constructor: {}",
+            occurrences[0]
+        );
+    }
+
+    #[test]
+    fn the_shared_constructor_carries_the_configuration_and_the_weights() {
+        let source = include_str!("supervisor.rs");
+        let body = source
+            .split("fn qds_command(")
+            .nth(1)
+            .expect("the shared constructor exists");
+        let body = &body[..body.find("\n}").expect("its body ends")];
+        assert!(body.contains("MFLUX_SERVER_CONFIG"), "the child reads this installation's config");
+        assert!(body.contains("HF_HOME"), "and knows where its weights are");
+        assert!(body.contains("current_dir"), "and never inherits `/` from Finder");
+    }
 }
