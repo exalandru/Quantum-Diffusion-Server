@@ -8,16 +8,18 @@ different binding and API key.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from mflux_server.registry import BASE_SPECS_BY_KEY, QUANTIZE_CHOICES, ModelSpec, build_registry
+from mflux_server.registry import QUANTIZE_CHOICES, ModelSpec, build_registry
 
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent.parent / "server-config.json"
 ENV_PREFIX = "MFLUX_SERVER_"
+logger = logging.getLogger("mflux_server.settings")
 LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 #: "raw" is a local extension: the PNG bytes straight in the response body.
 RESPONSE_FORMATS = {"url", "b64_json", "raw"}
@@ -92,6 +94,43 @@ class ServerSettings(BaseModel):
         return self.host in LOOPBACK_HOSTS
 
 
+#: Where `huggingface_hub` keeps its cache when nothing says otherwise. Its own
+#: default, and the one every QDS install has used so far.
+DEFAULT_HF_HOME = "~/.cache/huggingface"
+
+
+class StorageSettings(BaseModel):
+    """Where large, long-lived files live. Currently only the HuggingFace cache.
+
+    Separate from `server` on purpose: this is about the machine's disks, not
+    about the HTTP surface, and the next things to land here — an import
+    directory, a conversion destination — are the same kind of fact.
+    """
+
+    #: Root for downloaded weights, i.e. `HF_HOME`. `None` keeps
+    #: `huggingface_hub`'s own default, which is what every install used before
+    #: this setting existed. An absolute path is required: this is resolved by
+    #: processes whose working directory is `/` when launched from Finder.
+    hf_home: str | None = None
+
+    @field_validator("hf_home")
+    @classmethod
+    def _absolute_storage_path(cls, value: str | None) -> str | None:
+        if value is None or value.strip() == "":
+            return None
+        path = Path(value).expanduser()
+        if not path.is_absolute():
+            raise ValueError(
+                f"storage.hf_home must be an absolute path (got {value!r}). A relative path "
+                f"would resolve against the working directory, which is '/' for an app "
+                f"launched from Finder."
+            )
+        # Deliberately not `.resolve()`: that walks symlinks and would fail on a
+        # path whose external volume is not mounted, which is a state this app
+        # must be able to hold and report rather than reject.
+        return str(path)
+
+
 class ModelOverride(BaseModel):
     # `model_path` falls into pydantic's reserved `model_` namespace; we free it
     # up rather than rename a field that speaks to mflux.
@@ -106,6 +145,12 @@ class ModelOverride(BaseModel):
     default_steps: int | None = Field(default=None, ge=1)
     default_guidance: float | None = Field(default=None, ge=0)
     enable_edit: bool | None = None
+    #: Which saved, already-quantized variant of *this source* to generate with.
+    #: `None` uses the source itself. A bit depth selects the validated artifact
+    #: for the current `model_path`/repo at that precision — deliberately a
+    #: separate key from `model_path`, which stays the source's identity, so
+    #: activating a conversion never rewrites what the model *is*.
+    prequantized_variant: int | None = None
     #: Sampler preset, for the models that have any. `ideogram-4` only, whose step
     #: count and guidance schedule come as a named bundle.
     preset: str | None = None
@@ -120,6 +165,7 @@ class ModelOverride(BaseModel):
 
 class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
+    storage: StorageSettings = Field(default_factory=StorageSettings)
     #: `z-image-turbo` because a default has to work with nothing set up: its repo
     #: is neither gated nor licence-restricted (Apache-2.0), it needs no
     #: preparation step, 9 steps make it the fastest usable model here, and its
@@ -139,9 +185,15 @@ class Settings(BaseModel):
 
     @model_validator(mode="after")
     def _check_default_model(self) -> Settings:
-        if self.default_model not in BASE_SPECS_BY_KEY:
+        # The effective catalogue, not the built-in one: an imported model is a
+        # perfectly good default, and validating against `BASE_SPECS` alone made
+        # it impossible to choose one. Membership decides — never the shape of
+        # the key.
+        effective = self.registry(include_disabled=True)
+        if self.default_model not in effective:
             raise ValueError(
-                f"Unknown default_model: {self.default_model!r}. Valid keys: {sorted(BASE_SPECS_BY_KEY)}"
+                f"Unknown default_model: {self.default_model!r}. Valid keys: {sorted(effective)}. "
+                f"An imported model must still be registered; if it was forgotten, choose another."
             )
         override = self.models.get(self.default_model)
         if override is not None and not override.enabled:
@@ -153,11 +205,74 @@ class Settings(BaseModel):
             )
         return self
 
-    def registry(self) -> dict[str, ModelSpec]:
+    @property
+    def effective_hf_home(self) -> str:
+        """The HuggingFace root actually in force, resolved in one place.
+
+        Precedence: the configuration, then an inherited `HF_HOME`, then
+        huggingface_hub's default. Configuration wins over the environment
+        because it is the setting the user chose in the app, whereas the
+        environment is whatever the launcher happened to carry.
+        """
+        if self.storage.hf_home:
+            return self.storage.hf_home
+        inherited = os.environ.get("HF_HOME")
+        if inherited:
+            return inherited
+        return str(Path(DEFAULT_HF_HOME).expanduser())
+
+    @property
+    def effective_hub_cache(self) -> str:
+        """Where the cached repositories actually are, inside the storage root.
+
+        `HF_HOME` and the hub cache are two different directories, and the
+        setting names the first. Deriving the second by appending `hub`
+        unconditionally is what made a storage folder that *is* a hub cache
+        report every model as missing — see `availability.hub_cache_for`.
+        """
+        from mflux_server.availability import hub_cache_for
+
+        return str(hub_cache_for(self.effective_hf_home))
+
+    def apply_hf_home(self) -> str:
+        """Publish the effective root into the environment, and return it.
+
+        This has to happen before anything imports `huggingface_hub`, which
+        freezes `HF_HUB_CACHE` at import time — so it belongs at the top of each
+        entry point rather than at the point of use. Setting both variables keeps
+        a stale inherited `HF_HUB_CACHE` from silently winning over the root the
+        user configured, and makes every consumer — this app, mflux and
+        huggingface_hub alike — agree on which directory holds the weights.
+        """
+        root = self.effective_hf_home
+        os.environ["HF_HOME"] = root
+        os.environ["HF_HUB_CACHE"] = self.effective_hub_cache
+        return root
+
+    def registry(self, *, include_disabled: bool = False) -> dict[str, ModelSpec]:
+        """The configured catalogue.
+
+        `include_disabled` keeps the entries the server will not expose. Downloading
+        and reporting need it: the documented workflow is to fetch a model *before*
+        turning it on, and dropping disabled entries there silently discarded their
+        `model_path` and `quantize` overrides — so the Models tab named one repo and
+        the Install button fetched another.
+        """
+        from mflux_server import library
+
+        try:
+            imported = library.load()
+        except library.LibraryTooNew:
+            raise
+        except Exception:  # pragma: no cover - defensive
+            logger.warning("Imported-model library unavailable", exc_info=True)
+            imported = []
         return build_registry(
             self.models,
             default_size=self.default_size,
             default_quantize=self.default_quantize,
+            include_disabled=include_disabled,
+            imported=imported,
         )
 
 
@@ -183,6 +298,39 @@ def _env_overrides() -> dict[str, Any]:
 
 def config_path() -> Path:
     return Path(os.environ.get(f"{ENV_PREFIX}CONFIG", DEFAULT_CONFIG_PATH)).expanduser()
+
+
+def configured_default_model(path: Path | None = None) -> str:
+    """The `default_model` currently written down, without validating the rest.
+
+    Read raw rather than through `load_settings`, and for a specific reason: the
+    caller is `mflux-server-import`, deciding whether removing a registration
+    would leave this key dangling. Going through validation would make that answer
+    depend on the whole config being loadable — and the one config guaranteed to
+    fail validation is the one whose `default_model` names a model that no longer
+    exists, which is exactly the state this check exists to prevent.
+
+    Same precedence as `load_settings`: the environment override wins, then the
+    file, then the field's own default.
+    """
+    env = os.environ.get(f"{ENV_PREFIX}DEFAULT_MODEL")
+    if env:
+        return env
+    path = path or config_path()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # No config yet: the app writes one carrying the field default, so that is
+        # what the next start will use.
+        raw = {}
+    except (OSError, json.JSONDecodeError) as exc:
+        # Unreadable is not "unset". Answering with the default here would let a
+        # caller conclude "not the default model" about a file it never read.
+        raise ValueError(f"{path} could not be read: {exc}") from exc
+    value = raw.get("default_model") if isinstance(raw, dict) else None
+    if isinstance(value, str) and value:
+        return value
+    return str(Settings.model_fields["default_model"].default)
 
 
 #: Set by `load_settings` when no config file was found. `setup_logging` only

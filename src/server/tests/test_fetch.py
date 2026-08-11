@@ -29,9 +29,12 @@ def test_status_lists_the_whole_catalogue_disabled_models_included(monkeypatch, 
     assert rows["ideogram-4"]["enabled"] is False
     assert rows["z-image-turbo"]["enabled"] is True
 
-    # Nothing is cached in an empty cache, and no exception either — a missing
-    # cache directory is the state of a fresh install.
-    assert all(row["cached"] is False for row in rows.values())
+    # An empty cache on a fresh install: every remote model is genuinely absent,
+    # which is `missing` — not an error, and not the unmounted-volume state.
+    from mflux_server import availability as av
+
+    remote = [row for row in rows.values() if not row["local"]]
+    assert all(row["availability"] == av.MISSING for row in remote)
     assert all(row["size_gb"] == 0.0 for row in rows.values())
 
 
@@ -70,3 +73,107 @@ def test_a_model_path_override_is_what_gets_reported(monkeypatch, tmp_path):
     rows = {row["key"]: row for row in cache_status()}
 
     assert rows["z-image"]["repo"] == "mlx-community/Z-Image-4bit"
+
+
+def test_the_reported_repo_is_the_repo_install_would_fetch(monkeypatch, tmp_path):
+    """M7: status and fetch must never name different repos.
+
+    They did, for exactly the models the workflow tells you to download first:
+    `cache_status` applied the config override, while `fetch` resolved through the
+    *enabled-only* registry and silently fell back to the raw catalogue spec for
+    anything switched off. So the Models tab advertised `Z-Image-4bit` and the
+    Install button fetched `Z-Image-bf16`.
+    """
+    from mflux_server.fetch import resolved_target
+    from mflux_server.registry import BASE_SPECS_BY_KEY
+    from mflux_server.settings import load_settings
+
+    config = tmp_path / "server-config.json"
+    config.write_text(
+        json.dumps(
+            {
+                "models": {
+                    # Disabled on purpose: that is the case that used to diverge.
+                    "z-image": {"enabled": False, "model_path": "mlx-community/Z-Image-4bit"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+
+    reported = {row["key"]: row["repo"] for row in cache_status()}
+    settings = load_settings()
+
+    for key in BASE_SPECS_BY_KEY:
+        # Precisely what `fetch()` resolves.
+        spec = settings.registry(include_disabled=True).get(key) or BASE_SPECS_BY_KEY[key]
+        assert reported[key] == resolved_target(spec), f"{key} reports a different repo than it fetches"
+
+    assert reported["z-image"] == "mlx-community/Z-Image-4bit"
+
+
+def test_an_unmounted_cache_volume_is_not_reported_as_ten_missing_models(monkeypatch, tmp_path):
+    """The state that used to offer to re-download the entire catalogue."""
+    from mflux_server import availability as av
+
+    absent = av.VOLUMES_ROOT / "QDSWitnessVolumeThatIsNotMounted" / "hf"
+    assert not absent.exists(), "this test needs a volume that is genuinely not mounted"
+    monkeypatch.setenv("HF_HOME", str(absent))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "absent.json"))
+
+    rows = {row["key"]: row for row in cache_status()}
+    remote = [row for row in rows.values() if not row["local"]]
+
+    assert remote, "the catalogue has remote models"
+    assert all(row["availability"] == av.VOLUME_UNMOUNTED for row in remote)
+    assert all("not mounted" in (row["detail"] or "") for row in remote)
+
+
+def test_a_local_artifact_path_is_checked_on_disk_not_guessed_from_its_shape(monkeypatch, tmp_path):
+    """`local` used to be a claim about the string, never about the filesystem."""
+    from mflux_server import availability as av
+
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "absent.json"))
+
+    rows = {row["key"]: row for row in cache_status()}
+    assert rows["flux2-dev"]["local"] is True
+    # The default artifact path is not created by this test, so it cannot be ready.
+    assert rows["flux2-dev"]["availability"] in {av.MISSING, av.PARTIAL, av.PRESENT}
+
+
+def test_a_completed_artifact_makes_flux2_dev_present(monkeypatch, tmp_path):
+    from mflux_server import availability as av
+
+    dest = tmp_path / "artifact"
+    dest.mkdir()
+    av.write_completion_marker(dest, bits=8, components=av.REQUIRED_COMPONENTS)
+
+    config = tmp_path / "server-config.json"
+    config.write_text(
+        json.dumps({"models": {"flux2-dev": {"model_path": str(dest)}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+
+    rows = {row["key"]: row for row in cache_status()}
+    assert rows["flux2-dev"]["availability"] == av.PRESENT
+
+
+def test_an_empty_artifact_directory_never_reports_present(monkeypatch, tmp_path):
+    from mflux_server import availability as av
+
+    dest = tmp_path / "artifact"
+    dest.mkdir()  # what the converter creates before downloading anything
+
+    config = tmp_path / "server-config.json"
+    config.write_text(
+        json.dumps({"models": {"flux2-dev": {"model_path": str(dest)}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+
+    rows = {row["key"]: row for row in cache_status()}
+    assert rows["flux2-dev"]["availability"] != av.PRESENT

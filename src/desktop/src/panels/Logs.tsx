@@ -17,6 +17,11 @@ type Entry =
  * human-readable text. That separation is not cosmetic: mflux renders its
  * denoising bar with tqdm, as fragments terminated by a carriage return with no
  * newline, which made the JSON impossible to parse when the two shared stderr.
+ *
+ * The pane fills what is left of the window rather than a fixed card, and scrolls
+ * inside itself. That is a cascade arrangement, not a component one — see the
+ * `main.view-logs` rule in `styles.css`, whose three declarations are all
+ * load-bearing.
  */
 export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => void }) {
   const [minLevel, setMinLevel] = useState<(typeof LEVELS)[number]>("INFO");
@@ -43,9 +48,7 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
   const visible = useMemo(
     () =>
       entries.filter((entry) =>
-        entry.kind === "event"
-          ? (RANK[entry.event.level] ?? 1) >= RANK[minLevel]!
-          : showRaw,
+        entry.kind === "event" ? (RANK[entry.event.level] ?? 1) >= RANK[minLevel]! : showRaw,
       ),
     [entries, minLevel, showRaw],
   );
@@ -55,45 +58,55 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
   }, [visible.length, follow]);
 
   return (
-    <div className="card">
-      <div className="row spread">
+    <section className="panel logs">
+      <div className="log-toolbar">
         <h2 style={{ margin: 0 }}>Logs</h2>
-        <div className="row">
-          <select value={minLevel} onChange={(event) => setMinLevel(event.target.value as never)}>
-            {LEVELS.map((level) => (
-              <option key={level} value={level}>
-                {level} and above
-              </option>
-            ))}
-          </select>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={showRaw}
-              onChange={(event) => setShowRaw(event.target.checked)}
-            />
-            <span>raw text</span>
-          </label>
-          <label className="check">
-            <input
-              type="checkbox"
-              checked={follow}
-              onChange={(event) => setFollow(event.target.checked)}
-            />
-            <span>follow</span>
-          </label>
-          <button onClick={onClear} disabled={lines.length === 0}>
-            Clear
-          </button>
-        </div>
+        <span className="library-spec" style={{ marginLeft: 0 }}>
+          {visible.length} of {lines.length}
+        </span>
+
+        <div className="spacer" />
+
+        <select
+          aria-label="Minimum level"
+          value={minLevel}
+          onChange={(event) => setMinLevel(event.target.value as never)}
+        >
+          {LEVELS.map((level) => (
+            <option key={level} value={level}>
+              {level} and above
+            </option>
+          ))}
+        </select>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={showRaw}
+            onChange={(event) => setShowRaw(event.target.checked)}
+          />
+          <span>raw text</span>
+        </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={follow}
+            onChange={(event) => setFollow(event.target.checked)}
+          />
+          <span>follow</span>
+        </label>
+        <button className="small" onClick={onClear} disabled={lines.length === 0}>
+          Clear
+        </button>
       </div>
 
       {visible.length === 0 ? (
-        <p className="center-note">
-          Nothing yet. Server and conversion output appears here.
+        <p className="empty">
+          {lines.length === 0
+            ? "Nothing yet. Server and conversion output appears here."
+            : "Every line is filtered out by the controls above."}
         </p>
       ) : (
-        <div className="console" ref={container} style={{ maxHeight: "calc(100vh - 230px)" }}>
+        <div className="console" ref={container}>
           {visible.map((entry, index) =>
             entry.kind === "event" ? (
               <div className={`line lv-${entry.event.level}`} key={index}>
@@ -112,6 +125,6 @@ export function Logs({ lines, onClear }: { lines: ServerLine[]; onClear: () => v
           )}
         </div>
       )}
-    </div>
+    </section>
   );
 }

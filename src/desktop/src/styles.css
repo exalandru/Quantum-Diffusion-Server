@@ -1,37 +1,69 @@
-/* macOS look: system font, preference-pane density, and both themes since the
-   app follows the system's. */
+/* The Quantum Codex visual language, applied to a diffusion server.
+
+   Dense and operational rather than decorative: this is a panel an operator
+   watches while a model loads for two minutes and a conversion runs for two
+   hours, so density beats whitespace and every surface earns its border.
+
+   The palette, type scale and control shapes are Quantum Codex OSS's, kept at
+   the same literal values so the two applications read as one product family.
+   What is expressed as tokens here and as literals there is the one deliberate
+   difference: QDS has more states to name — five availabilities, three job
+   outcomes, saved variants — and naming them once is what stops the next panel
+   from inventing a sixth colour. */
 
 :root {
-  --bg: #f4f4f6;
-  --panel: #ffffff;
-  --panel-2: #fafafb;
-  --text: #17171a;
-  --muted: #6c6c78;
-  --border: #dededf;
-  --accent: #6b4bd6;
-  --accent-text: #ffffff;
-  --ok: #1c8a4a;
-  --warn: #9a6100;
-  --error: #c0362c;
-  --mono: ui-monospace, "SF Mono", Menlo, monospace;
-  --radius: 10px;
-  color-scheme: light dark;
-}
+  /* Surfaces, back to front. */
+  --bg: #16181d;
+  --panel: #1e2128;
+  /* Below the panel rather than above it: inputs, code, log bodies. Things you
+     read out of or type into, as opposed to things you look at. */
+  --sunken: #12141a;
+  --line: #2b2f38;
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1c1c1f;
-    --panel: #26262a;
-    --panel-2: #2d2d32;
-    --text: #f2f2f4;
-    --muted: #9d9daa;
-    --border: #3a3a41;
-    --accent: #9b7cf5;
-    --accent-text: #14141a;
-    --ok: #57d98a;
-    --warn: #f0b23c;
-    --error: #ff7a6d;
-  }
+  --text: #e6e8ec;
+  --muted: #9aa1ad;
+
+  --accent: #7dd3fc;
+  --accent-line: #0e7490;
+  --live: #4ade80;
+  --warn: #fde047;
+  --down: #f87171;
+
+  /* Tints for the pills. Kept as tokens because a pill and its text must move
+     together, and three panels each picking their own alpha is how a status
+     colour stops meaning one thing. */
+  --live-tint: rgba(74, 222, 128, 0.15);
+  --warn-tint: rgba(250, 204, 21, 0.15);
+  --down-tint: rgba(248, 113, 113, 0.15);
+  --accent-tint: rgba(125, 211, 252, 0.14);
+
+  /* Spacing rhythm. Everything below is a multiple of these; nothing invents an
+     11px. */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+
+  --radius: 7px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
+  /* Type scale. Four sizes; a fifth would be a decision nobody could defend. */
+  --font-xs: 10px;
+  --font-sm: 11px;
+  --font-md: 12px;
+  --font-base: 13px;
+  --font-lg: 16px;
+  --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* One control height, so a button, a select and an input sitting in the same
+     row line up without anyone measuring. */
+  --control-h: 30px;
+  --control-h-sm: 24px;
+
+  color-scheme: dark;
 }
 
 * {
@@ -46,126 +78,173 @@ body,
 }
 
 body {
-  font: 13px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
+  font: var(--font-base) / 1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
 
 /* ── Shell ──────────────────────────────────────────────────────────────── */
 
-.shell {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-}
-
-/* The title bar is transparent: this area doubles as the window drag handle. */
-.titlebar {
-  height: 38px;
-  flex: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
-  font-weight: 600;
-  letter-spacing: 0.01em;
-}
-
-.tabs {
-  flex: none;
-  display: flex;
-  gap: 2px;
-  padding: 8px 12px 0;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
-}
-
-.tab {
-  appearance: none;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-weight: 500;
-  padding: 7px 13px;
-  border-radius: var(--radius) var(--radius) 0 0;
-  cursor: pointer;
-}
-
-.tab:hover {
-  color: var(--text);
-}
-
-.tab[aria-selected="true"] {
-  background: var(--bg);
-  color: var(--text);
-  box-shadow: inset 0 -2px 0 var(--accent);
-}
-
-.tab .badge {
-  margin-left: 6px;
-}
-
 main {
-  flex: 1;
-  overflow-y: auto;
-  padding: 18px;
+  padding: 20px 24px 32px;
+  max-width: 1100px;
+  margin: 0 auto;
 }
 
-/* ── Cards and grids ────────────────────────────────────────────────────── */
-
-.card {
-  background: var(--panel);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin-bottom: 14px;
-}
-
-.card > h2 {
-  margin: 0 0 4px;
-  font-size: 14px;
-  font-weight: 650;
-}
-
-.card > p.hint,
-p.hint {
-  margin: 0 0 12px;
-  color: var(--muted);
-}
-
-.row {
+header {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--s3);
+  margin-bottom: var(--s4);
   flex-wrap: wrap;
 }
 
-.row.spread {
-  justify-content: space-between;
+h1 {
+  font-size: var(--font-lg);
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0.2px;
 }
 
+/* Section headings: a quiet label over the content, not a title competing with
+   it. */
+h2 {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  margin: 0 0 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+}
+
+h3 {
+  font-size: var(--font-md);
+  font-weight: 600;
+  margin: 0 0 var(--s2);
+  color: var(--text);
+}
+
+.endpoint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: var(--font-md);
+  font-family: var(--mono);
+}
+
+/* View switching. Tabs rather than a sidebar, because that is the shell Quantum
+   Codex ships and the family resemblance is the point of the slice. */
+.views {
+  display: flex;
+  gap: var(--s1);
+  margin-left: var(--s2);
+}
+
+.view-tab {
+  padding: var(--s1) var(--s3);
+  font-size: var(--font-md);
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  height: auto;
+}
+
+.view-tab[aria-selected="true"] {
+  background: var(--panel);
+  border-color: var(--line);
+  color: var(--text);
+}
+
+.view-tab .count {
+  margin-left: 6px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-sm);
+}
+
+/* ── Surfaces ───────────────────────────────────────────────────────────── */
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+  margin-bottom: var(--s4);
+}
+
+.grid {
+  display: grid;
+  gap: var(--s3);
+  margin-bottom: var(--s4);
+  /* By measurement rather than by breakpoint, so it holds at window sizes
+     nobody screenshotted. The 1fr maximum stops a lone card on the last row
+     from stretching the full width. */
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr));
+}
+
+.grid > .panel {
+  margin-bottom: 0;
+}
+
+@media (min-width: 1000px) {
+  .grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 660px) and (max-width: 999px) {
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.divider {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 22px 0 var(--s4);
+}
+
+/* A continuous surface divided into sections, rather than several cards.
+   The dashboard's three groups are one thing read top to bottom — server, what
+   it is doing, what it is using — and three equal-height cards side by side made
+   them look like three independent readings, with the shortest padded out to
+   match the tallest. A rule between sections carries the same separation without
+   the false symmetry. */
+.section {
+  border-top: 1px solid var(--line);
+  padding: var(--s4) 0;
+}
+
+.section:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.section:last-of-type {
+  padding-bottom: 0;
+}
+
+/* Readouts, laid out across rather than down: they are peers, and a column of
+   label/value pairs makes the last one look like a footnote. */
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
   gap: 10px;
-  margin-top: 12px;
 }
 
 .stat {
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
   padding: 9px 11px;
+  min-width: 0;
 }
 
 .stat dt {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.6px;
   margin: 0;
 }
 
@@ -173,218 +252,886 @@ p.hint {
   margin: 3px 0 0;
   font-variant-numeric: tabular-nums;
   font-weight: 600;
+  text-align: left;
+  word-break: break-word;
+}
+
+.stat.wide {
+  grid-column: 1 / -1;
+}
+
+.stat.wide dd {
+  font-weight: 400;
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+  color: var(--muted);
+  word-break: break-all;
+}
+
+/* ── Text ───────────────────────────────────────────────────────────────── */
+
+.prose {
+  color: var(--text);
+  line-height: 1.6;
+  margin: 0 0 var(--s4);
+}
+
+/* An explanation, not an error: the muted register is what says so. */
+.note {
+  margin: var(--s2) 0 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.note:first-child {
+  margin-top: 0;
+}
+
+.caution {
+  margin: var(--s1) 0 0;
+  color: var(--warn);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.empty {
+  color: var(--muted);
+  margin: 0;
+}
+
+.path {
+  display: block;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+  word-break: break-all;
+}
+
+code {
+  font-family: var(--mono);
+  font-size: 0.92em;
+}
+
+/* ── Stat lists ─────────────────────────────────────────────────────────── */
+
+dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px 14px;
+  margin: 0;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+dd.wrap {
+  text-align: left;
+  grid-column: 1 / -1;
+  font-size: var(--font-sm);
+  color: var(--muted);
+  word-break: break-all;
+  font-family: var(--mono);
+}
+
+/* ── Pills ──────────────────────────────────────────────────────────────── */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  white-space: nowrap;
+  background: rgba(154, 161, 173, 0.14);
+  color: var(--muted);
+}
+
+.pill-ok,
+.pill-live {
+  background: var(--live-tint);
+  color: var(--live);
+}
+
+.pill-warn {
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.pill-bad,
+.pill-down {
+  background: var(--down-tint);
+  color: var(--down);
+}
+
+.pill-accent {
+  background: var(--accent-tint);
+  color: var(--accent);
 }
 
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
 button {
-  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: var(--control-h);
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 6px 14px;
   font: inherit;
   font-weight: 500;
-  padding: 6px 13px;
-  border-radius: 7px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
   cursor: pointer;
+  white-space: nowrap;
 }
 
 button:hover:not(:disabled) {
-  border-color: var(--muted);
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 button:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
   cursor: default;
 }
 
 button.primary {
-  background: var(--accent);
-  border-color: transparent;
-  color: var(--accent-text);
+  border-color: var(--accent-line);
+  color: var(--accent);
 }
 
 button.danger {
-  color: var(--error);
+  border-color: rgba(248, 113, 113, 0.5);
+  color: var(--down);
+}
+
+button.small {
+  min-height: var(--control-h-sm);
+  padding: 3px 10px;
+  font-size: var(--font-sm);
+}
+
+button.link {
+  min-height: 0;
+  align-self: flex-start;
+  background: none;
+  border: 0;
+  padding: 2px 0;
+  color: var(--accent);
+  font-size: var(--font-sm);
+}
+
+/* Focus must stay visible: this is a keyboard-navigable control panel, and the
+   ring is the only thing telling a keyboard user where they are. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input,
+select,
+textarea {
+  min-height: var(--control-h);
+  background: var(--sunken);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+  font: inherit;
+  font-size: var(--font-md);
 }
 
 input[type="text"],
-input[type="number"],
 input[type="password"],
+input[type="number"] {
+  font-family: var(--mono);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+input:disabled,
+select:disabled {
+  opacity: 0.5;
+}
+
+input[type="checkbox"] {
+  min-height: 0;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
 select {
-  font: inherit;
-  padding: 5px 8px;
-  border-radius: 7px;
-  border: 1px solid var(--border);
-  background: var(--panel-2);
-  color: var(--text);
-  min-width: 0;
+  appearance: none;
+  cursor: pointer;
+  padding-right: var(--s5);
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: right 13px top 52%, right 8px top 52%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
 }
 
-input:focus-visible,
-select:focus-visible,
-button:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-label.field {
-  display: grid;
-  grid-template-columns: minmax(150px, 200px) 1fr;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 0;
-}
-
-label.field > span {
-  color: var(--muted);
-}
-
-label.check {
+.row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 0;
+  gap: var(--s2);
+  flex-wrap: wrap;
 }
 
-fieldset {
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 13px 13px;
-  margin: 0 0 12px;
+.row.spread {
+  justify-content: space-between;
 }
 
-legend {
-  font-weight: 600;
-  padding: 0 5px;
-}
-
-/* ── Misc ───────────────────────────────────────────────────────────────── */
-
-.badge {
-  display: inline-flex;
+.actions {
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
   align-items: center;
-  gap: 5px;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: var(--panel-2);
-  border: 1px solid var(--border);
+}
+
+/* ── Notices ────────────────────────────────────────────────────────────── */
+
+.notice {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  margin-bottom: 14px;
   color: var(--muted);
 }
 
-.badge.ok {
-  color: var(--ok);
+.notice-error {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
 }
-.badge.warn {
+
+.notice-ok {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: var(--live);
+}
+
+.notice-warn {
+  border-color: rgba(250, 204, 21, 0.4);
   color: var(--warn);
 }
-.badge.error {
-  color: var(--error);
+
+.notice strong {
+  color: inherit;
 }
 
-.dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: currentColor;
+/* An action's outcome, rendered where the action lives rather than in the
+   shell's banner. The two channels are visually distinct on purpose: the banner
+   means "the app is having trouble", this means "the thing you clicked". */
+.action-note {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  margin-top: var(--s2);
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--sunken);
+  font-size: var(--font-md);
+  line-height: 1.45;
+  max-width: 100%;
 }
 
-progress {
-  appearance: none;
-  width: 100%;
-  height: 6px;
+.action-note.ok {
+  border-color: rgba(74, 222, 128, 0.4);
+  color: var(--live);
+}
+
+.action-note.error {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fca5a5;
+}
+
+.action-note .dismiss {
+  min-height: 0;
   border: 0;
-  border-radius: 999px;
-  background: var(--panel-2);
+  background: none;
+  padding: 0 2px;
+  color: inherit;
+  opacity: 0.7;
+  font-size: var(--font-base);
+  line-height: 1;
+}
+
+.action-note .dismiss:hover {
+  opacity: 1;
+  color: inherit;
+}
+
+/* ── Progress ───────────────────────────────────────────────────────────── */
+
+.bar {
+  height: 6px;
+  background: var(--line);
+  border-radius: 3px;
   overflow: hidden;
 }
 
-progress::-webkit-progress-bar {
-  background: var(--panel-2);
+.bar-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
 }
 
-progress::-webkit-progress-value {
+/* No total to measure against: the stripe moves, and claims nothing about how
+   far along it is. A bar with an invented denominator is worse than no bar. */
+.bar-indeterminate {
+  background: linear-gradient(90deg, var(--line) 0 40%, var(--accent) 50%, var(--line) 60% 100%);
+  background-size: 250% 100%;
+  animation: sweep 1.4s linear infinite;
+}
+
+@keyframes sweep {
+  from {
+    background-position: 100% 0;
+  }
+  to {
+    background-position: 0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bar-indeterminate {
+    animation: none;
+    background: var(--line);
+  }
+}
+
+/* ── Library rows: models, variants, inventory ──────────────────────────── */
+
+.library {
+  list-style: none;
+  margin: var(--s3) 0 0;
+  padding: 0;
+}
+
+.library-row {
+  border-top: 1px solid var(--line);
+  padding: 14px 0;
+}
+
+.library-row:first-child {
+  border-top: none;
+}
+
+.library-row.off {
+  opacity: 0.62;
+}
+
+.library-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.library-head strong {
+  font-size: var(--font-base);
+}
+
+.library-spec {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.library-path {
+  display: block;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+  word-break: break-all;
+}
+
+.library-detail {
+  margin: var(--s1) 0 0;
+  color: var(--muted);
+  font-size: var(--font-md);
+}
+
+.library-actions {
+  display: flex;
+  gap: var(--s2);
+  margin-top: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* The saved, already-quantized copies of one model. Source, saved variants and
+   the active representation are three different facts, so the active one is
+   marked rather than merely selected. */
+.variants {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.variants .label {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.variant[aria-pressed="true"] {
+  border-color: var(--accent-line);
+  background: var(--accent-tint);
+  color: var(--accent);
+}
+
+/* ── Model rows ─────────────────────────────────────────────────────────── */
+
+/* Each model is a bounded surface of its own rather than a band in one long
+   card. Ten models separated only by hairlines read as a wall: the eye has
+   nothing to land on, and a row's own actions look like they might belong to the
+   row above. A surface per model gives every one a beginning and an end. */
+.models {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.model {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 12px 14px;
+}
+
+/* Off is a state, not a disabled control: the row stays fully legible and
+   operable, because turning it back on is done from here. */
+.model.off .model-title {
+  color: var(--muted);
+}
+
+.model-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.model-title {
+  font-size: var(--font-base);
+  font-weight: 600;
+}
+
+/* Pushed right, so the switches line up down the list whatever each name and
+   pill set happen to measure. */
+.model-enable {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex: 0 0 auto;
+}
+
+.model-enable .label {
+  color: var(--muted);
+  font-size: var(--font-sm);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+}
+
+.model-meta {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.model-meta code {
+  font-family: var(--mono);
+  word-break: break-all;
+}
+
+.model-meta .sep {
+  opacity: 0.5;
+}
+
+.model-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+/* A group of controls that belong together, kept visually apart from its
+   neighbours so "Pre-quantize to 8 bits" cannot read as part of Install. */
+.model-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.model-group + .model-group {
+  padding-left: var(--s2);
+  border-left: 1px solid var(--line);
+}
+
+/* Wrapped rather than scrolled: a horizontal scrollbar inside a row is a thing
+   nobody finds. */
+@media (max-width: 760px) {
+  .model-group + .model-group {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+.model-advanced {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+/* ── Switch ─────────────────────────────────────────────────────────────── */
+
+/* A real switch: `role="switch"` with `aria-checked`, so its state is in the
+   accessibility tree rather than only in the pixels. It replaces an ON/OFF pill
+   that looked interactive and was not. */
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  min-height: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s ease, background 0.15s ease;
+}
+
+.switch[aria-checked="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent-line);
+}
+
+.switch[aria-checked="true"]::after {
+  transform: translateX(14px);
   background: var(--accent);
-  border-radius: 999px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .switch::after {
+    transition: none;
+  }
+}
+
+/* ── Settings form ──────────────────────────────────────────────────────── */
+
+.settings-group {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: var(--s4) 0 0;
+  padding: 14px 16px;
+  min-width: 0;
+}
+
+.settings-group legend {
+  padding: 0 6px;
+  font-size: var(--font-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+}
+
+.setting {
+  margin-bottom: var(--s4);
+}
+
+.setting:last-child {
+  margin-bottom: 0;
+}
+
+.setting-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-bottom: 5px;
+  font-weight: 500;
+}
+
+.setting-unit {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.setting input,
+.setting select {
+  width: 100%;
+  min-width: 0;
+}
+
+.setting-row {
+  display: flex;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.setting-row input,
+.setting-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+.setting-help {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.setting-error {
+  margin: 5px 0 0;
+  color: var(--down);
+  font-size: var(--font-sm);
+}
+
+/* As many columns as fit, one where none do. The 260px floor is measured rather
+   than chosen: below it the default window packs four numeric fields across, and
+   a single field's help text then leaves the row visibly ragged. */
+.setting-pair {
+  display: grid;
+  gap: var(--s3) var(--s4);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  align-items: start;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-md);
+  color: var(--text);
+}
+
+/* ── Tables ─────────────────────────────────────────────────────────────── */
+
+.table-scroll {
+  overflow-x: auto;
+  margin-top: var(--s3);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-md);
+}
+
+th {
+  text-align: left;
+  font-size: var(--font-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+  padding: 0 10px 6px 0;
+  white-space: nowrap;
+}
+
+td {
+  padding: 7px 10px 7px 0;
+  border-top: 1px solid var(--line);
+  vertical-align: middle;
+}
+
+td:last-child,
+th:last-child {
+  padding-right: 0;
+}
+
+/* ── Setup ──────────────────────────────────────────────────────────────── */
+
+/* Shown alone, so it gets room to explain. */
+main.setup {
+  max-width: 720px;
+  padding-top: 60px;
+}
+
+main.setup .panel {
+  padding: 22px 24px;
+}
+
+/* Larger than a section label, and otherwise the same treatment: Quantum Codex's
+   setup screen keeps the uppercase-muted heading rather than promoting it to a
+   title, and the two gates should be recognisably the same screen. */
+main.setup h2 {
+  font-size: var(--font-base);
+  margin-bottom: var(--s3);
+}
+
+.setup-facts {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 16px;
+  margin: 0 0 18px;
+  font-size: var(--font-md);
+}
+
+.setup-log {
+  margin-top: var(--s3);
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+pre {
+  margin: 0;
+  padding: 10px 12px;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  font: var(--font-sm) / 1.6 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  color: var(--muted);
+}
+
+/* ── Logs ───────────────────────────────────────────────────────────────── */
+
+/* The log fills what is left of the window rather than a fixed card, and
+   scrolls inside itself.
+
+   `height: 100vh` is the anchor and has to be a *definite* height: `min-height`
+   looks equivalent and is not, because the console's flex-basis is `auto`, so
+   its base size is the whole log, `main` grows past the window to fit it, and
+   the page scrolls while the pane sits at content height. A definite height
+   gives the flex chain something to distribute.
+
+   `min-height: 0` is what lets a flex child shrink below its content.
+
+   Nothing here may cap the console's height: a `max-height` on it silently
+   out-ranks `flex-grow` and returns the pane to a fixed box, which is the
+   regression `Logs.layout.test.ts` exists to catch. */
+main.view-logs {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+main.view-logs > header,
+main.view-logs > .notice {
+  flex: 0 0 auto;
+}
+
+.panel.logs {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin-bottom: 0;
+}
+
+.log-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.log-toolbar .spacer {
+  margin-left: auto;
 }
 
 .console {
-  font: 11px/1.55 var(--mono);
-  background: var(--panel-2);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 9px 11px;
-  max-height: 340px;
+  flex: 1 1 auto;
+  min-height: 12rem;
   overflow: auto;
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: var(--s2) 10px;
+  font: var(--font-sm) / 1.6 var(--mono);
+}
+
+.line {
+  display: flex;
+  gap: 10px;
+  padding: 1px 0;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.console .line {
-  display: flex;
-  gap: 8px;
-}
-
-.console .ts {
+.line .ts {
   color: var(--muted);
-  flex: none;
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 
-.console .lv-WARNING {
+.line.raw {
+  color: var(--muted);
+}
+
+.line.lv-WARNING {
   color: var(--warn);
 }
-.console .lv-ERROR,
-.console .lv-CRITICAL {
-  color: var(--error);
+
+.line.lv-ERROR,
+.line.lv-CRITICAL {
+  color: var(--down);
 }
-.console .raw {
+
+.line.lv-DEBUG {
   color: var(--muted);
 }
 
-.error-banner {
-  background: color-mix(in srgb, var(--error) 12%, transparent);
-  border: 1px solid var(--error);
-  color: var(--error);
-  border-radius: 8px;
-  padding: 9px 12px;
-  margin-bottom: 14px;
-}
-
-.path {
-  font: 11px var(--mono);
+/* Names the group of controls beside it — "Saved variants" before the variant
+   buttons — without competing with them for attention. */
+.group-label {
   color: var(--muted);
-  word-break: break-all;
-}
-
-table.models {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-table.models th,
-table.models td {
-  text-align: left;
-  padding: 7px 9px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: middle;
-}
-
-table.models th {
-  color: var(--muted);
-  font-size: 11px;
+  font-size: var(--font-sm);
   text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 600;
-}
-
-table.models tr:last-child td {
-  border-bottom: 0;
-}
-
-.center-note {
-  color: var(--muted);
-  text-align: center;
-  padding: 28px 12px;
+  letter-spacing: 0.6px;
 }

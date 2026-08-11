@@ -30,7 +30,18 @@ pub struct Paths {
     pub images: PathBuf,
     /// `server-config.json`, driven by the configuration form.
     pub config: PathBuf,
-    /// App version that produced `server/`, so we know when to re-sync.
+    /// Where a new project copy is assembled before it replaces `server/`.
+    pub staging: PathBuf,
+    /// `flock` target making the installer single-flight across processes, not
+    /// only within one app. Never read; only its lock state matters.
+    pub install_lock: PathBuf,
+    /// What is installed and whether the install finished. Deliberately a sibling
+    /// of `server/` rather than a file inside it: the installer replaces that
+    /// directory wholesale, so a marker kept there could not survive the very
+    /// interruption it exists to describe.
+    pub install_record: PathBuf,
+    /// Pre-record marker, `server/.bootstrap-version`. Read to recognise an
+    /// install made by an earlier build; never written.
     pub stamp: PathBuf,
 }
 
@@ -47,6 +58,9 @@ impl Paths {
             uv_cache: data.join("uv-cache"),
             images: data.join("images"),
             config: data.join("server-config.json"),
+            staging: data.join("server.staging"),
+            install_lock: data.join("bootstrap.lock"),
+            install_record: data.join("bootstrap.json"),
             stamp: data.join("server").join(".bootstrap-version"),
             data,
         })
@@ -77,16 +91,14 @@ impl Paths {
         self.env.join("bin").join("mflux-server-fetch")
     }
 
+    /// The local-model importer, installed by the same wheel.
+    pub fn import_bin(&self) -> PathBuf {
+        self.env.join("bin").join("mflux-server-import")
+    }
+
     /// `true` once `uv sync` has produced a usable environment.
     pub fn env_ready(&self) -> bool {
         self.server_bin().is_file()
-    }
-
-    /// App version that produced the project copy, when there is one.
-    pub fn stamped_version(&self) -> Option<String> {
-        std::fs::read_to_string(&self.stamp)
-            .ok()
-            .map(|value| value.trim().to_owned())
     }
 
     /// Location of the HuggingFace token, the way `huggingface_hub` resolves it.
@@ -98,12 +110,32 @@ impl Paths {
         hf_home.join("token")
     }
 
-    /// Default `HF_HOME`, matching `huggingface_hub`'s own.
+    /// Fallback `HF_HOME`, matching `huggingface_hub`'s own default.
+    ///
+    /// Only reached when the configuration says nothing. `storage.hf_home` is the
+    /// setting, it is owned and validated by `settings.py`, and this is the
+    /// bootstrap value for the case where there is no configuration to read yet —
+    /// not a second opinion about where weights belong.
     pub fn default_hf_home() -> PathBuf {
         std::env::var_os("HF_HOME")
             .map(PathBuf::from)
             .or_else(|| dirs_home().map(|home| home.join(".cache").join("huggingface")))
             .unwrap_or_else(|| PathBuf::from("/tmp/huggingface"))
+    }
+
+    /// The HuggingFace root every child must be given.
+    ///
+    /// One resolver, called from one place, so a status scan cannot read one cache
+    /// while a download writes another. Python resolves the same value
+    /// independently (`Settings.effective_hf_home`) and reaches the same answer
+    /// because both prefer the configured key; a regression test pins that.
+    ///
+    /// Deliberately *not* created if it is missing: a path under an unmounted
+    /// volume must stay absent so the availability rules can report
+    /// `volume_unmounted`, rather than being quietly materialised as an empty
+    /// directory on the boot disk.
+    pub fn effective_hf_home(&self) -> PathBuf {
+        crate::config::hf_home(self).unwrap_or_else(Self::default_hf_home)
     }
 }
 

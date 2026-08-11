@@ -18,6 +18,7 @@ dependencies = [
 mflux-server = "mflux_server.app:main"
 mflux-server-prequantize = "mflux_server.prequantize:main"
 mflux-server-fetch = "mflux_server.fetch:main"
+mflux-server-import = "mflux_server.import_cli:main"
 
 [dependency-groups]
 dev = [

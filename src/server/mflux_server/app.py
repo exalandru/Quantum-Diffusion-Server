@@ -185,12 +185,24 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
+    #: Public identifier → spec. Built-ins publish their catalogue key; an
+    #: imported model publishes its `api_name` rather than the opaque
+    #: `local-…` id it is stored under.
+    by_public_name = {spec.public_name: spec for spec in registry.values()}
+
     def resolve_spec(key: str | None) -> ModelSpec:
+        # The configured default may be an internal id — that is deliberate, and
+        # `default_model` stays a durable reference rather than a friendly name
+        # that would break the moment one were renamed.
         key = key or settings.default_model
-        spec = registry.get(key)
+        # Public name first, then the internal key. The second is an unadvertised
+        # legacy path: an imported model's id was the only way to name it before
+        # aliases existed, and silently breaking a script that used it would be a
+        # poor trade for a listing that is already clean.
+        spec = by_public_name.get(key) or registry.get(key)
         if spec is None:
             raise APIError(
-                f"Unknown model: {key!r}. Available models: {sorted(registry)}",
+                f"Unknown model: {key!r}. Available models: {sorted(by_public_name)}",
                 param="model",
                 code="model_not_found",
             )
@@ -312,7 +324,10 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
                 # Extension: the effective size may differ from the requested
                 # one (mflux truncates to a multiple of 16).
                 "mflux": {
-                    "model": spec.key,
+                    # The public name, matching what the request sent and what
+                    # `/v1/models` lists. Echoing the internal `local-…` id here
+                    # would hand a client the one identifier it must not learn.
+                    "model": spec.public_name,
                     "size": f"{width}x{height}",
                     "steps": steps,
                     "seeds": seeds,
@@ -378,11 +393,14 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
     @app.get("/v1/models")
     async def list_models(_: None = auth) -> dict:
+        # Public names, not internal keys: `local-c1587aa663c4` is a storage
+        # detail, and publishing it would make it the identifier every client
+        # copied into its configuration.
         return {
             "object": "list",
             "data": [
-                {"id": key, "object": "model", "created": created_at, "owned_by": "mflux"}
-                for key in sorted(registry)
+                {"id": name, "object": "model", "created": created_at, "owned_by": "mflux"}
+                for name in sorted(by_public_name)
             ],
         }
 
@@ -390,7 +408,9 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
     async def retrieve_model(model_id: str, _: None = auth) -> dict:
         spec = resolve_spec(model_id)
         return {
-            "id": spec.key,
+            # The public name even when asked for by internal id, so a client
+            # that follows the legacy alias still learns the current one.
+            "id": spec.public_name,
             "object": "model",
             "created": created_at,
             "owned_by": "mflux",
@@ -567,13 +587,22 @@ def create_app(settings: Settings | None = None, engine: ModelEngine | None = No
 
 
 def _capabilities(spec: ModelSpec) -> dict:
+    quantization = spec.quantization
     return {
         "repo": spec.repo,
         "default_size": spec.default_size,
         "default_steps": spec.default_steps,
         "default_guidance": spec.default_guidance,
         "quantize": spec.quantize,
-        "prequantized": spec.prequantized,
+        # The quantization contract, published so the app stops keeping its own
+        # copy of the bit-depth rules. `prequantized` used to stand in for all of
+        # this and meant three different things at once.
+        "supports_quantization": quantization.supports_quantization,
+        "quantize_choices": list(quantization.quantize_choices),
+        "supports_prequantize": quantization.supports_prequantize,
+        "prequantize_choices": list(quantization.prequantize_choices),
+        "prequantize_strategy": quantization.prequantize_strategy,
+        "quantization_note": quantization.note,
         "license": spec.license,
         "gated": spec.gated,
         "prompt_formats": list(spec.prompt_formats),
@@ -614,6 +643,10 @@ def main() -> None:  # pragma: no cover - entry point
     import uvicorn
 
     settings = load_settings()
+    # The server keeps whatever root it is given here for its whole lifetime:
+    # mflux resolves the cache constant once, at import. Changing the setting
+    # therefore takes effect for this process only on restart.
+    settings.apply_hf_home()
     uvicorn.run(
         create_app(settings),
         host=settings.server.host,

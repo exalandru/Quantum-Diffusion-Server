@@ -36,7 +36,18 @@ dev-desktop:
 	npm --prefix "$(DESKTOP_DIR)" run app:dev
 
 test:
-	uv run --project "$(SERVER_DIR)" pytest
+	# `python -m pytest`, not the `pytest` console script. The script is generated
+	# at install time with an absolute shebang, so a shared environment that was
+	# built before the repository moved still points its scripts at the old path
+	# and `exec` fails with a bare "Failed to spawn: pytest". Running the module
+	# goes through the interpreter uv resolves, which is a symlink and survives
+	# the move. (`ruff` above is unaffected only because it is a native binary
+	# with no shebang at all.)
+	uv run --project "$(SERVER_DIR)" python -m pytest "$(SERVER_DIR)/tests"
+	# Same target directory as `app:build`, so the tests share its cache and
+	# nothing lands inside `src-tauri/`, which `clean` does not reach.
+	cd "$(DESKTOP_DIR)/src-tauri" && CARGO_TARGET_DIR="$(BUILD_DIR)/desktop/tauri" cargo test
+	npm --prefix "$(DESKTOP_DIR)" test
 
 lint:
 	uv run --project "$(SERVER_DIR)" ruff check .

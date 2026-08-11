@@ -86,12 +86,33 @@ pub fn write(paths: &Paths, value: &Value) -> Result<(), String> {
         .map_err(|error| format!("could not serialize: {error}"))?;
     // Write then rename atomically: an interruption at the wrong moment would
     // otherwise leave a truncated configuration, which the server would reject on
-    // the next start.
+    // the next start. The rename is what makes readers see all-or-nothing; the
+    // fsync below is what makes the *contents* durable before that rename, which
+    // rename alone does not promise.
     let temporary = paths.config.with_extension("json.tmp");
-    std::fs::write(&temporary, format!("{text}\n"))
-        .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&temporary)
+            .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        file.write_all(format!("{text}\n").as_bytes())
+            .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+        file.sync_all()
+            .map_err(|error| format!("could not flush {}: {error}", temporary.display()))?;
+    }
+    // The file can hold an API key, so it is not world-readable.
+    restrict(&temporary);
     std::fs::rename(&temporary, &paths.config)
-        .map_err(|error| format!("could not replace {}: {error}", paths.config.display()))
+        .map_err(|error| format!("could not replace {}: {error}", paths.config.display()))?;
+    // And fsync the directory, so the rename itself survives a power cut.
+    if let Ok(dir) = std::fs::File::open(&paths.data) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
+fn restrict(file: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(file, std::fs::Permissions::from_mode(0o600));
 }
 
 /// Graceful-shutdown duration declared in the configuration, used to size the
@@ -101,6 +122,36 @@ pub fn shutdown_grace_s(paths: &Paths) -> f64 {
         .ok()
         .and_then(|value| value.get("server")?.get("shutdown_grace_s")?.as_f64())
         .unwrap_or(10.0)
+}
+
+/// `storage.hf_home` from the configuration, when the user has chosen one.
+///
+/// A key lookup, not a schema: the type, the default and the validation all live
+/// in `settings.py`, and this reads the value the server itself will read. `None`
+/// means "unset", which leaves the fallback to `Paths::default_hf_home`.
+pub fn hf_home(paths: &Paths) -> Option<std::path::PathBuf> {
+    let value = read(paths)
+        .ok()?
+        .get("storage")?
+        .get("hf_home")?
+        .as_str()?
+        .to_owned();
+    if value.trim().is_empty() {
+        return None;
+    }
+    Some(expand_tilde(&value))
+}
+
+/// `~` is expanded here because the value can be hand-edited in the JSON, and a
+/// child process would otherwise be handed a literal `~` directory.
+fn expand_tilde(value: &str) -> std::path::PathBuf {
+    match value.strip_prefix("~/") {
+        Some(rest) => match std::env::var_os("HOME") {
+            Some(home) => std::path::PathBuf::from(home).join(rest),
+            None => std::path::PathBuf::from(value),
+        },
+        None => std::path::PathBuf::from(value),
+    }
 }
 
 /// Port declared in the configuration, `8765` by default.

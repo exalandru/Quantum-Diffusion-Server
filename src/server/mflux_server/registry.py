@@ -11,11 +11,15 @@ in torch and transformers (several seconds), and the tests do not need it.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from mflux_server.flux2_dev import config as flux2_dev_config
+from mflux_server.logs import SERVER_LOGGER
+
+logger = logging.getLogger(f"{SERVER_LOGGER}.registry")
 
 #: mflux truncates every dimension down to a multiple of 16
 #: (mflux/models/common/config/config.py:41-47), with no lower or upper bound.
@@ -66,12 +70,6 @@ class ModelSpec:
     #: A model that accepts text never refuses anything: a JSON string *is* text.
     prompt_formats: tuple[str, ...] = ("text",)
     quantize: int | None = None
-    #: True when the weights arrive at a fixed precision — an already-quantized
-    #: repo, or a layout `nn.quantize` cannot touch. Those models are skipped by
-    #: the config-wide `default_quantize`: mflux keeps the stored precision and
-    #: only prints a warning, so honouring the setting here would make
-    #: `/v1/capabilities` lie.
-    prequantized: bool = False
     #: Sampler preset, for the models whose step count and guidance schedule come
     #: as a named bundle rather than as numbers. Ideogram 4 only.
     preset: str | None = None
@@ -81,10 +79,59 @@ class ModelSpec:
     max_dimension: int | None = None
     edit: EditSpec | None = None
     enabled: bool = True
+    #: Selected saved variant, in bits. `None` generates from the source.
+    prequantized_variant: int | None = None
+    #: Where this entry came from. Authoritative for anything that behaves
+    #: differently for a local model — notably that HuggingFace download actions
+    #: must key off this, not off the shape of `repo`.
+    provenance: str = "built_in"
+    #: For imported rows: the built-in profile the defaults were taken from.
+    base_profile_key: str | None = None
+    #: Human name, for imported rows whose key is an opaque id.
+    display_name: str | None = None
+    #: The public, machine-facing identifier for an imported model. `None` for a
+    #: built-in, whose catalogue `key` already *is* its public name — which is
+    #: exactly why an imported model may not take one.
+    api_name: str | None = None
 
     @property
     def default_size(self) -> str:
         return f"{self.default_width}x{self.default_height}"
+
+    @property
+    def public_name(self) -> str:
+        """What a client puts in `{"model": ...}`.
+
+        A built-in's catalogue key doubles as its public name and always has. An
+        imported model has an opaque internal id — `local-c1587aa663c4` — which is
+        durable and a poor thing to type, so it publishes an alias instead. The
+        id remains resolvable, quietly, for anything that already used it.
+        """
+        return self.api_name or self.key
+
+    @property
+    def source(self) -> str:
+        """What this model *is*: its repo, or the path the user pointed it at."""
+        return self.model_path or self.repo
+
+    @property
+    def effective_model_path(self) -> str | None:
+        """What generation should load — the source, or a selected saved variant.
+
+        Kept separate from `source` so the three stay distinguishable: the source
+        model, the variants that exist for it, and the one representation actually
+        in use.
+        """
+        if self.prequantized_variant is None:
+            return self.model_path
+        from mflux_server import artifacts
+
+        return str(artifacts.artifact_dir(self.key, self.source, self.prequantized_variant))
+
+    @property
+    def quantization(self) -> QuantizationCapability:
+        """Quantization facts, derived from the family rather than stored per row."""
+        return capability_for(self.family)
 
 
 #: Defaults taken from mflux/cli/defaults/defaults.py (MODEL_INFERENCE_STEPS,
@@ -149,8 +196,6 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         license="FLUX Non-Commercial",
         gated=True,
         quantize=8,
-        # The local artifact is already 8-bit: our own prequantize script made it.
-        prequantized=True,
     ),
     ModelSpec(
         key="qwen-image-2512",
@@ -351,7 +396,6 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # `Fp8Linear(nn.Module)`, which `nn.quantize` does not touch. The knob is
         # inert, so the catalogue says so instead of advertising a bit depth.
         quantize=None,
-        prequantized=True,
         preset="V4_DEFAULT_20",
         min_dimension=256,
         max_dimension=2048,
@@ -368,6 +412,115 @@ PRESET_STEPS: dict[str, int] = {"V4_DEFAULT_20": 20, "V4_QUALITY_48": 48, "V4_TU
 
 #: Values accepted by nn.quantize through mflux (cli/defaults/defaults.py:59).
 QUANTIZE_CHOICES = (3, 4, 5, 6, 8)
+
+#: Conversion routes. `MFLUX_SAVE` is the ordinary one — load the model with a
+#: bit depth and call its own `save_model`. `QDS_MEMORY_BOUNDED` is FLUX.2-dev's:
+#: its bf16 is ~111 GB and cannot be materialised whole, so `prequantize.py`
+#: converts one component at a time and quantizes block by block.
+STRATEGY_MFLUX_SAVE = "mflux_save"
+STRATEGY_QDS_MEMORY_BOUNDED = "qds_memory_bounded"
+
+
+@dataclass(frozen=True)
+class QuantizationCapability:
+    """What quantization means for one model family, as facts rather than a flag.
+
+    `prequantized` used to carry three unrelated claims at once — "the runtime
+    setting does nothing", "skip the global default", and "this came from our own
+    converter" — which is why the Configuration form happily offered a bit depth
+    for `ideogram-4` that mflux discards.
+    """
+
+    #: Does the runtime `quantize` setting change anything? False when
+    #: `nn.quantize` cannot touch the weights that matter, and false when the
+    #: weights already carry a stored precision that mflux resolves in their
+    #: favour (`QuantizationResolution`, rule `conflict` → action `STORED`).
+    supports_quantization: bool
+    #: Bit depths worth offering at load time. Empty when unsupported.
+    quantize_choices: tuple[int, ...]
+    #: Can this be converted into a saved, already-quantized artifact?
+    supports_prequantize: bool
+    prequantize_choices: tuple[int, ...]
+    prequantize_strategy: str | None
+    #: Why, when a capability is off. Shown by the UI instead of a dead control.
+    note: str | None = None
+
+
+#: Runtime quantization is inert here: `Ideogram4WeightDefinition` marks
+#: `conditional_transformer`, `unconditional_transformer` and `text_encoder`
+#: `skip_quantization=True` — verified against mflux 0.18.0 — leaving only the VAE,
+#: and the FP8 layers are `Fp8Linear`, which `nn.quantize` does not convert.
+#: Saving would be worse than useless: `ModelSaver` would stamp
+#: `quantization_level` onto weights nothing had quantized, and the reload path
+#: would then try to build a quantized structure for them.
+_IDEOGRAM4 = QuantizationCapability(
+    supports_quantization=False,
+    quantize_choices=(),
+    supports_prequantize=False,
+    prequantize_choices=(),
+    prequantize_strategy=None,
+    note="Ideogram 4 ships FP8 weights that mflux does not re-quantize.",
+)
+
+#: FLUX.2-dev is loaded from an artifact our own converter produced, so the
+#: stored precision always wins over the runtime setting — hence
+#: `supports_quantization=False`, for a different reason than Ideogram's.
+#: Conversion itself is supported, by the memory-bounded path only: the generic
+#: `mflux-save` dispatches `"flux.2"` to `Flux2Klein`, which is the wrong
+#: architecture for this model.
+_FLUX2_DEV = QuantizationCapability(
+    supports_quantization=False,
+    quantize_choices=(),
+    supports_prequantize=True,
+    prequantize_choices=QUANTIZE_CHOICES,
+    prequantize_strategy=STRATEGY_QDS_MEMORY_BOUNDED,
+    note="Loaded from a pre-quantized artifact, whose stored precision mflux keeps.",
+)
+
+#: Families whose class defines its own `save_model` and whose components are
+#: quantizable. Verified per family against mflux 0.18.0: `save_model` present on
+#: the exact class `load_model` instantiates, no `skip_quantization` on the
+#: transformer, and `ModelSaver`/`WeightLoader` round-trip the level generically.
+_GENERIC = QuantizationCapability(
+    supports_quantization=True,
+    quantize_choices=QUANTIZE_CHOICES,
+    supports_prequantize=True,
+    prequantize_choices=QUANTIZE_CHOICES,
+    prequantize_strategy=STRATEGY_MFLUX_SAVE,
+)
+
+#: Qwen skips only its text encoder, so runtime quantization still applies to the
+#: transformer and VAE; conversion is the ordinary route.
+_CAPABILITIES: dict[str, QuantizationCapability] = {
+    "flux2": _GENERIC,
+    "qwen": _GENERIC,
+    "z-image": _GENERIC,
+    "ernie": _GENERIC,
+    "fibo": _GENERIC,
+    "ideogram4": _IDEOGRAM4,
+    "flux2-dev": _FLUX2_DEV,
+}
+
+#: Edit variants are reached through their parent model, and `Flux2KleinEdit` has
+#: no `save_model` at all. Nothing here converts them, so they publish nothing.
+_UNKNOWN = QuantizationCapability(
+    supports_quantization=False,
+    quantize_choices=(),
+    supports_prequantize=False,
+    prequantize_choices=(),
+    prequantize_strategy=None,
+    note="Quantization support for this family has not been verified.",
+)
+
+
+def capability_for(family: str) -> QuantizationCapability:
+    """Quantization facts for a family.
+
+    Keyed by family rather than by catalogue key on purpose: once a local model
+    can be imported, identifying its family is enough to give it the same
+    representation, with no new table.
+    """
+    return _CAPABILITIES.get(family, _UNKNOWN)
 
 
 def normalize_dimension(value: int) -> int:
@@ -395,6 +548,8 @@ def build_registry(
     *,
     default_size: str | None = None,
     default_quantize: int | None = None,
+    include_disabled: bool = False,
+    imported: list[Any] | None = None,
 ) -> dict[str, ModelSpec]:
     """Apply the `server-config.json` overrides on top of the base catalogue.
 
@@ -415,7 +570,8 @@ def build_registry(
     `/v1/capabilities` — claim a bit depth the model will not use.
     """
     overrides = overrides or {}
-    unknown = set(overrides) - set(BASE_SPECS_BY_KEY)
+    imported_keys = {getattr(model, "id", None) for model in (imported or [])}
+    unknown = set(overrides) - set(BASE_SPECS_BY_KEY) - imported_keys
     if unknown:
         raise ValueError(
             f"Unknown models in config: {sorted(unknown)}. Valid keys: {sorted(BASE_SPECS_BY_KEY)}"
@@ -430,13 +586,31 @@ def build_registry(
         spec = base
         if global_size is not None:
             spec = replace(spec, default_width=global_size[0], default_height=global_size[1])
-        if default_quantize is not None and not spec.prequantized:
+        # The global default only reaches models where it would actually do
+        # something. On the others mflux keeps the stored precision and prints
+        # "Ignoring -q", so applying it would make `/v1/capabilities` claim a bit
+        # depth the model will not use.
+        if default_quantize is not None and spec.quantization.supports_quantization:
             spec = replace(spec, quantize=default_quantize or None)
         override = overrides.get(key)
         if override is not None:
             spec = _apply_override(spec, override)
-        if spec.enabled:
+        if spec.enabled or include_disabled:
             registry[key] = spec
+
+    # Imported models are layered on afterwards: the built-in catalogue stays
+    # source-code truth, and one unusable row may not cost the others.
+    for model in imported or []:
+        try:
+            spec = imported_spec(model)
+        except ValueError as exc:
+            logger.warning("Skipping imported model %s: %s", getattr(model, "id", "?"), exc)
+            continue
+        override = overrides.get(spec.key)
+        if override is not None:
+            spec = _apply_override(spec, override)
+        if spec.enabled or include_disabled:
+            registry[spec.key] = spec
     return registry
 
 
@@ -470,14 +644,70 @@ def _apply_override(spec: ModelSpec, override: Any) -> ModelSpec:
             )
         changes["default_guidance"] = override.default_guidance
     if override.quantize is not None:
-        changes["quantize"] = override.quantize or None
+        if spec.quantization.supports_quantization:
+            changes["quantize"] = override.quantize or None
+        else:
+            # Normalised, not rejected: the shipped config carries
+            # `flux2-dev.quantize = 8`, and refusing it would stop every existing
+            # install from starting. The weights decide the precision here, so the
+            # setting is dropped and said out loud rather than published as fact.
+            logger.warning(
+                "models.%s.quantize=%s ignored: %s",
+                spec.key,
+                override.quantize,
+                spec.quantization.note or "this model's precision comes from its weights",
+            )
     if override.model_path is not None:
         changes["model_path"] = override.model_path
+    if override.prequantized_variant is not None:
+        changes["prequantized_variant"] = override.prequantized_variant
 
     if override.enable_edit is not None and spec.edit is not None:
         changes["edit"] = replace(spec.edit, enabled_by_default=override.enable_edit)
 
     return replace(spec, **changes)
+
+
+PROVENANCE_BUILT_IN = "built_in"
+PROVENANCE_IMPORTED = "imported_local"
+
+
+def imported_spec(model: Any) -> ModelSpec:
+    """Turn one library row into a `ModelSpec`, borrowing a built-in's defaults.
+
+    The imported directory establishes identity, family and location; everything
+    else a `ModelSpec` requires — step counts, guidance, scheduler, capability
+    flags — belongs to the *profile* the user chose, which is why the row records
+    it rather than this function picking one.
+
+    `repo` carries the local path purely because `ModelSpec` requires the field.
+    It is not, and must not be presented as, a HuggingFace repository:
+    `provenance` is what anything behavioural reads.
+    """
+    profile = BASE_SPECS_BY_KEY.get(model.base_profile_key)
+    if profile is None:
+        raise ValueError(
+            f"Imported model {model.display_name!r} was based on the built-in profile "
+            f"{model.base_profile_key!r}, which no longer exists in this version of QDS."
+        )
+    if profile.family != model.family:
+        raise ValueError(
+            f"Imported model {model.display_name!r} is a {model.family!r} model, but its base "
+            f"profile {model.base_profile_key!r} is {profile.family!r}."
+        )
+    return replace(
+        profile,
+        key=model.id,
+        repo=model.path,
+        model_path=model.path,
+        provenance=PROVENANCE_IMPORTED,
+        base_profile_key=model.base_profile_key,
+        display_name=model.display_name,
+        api_name=model.api_name or None,
+        edit=None,  # an edit variant belongs to the built-in's own weights
+        prequantized_variant=None,
+        enabled=True,
+    )
 
 
 def edit_enabled(spec: ModelSpec) -> bool:
@@ -503,26 +733,65 @@ def _model_config(name: str):
 
 
 def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
-    """Fail early and clearly when the pre-quantized artifact is missing.
+    """Fail early and clearly unless the pre-quantized artifact is actually complete.
 
     Without this guard, `PathResolution` would fall back to the bf16 HuggingFace
     repo and start an on-the-fly quantization of ~111 GB, which would fail much
     later and far less legibly.
+
+    `exists()` used to be the whole test, and the converter creates its destination
+    before downloading anything — so a conversion that died in its first minute
+    sailed through here and failed deep inside mflux instead. The check is now the
+    artifact's own completion contract.
     """
-    if model_path and Path(model_path).expanduser().exists():
-        return
+    from mflux_server import availability as av
+
+    if model_path:
+        state, detail = av.flux2_dev_artifact_state(model_path)
+        if state == av.PRESENT:
+            return
+    else:
+        state, detail = av.MISSING, "no model_path configured"
 
     from mflux_server.errors import APIError
 
     raise APIError(
-        f"Model '{spec.key}' requires a pre-quantized artifact, missing from {model_path!r}. "
-        f"Run `mflux-server-prequantize --dest {model_path}` (a one-time download of about "
-        f"113 GB from {spec.repo}, yielding an artifact of about 58 GB), or set "
+        f"Model '{spec.key}' requires a completed pre-quantized artifact at {model_path!r} "
+        f"({state}: {detail}). Run `mflux-server-prequantize --dest {model_path}` (a one-time "
+        f"download of about 113 GB from {spec.repo}, yielding an artifact of about 58 GB), or set "
         f"models.{spec.key}.model_path in server-config.json.",
         status_code=503,
         error_type="server_error",
         param="model",
         code="model_not_prepared",
+    )
+
+
+def _require_variant(spec: ModelSpec) -> None:
+    """Refuse to generate from a saved variant that is not a valid one.
+
+    The check is against the *current* source: selecting a variant and then
+    pointing the model at a different repo must not quietly keep using the old
+    conversion, which is the whole reason identity is recorded in the artifact.
+    """
+    from mflux_server import artifacts
+    from mflux_server import availability as av
+    from mflux_server.errors import APIError
+
+    path = Path(str(spec.effective_model_path)).expanduser()
+    state, detail = artifacts.artifact_state(
+        path, expect_source=spec.source, expect_bits=spec.prequantized_variant
+    )
+    if state == av.PRESENT:
+        return
+    raise APIError(
+        f"Model '{spec.key}' is set to use its {spec.prequantized_variant}-bit saved variant, "
+        f"but that artifact is {state} ({detail}). Convert it again, or clear "
+        f"models.{spec.key}.prequantized_variant to generate from the source.",
+        status_code=503,
+        error_type="server_error",
+        param="model",
+        code="variant_not_prepared",
     )
 
 
@@ -533,7 +802,12 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
     compare against if results ever diverge.
     """
     if kind == "txt2img":
-        family, model_config_name, model_path = spec.family, spec.model_config_name, spec.model_path
+        # `effective_model_path`, not `model_path`: a selected saved variant is
+        # what generation loads, while `model_path` stays the source's identity.
+        family, model_config_name = spec.family, spec.model_config_name
+        model_path = spec.effective_model_path
+        if spec.prequantized_variant is not None:
+            _require_variant(spec)
     elif kind == "edit":
         if spec.edit is None:
             raise ValueError(f"Model '{spec.key}' has no editing variant.")
