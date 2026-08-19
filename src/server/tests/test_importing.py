@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 
-from mflux_server import availability as av
-from mflux_server.importing import (
+from qds import availability as av
+from qds.importing import (
     CLASS_NAME_TO_FAMILY,
     KEY_PREFIX,
     compatible_profiles,
@@ -13,7 +13,7 @@ from mflux_server.importing import (
     new_id,
     normalise_path,
 )
-from mflux_server.registry import BASE_SPECS_BY_KEY, capability_for
+from qds.registry import BASE_SPECS_BY_KEY, capability_for
 
 
 def make_source(root, class_name="ZImageTransformer2DModel", *, components=("transformer", "vae")):

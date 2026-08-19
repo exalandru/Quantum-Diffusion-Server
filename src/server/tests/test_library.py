@@ -6,15 +6,15 @@ import json
 
 import pytest
 
-from mflux_server import importing, library
-from mflux_server.registry import (
+from qds import importing, library
+from qds.registry import (
     BASE_SPECS_BY_KEY,
     PROVENANCE_BUILT_IN,
     PROVENANCE_IMPORTED,
     build_registry,
     capability_for,
 )
-from mflux_server.settings import Settings
+from qds.settings import Settings
 
 
 def row(
@@ -140,7 +140,7 @@ def test_builtins_stay_source_code_owned(tmp_path):
 
 def test_a_repo_shaped_local_path_cannot_pass_for_a_downloadable_model(tmp_path, monkeypatch):
     """The old heuristic looked at the string; provenance looks at the fact."""
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     # A directory whose name looks exactly like `org/model`.
     tricky = tmp_path / "mlx-community"
@@ -150,7 +150,7 @@ def test_a_repo_shaped_local_path_cannot_pass_for_a_downloadable_model(tmp_path,
 
     config = tmp_path / "server-config.json"
     config.write_text("{}", encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     rows = {r["key"]: r for r in cache_status()}
@@ -181,7 +181,7 @@ def test_a_forgotten_imported_default_is_refused_with_a_reason(tmp_path, monkeyp
 
 
 def test_the_imported_source_is_what_slice6_identifies_variants_by(tmp_path):
-    from mflux_server import artifacts
+    from qds import artifacts
 
     spec = build_registry({}, imported=[row(tmp_path)], include_disabled=True)["local-aaa"]
     expected = artifacts.artifact_dir(spec.key, spec.source, 4)

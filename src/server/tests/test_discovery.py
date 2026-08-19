@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 
-from mflux_server import availability as av
-from mflux_server.fetch import cache_status
-from mflux_server.settings import Settings
+from qds import availability as av
+from qds.fetch import cache_status
+from qds.settings import Settings
 
 
 def hub_repo(root, org: str, name: str, *, incomplete: bool = False) -> None:
@@ -32,7 +32,7 @@ def hub_repo(root, org: str, name: str, *, incomplete: bool = False) -> None:
 def configure(tmp_path, monkeypatch, root) -> None:
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps({"storage": {"hf_home": str(root)}, "models": {}}))
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
 
 
 def status_of(key: str) -> dict:

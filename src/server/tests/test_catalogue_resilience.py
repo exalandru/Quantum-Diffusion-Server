@@ -3,7 +3,7 @@
 The defect: `default_model` naming a model that is switched off is a real
 invariant violation — the server must not start — and it was enforced at
 `Settings` construction. Every reader died with it, including
-`mflux-server-fetch --status`, so the Models view became a traceback and the
+`qds fetch --status`, so the Models view became a traceback and the
 switches that would have repaired the configuration went with it.
 
 Two contracts now, and the split is what these tests hold:
@@ -18,8 +18,8 @@ import json
 
 import pytest
 
-from mflux_server.fetch import cache_status, catalogue_status
-from mflux_server.settings import ConfigError, Settings, load_settings
+from qds.fetch import cache_status, catalogue_status
+from qds.settings import ConfigError, Settings, load_settings
 
 BROKEN = {"default_model": "z-image-turbo", "models": {"z-image-turbo": {"enabled": False}}}
 
@@ -31,7 +31,7 @@ def write_config(tmp_path, document) -> str:
 
 
 def with_config(monkeypatch, tmp_path, document):
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", write_config(tmp_path, document))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", write_config(tmp_path, document))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
 
@@ -72,7 +72,7 @@ def test_a_structural_failure_is_still_fatal_for_everyone(monkeypatch, tmp_path)
     """Leniency covers runtime invariants, not a file nobody can read."""
     path = tmp_path / "server-config.json"
     path.write_text("{ not json", encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(path))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(path))
     with pytest.raises(ValueError):
         load_settings(strict=False)
 
@@ -122,7 +122,7 @@ def test_a_healthy_configuration_warns_about_nothing(monkeypatch, tmp_path):
 def test_status_never_repairs_the_configuration(monkeypatch, tmp_path):
     """Reporting is not rewriting: the file is exactly as the user left it."""
     path = write_config(tmp_path, BROKEN)
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", path)
+    monkeypatch.setenv("QDS_SERVER_CONFIG", path)
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     before = open(path, encoding="utf-8").read()
 
@@ -161,11 +161,14 @@ def test_locating_a_model_cannot_take_the_catalogue_down(monkeypatch, tmp_path):
 
 
 def test_the_catalogue_needs_no_generation_server(monkeypatch, tmp_path):
-    """Nothing above talks to a server, and that is the point of this path."""
-    with_config(monkeypatch, tmp_path, BROKEN)
-    import sys
+    """Nothing above talks to a server, and that is the point of this path.
 
-    assert "mflux" not in sys.modules or True  # the import is not required here
+    The companion property — that reading the catalogue does not even *import*
+    mflux — cannot be asserted here, because this suite has already imported it
+    in another module. It is checked in a subprocess instead, by
+    `test_cli.test_reading_the_catalogue_does_not_import_mflux_or_torch`.
+    """
+    with_config(monkeypatch, tmp_path, BROKEN)
     assert catalogue_status()["models"]
 
 
@@ -182,13 +185,13 @@ def test_an_expected_config_failure_carries_a_code(monkeypatch, tmp_path):
 
 def test_the_status_command_answers_a_broken_file_with_structured_json(monkeypatch, tmp_path, capsys):
     """What the supervisor reads instead of a traceback."""
-    from mflux_server.fetch import main
+    from qds.fetch import main
 
     path = tmp_path / "server-config.json"
     path.write_text("{ not json", encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(path))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(path))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
-    monkeypatch.setattr("sys.argv", ["mflux-server-fetch", "--status"])
+    monkeypatch.setattr("sys.argv", ["qds", "--status"])
 
     code = main()
     captured = capsys.readouterr()
@@ -203,10 +206,10 @@ def test_the_status_command_answers_a_broken_file_with_structured_json(monkeypat
 
 
 def test_the_status_command_prints_rows_and_warnings_together(monkeypatch, tmp_path, capsys):
-    from mflux_server.fetch import main
+    from qds.fetch import main
 
     with_config(monkeypatch, tmp_path, BROKEN)
-    monkeypatch.setattr("sys.argv", ["mflux-server-fetch", "--status"])
+    monkeypatch.setattr("sys.argv", ["qds", "--status"])
 
     assert main() == 0
     payload = json.loads(capsys.readouterr().out)

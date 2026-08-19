@@ -5,6 +5,11 @@ the Python package, from before this was an application. It is gone: the default
 is the app's own data directory, derived rather than written down, and a setting
 can point it anywhere.
 
+The guards below are written against the *shape* that was wrong (a dot-cache
+directory named after whatever the package is currently called) rather than
+against the literal string `mflux-server`. Spelling the old name would make them
+unfalsifiable now that the package is `qds`, which is the same as deleting them.
+
 Two directories, two independent settings: `storage.hf_home` holds weights that
 can be downloaded again, `storage.cache_dir` holds conversions that cannot.
 """
@@ -13,9 +18,9 @@ from __future__ import annotations
 
 import json
 
-from mflux_server import artifacts
-from mflux_server.fetch import catalogue_status
-from mflux_server.settings import Settings, load_settings
+from qds import artifacts
+from qds.fetch import catalogue_status
+from qds.settings import Settings, load_settings
 
 from .test_artifacts import write_component
 
@@ -42,7 +47,7 @@ def complete_artifact(cache_root, *, key="z-image", source="mlx-community/Z-Imag
 
 def test_the_default_is_the_applications_own_data_directory(monkeypatch):
     """Derived from the bundle identifier and this user's home, not a constant."""
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
     from pathlib import Path
 
     root = artifacts.default_cache_root()
@@ -54,39 +59,43 @@ def test_the_default_is_the_applications_own_data_directory(monkeypatch):
 def test_the_packaged_app_gets_its_own_data_directory(monkeypatch, tmp_path):
     """What the desktop app actually hands its children.
 
-    Every child process is launched with `MFLUX_SERVER_CONFIG` pointing at a file
+    Every child process is launched with `QDS_SERVER_CONFIG` pointing at a file
     *inside* the application's data directory, whatever `app_data_dir()` resolved
     to. Deriving from it means the app and its children cannot disagree, and a
     development checkout pointed at its own config gets its own cache.
     """
     data = tmp_path / "Application Support" / "com.exalandru.qds"
     data.mkdir(parents=True)
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(data / "server-config.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(data / "server-config.json"))
 
     assert artifacts.default_cache_root() == data / "cache"
 
 
-def test_nothing_resolves_into_the_retired_development_cache(monkeypatch, tmp_path):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    assert "mflux-server" not in str(artifacts.default_cache_root())
-    assert "mflux-server" not in str(artifacts.artifacts_root())
+def test_nothing_resolves_into_a_dot_cache_directory(monkeypatch, tmp_path):
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    assert ".cache" not in str(artifacts.default_cache_root())
+    assert ".cache" not in str(artifacts.artifacts_root())
 
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "server-config.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "server-config.json"))
     settings = load_settings(strict=False)
-    assert "mflux-server" not in settings.effective_cache_dir
+    assert ".cache" not in settings.effective_cache_dir
     spec = settings.registry(include_disabled=True)["z-image"]
-    assert spec.cache_root and "mflux-server" not in spec.cache_root
+    assert spec.cache_root and ".cache" not in spec.cache_root
 
 
-def test_the_source_tree_names_the_retired_path_nowhere():
+def test_the_source_tree_names_no_dot_cache_default():
     """A grep, because a default that comes back is a default nobody notices."""
     import pathlib
+    import re
 
-    root = pathlib.Path(__file__).resolve().parents[1] / "mflux_server"
+    # Both spellings: the retired one, and the one the rename to `qds` made
+    # available. `~/.cache/huggingface` is not ours and is deliberately allowed.
+    pattern = re.compile(r"\.cache/(?!huggingface)")
+    root = pathlib.Path(__file__).resolve().parents[1] / "qds"
     offenders = [
         str(path)
         for path in root.rglob("*.py")
-        if ".cache/mflux-server" in path.read_text(encoding="utf-8")
+        if pattern.search(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
 
@@ -106,7 +115,7 @@ def test_the_setting_persists_through_the_configuration_file(monkeypatch, tmp_pa
     config = tmp_path / "server-config.json"
     chosen = tmp_path / "on-an-external-disk"
     config.write_text(json.dumps({"storage": {"cache_dir": str(chosen)}}), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
 
     assert load_settings(strict=False).effective_cache_dir == str(chosen)
 
@@ -146,7 +155,7 @@ def test_discovery_follows_the_configured_directory(monkeypatch, tmp_path):
     complete_artifact(cache)
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps({"storage": {"cache_dir": str(cache)}}), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     row = {entry["key"]: entry for entry in catalogue_status()["models"]}["z-image"]
@@ -164,7 +173,7 @@ def test_changing_the_directory_moves_nothing(monkeypatch, tmp_path):
     config.write_text(
         json.dumps({"storage": {"cache_dir": str(tmp_path / "new-cache")}}), encoding="utf-8"
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     row = {entry["key"]: entry for entry in catalogue_status()["models"]}["z-image"]
@@ -177,16 +186,16 @@ def test_changing_the_directory_moves_nothing(monkeypatch, tmp_path):
 
 
 def test_a_conversion_writes_into_the_configured_directory(monkeypatch, tmp_path):
-    from mflux_server.prequantize import convert
+    from qds.prequantize import convert
 
     from .test_artifacts import _Args, component_writer
 
     cache = tmp_path / "cache"
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps({"storage": {"cache_dir": str(cache)}}), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer([]))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer([]))
 
     assert convert(_Args("z-image", 4)) == 0
 
@@ -207,7 +216,7 @@ def test_an_unmounted_cache_volume_is_reported_rather_than_read_as_empty(monkeyp
     config.write_text(
         json.dumps({"storage": {"cache_dir": "/Volumes/NotMounted/qds-cache"}}), encoding="utf-8"
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     payload = catalogue_status()
@@ -225,14 +234,14 @@ def test_a_directory_that_does_not_exist_yet_is_not_a_problem(monkeypatch, tmp_p
     config.write_text(
         json.dumps({"storage": {"cache_dir": str(tmp_path / "not-created-yet")}}), encoding="utf-8"
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     assert catalogue_status()["warnings"] == []
 
 
 def test_the_default_directory_is_never_warned_about(monkeypatch, tmp_path):
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "server-config.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "server-config.json"))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
     assert catalogue_status()["warnings"] == []
 
@@ -242,14 +251,14 @@ def test_the_default_directory_is_never_warned_about(monkeypatch, tmp_path):
 # The release blocker these exist for: every test above proved that the
 # *setting* resolved correctly, and none of them proved where a conversion
 # actually writes. It wrote to the derived default, because the child process
-# was spawned without `MFLUX_SERVER_CONFIG` and never saw the setting at all.
+# was spawned without `QDS_SERVER_CONFIG` and never saw the setting at all.
 # So these drive `convert()` — the real entry point, with only the weight maths
 # stubbed — and assert on the directory that receives the bytes.
 
 
 def run_conversion(monkeypatch, tmp_path, *, cache_dir=None, components=("vae",), bits=4):
     """One real `convert()`, with the heavy component work stubbed out."""
-    from mflux_server.prequantize import convert
+    from qds.prequantize import convert
 
     from .test_artifacts import _Args, component_writer
 
@@ -258,12 +267,12 @@ def run_conversion(monkeypatch, tmp_path, *, cache_dir=None, components=("vae",)
         document["storage"] = {"cache_dir": str(cache_dir)}
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps(document), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
 
     seen: list[str] = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(seen))
     code = convert(_Args("z-image", bits, components=list(components)))
     return code, seen
 
@@ -318,7 +327,7 @@ def test_partial_progress_is_recorded_under_the_configured_cache(monkeypatch, tm
 
 
 def test_a_completed_artifact_lands_entirely_under_the_configured_cache(monkeypatch, tmp_path):
-    from mflux_server import availability as av
+    from qds import availability as av
 
     custom = tmp_path / "custom-cache"
     code, _ = run_conversion(
@@ -361,7 +370,7 @@ def test_an_unreachable_configured_cache_refuses_instead_of_falling_back(monkeyp
     """Silently writing tens of gigabytes elsewhere is the worst answer here."""
     import pytest
 
-    from mflux_server.prequantize import UnavailableCache
+    from qds.prequantize import UnavailableCache
 
     with pytest.raises(UnavailableCache) as raised:
         run_conversion(monkeypatch, tmp_path, cache_dir="/Volumes/NotMounted/qds-cache")
@@ -375,7 +384,7 @@ def test_an_unreachable_configured_cache_refuses_instead_of_falling_back(monkeyp
 def test_the_refusal_happens_before_any_component_is_touched(monkeypatch, tmp_path):
     import pytest
 
-    from mflux_server.prequantize import UnavailableCache, convert
+    from qds.prequantize import UnavailableCache, convert
 
     from .test_artifacts import _Args
 
@@ -383,10 +392,10 @@ def test_the_refusal_happens_before_any_component_is_touched(monkeypatch, tmp_pa
     config.write_text(
         json.dumps({"storage": {"cache_dir": "/Volumes/NotMounted/qds-cache"}}), encoding="utf-8"
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
+        "qds.prequantize.convert_component",
         lambda *a, **k: pytest.fail("no component may be converted after the check fails"),
     )
 

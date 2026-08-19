@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from mflux_server.errors import APIError
-from mflux_server.registry import (
+from qds.errors import APIError
+from qds.registry import (
     BASE_SPECS_BY_KEY,
     build_registry,
     edit_enabled,
@@ -14,7 +14,7 @@ from mflux_server.registry import (
     normalize_dimension,
     parse_size,
 )
-from mflux_server.settings import ModelOverride, Settings, load_settings
+from qds.settings import ModelOverride, Settings, load_settings
 
 
 def test_the_catalogue_exposes_ten_models():
@@ -306,10 +306,36 @@ def test_default_model_cannot_be_disabled():
     assert codes({"default_model": "z-image", "models": {"flux2-dev": {"enabled": False}}}) == []
 
 
-def test_non_local_binding_requires_an_api_key():
-    assert codes({"server": {"host": "0.0.0.0"}}) == ["unauthenticated_host"]
-    assert "api_key" in Settings.model_validate({"server": {"host": "0.0.0.0"}}).runtime_issues()[0].message
+def test_non_local_binding_requires_both_credentials(tmp_path, monkeypatch):
+    """Two credentials, because there are two planes.
 
+    This assertion gained a second code deliberately: an API key protects `/v1`,
+    and it no longer opens `/admin` at all — so a server reachable from the
+    network needs an admin password as well, or its control plane would be open
+    to everyone who can reach the port.
+
+    Kept as an exact list rather than relaxed to a membership check: the point of
+    comparing the whole thing is to notice a *third* issue appearing by accident.
+    """
+    from qds import credential
+
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "server-config.json"))
+
+    assert codes({"server": {"host": "0.0.0.0"}}) == [
+        "unauthenticated_admin",
+        "unauthenticated_host",
+    ]
+    messages = " ".join(
+        issue.message
+        for issue in Settings.model_validate({"server": {"host": "0.0.0.0"}}).runtime_issues()
+    )
+    assert "api_key" in messages
+    assert "admin password" in messages
+
+    # An API key alone is no longer enough.
+    assert codes({"server": {"host": "0.0.0.0", "api_key": "secret"}}) == ["unauthenticated_admin"]
+
+    credential.set_password("correct horse battery")
     settings = Settings.model_validate({"server": {"host": "0.0.0.0", "api_key": "secret"}})
     assert settings.server.is_loopback is False
     assert settings.runtime_issues() == []

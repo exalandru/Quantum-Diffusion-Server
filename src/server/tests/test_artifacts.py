@@ -12,15 +12,15 @@ import pathlib
 
 import pytest
 
-from mflux_server import artifacts, components
-from mflux_server import availability as av
-from mflux_server.prequantize import convert
-from mflux_server.registry import (
+from qds import artifacts, components
+from qds import availability as av
+from qds.prequantize import convert
+from qds.registry import (
     BASE_SPECS_BY_KEY,
     STRATEGY_MFLUX_SAVE,
     STRATEGY_QDS_MEMORY_BOUNDED,
 )
-from mflux_server.settings import Settings
+from qds.settings import Settings
 
 
 def write_component(root, name, *, bits="8"):
@@ -97,16 +97,16 @@ def component_writer(seen, *, stored_bits=None, tokenizer=True):
 
 
 def test_an_unsupported_model_cannot_start_a_conversion(monkeypatch):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
     with pytest.raises(ValueError) as raised:
         convert(_Args("ideogram-4", 8))
     assert "cannot be pre-quantized" in str(raised.value)
 
 
 def test_an_unpublished_bit_depth_is_refused_before_any_work(monkeypatch, tmp_path):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
     called = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(called))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(called))
     with pytest.raises(ValueError) as raised:
         convert(_Args("z-image", 7, dest=tmp_path / "out"))
     assert "not available" in str(raised.value)
@@ -114,9 +114,9 @@ def test_an_unpublished_bit_depth_is_refused_before_any_work(monkeypatch, tmp_pa
 
 
 def test_a_component_this_model_does_not_have_is_named_rather_than_ignored(monkeypatch, tmp_path):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
     called = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(called))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(called))
     with pytest.raises(ValueError) as raised:
         convert(_Args("z-image", 4, dest=tmp_path / "out", components=["unet"]))
     assert "unet" in str(raised.value)
@@ -129,10 +129,10 @@ def test_a_generic_model_converts_component_by_component(monkeypatch, tmp_path):
     z-image used to be loaded whole and written with `save_model`. It now goes
     through the same one-component-at-a-time path, and records that it did.
     """
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     seen: list[str] = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(seen))
 
     assert convert(_Args("z-image", 4, dest=tmp_path / "out")) == 0
     # Every required component, one call each, largest first.
@@ -143,10 +143,10 @@ def test_a_generic_model_converts_component_by_component(monkeypatch, tmp_path):
 
 
 def test_flux2_dev_still_converts_component_by_component(monkeypatch, tmp_path):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     seen: list[str] = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(seen))
 
     assert convert(_Args("flux2-dev", 8, dest=tmp_path / "out")) == 0
     assert set(seen) == set(av.REQUIRED_COMPONENTS)
@@ -155,10 +155,10 @@ def test_flux2_dev_still_converts_component_by_component(monkeypatch, tmp_path):
 
 def test_capability_choices_and_the_accepted_choices_cannot_drift(monkeypatch, tmp_path):
     """Anything the capability publishes must be accepted, and nothing else."""
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
+        "qds.prequantize.convert_component",
         component_writer([], tokenizer=False),
     )
     spec = BASE_SPECS_BY_KEY["z-image"]
@@ -223,10 +223,10 @@ def test_partial_output_never_becomes_valid(tmp_path):
 
 def test_the_marker_is_only_written_after_validation(monkeypatch, tmp_path):
     """A conversion that writes nothing usable must not be recorded as done."""
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
+        "qds.prequantize.convert_component",
         lambda name, *, spec, repo, dest, bits: 0,  # returns, writes nothing
     )
 
@@ -238,11 +238,11 @@ def test_the_marker_is_only_written_after_validation(monkeypatch, tmp_path):
 
 
 def test_stored_bits_must_equal_the_requested_bits(monkeypatch, tmp_path):
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     # Asked for 4, the weights say 8: never record the request as truth.
     monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
+        "qds.prequantize.convert_component",
         component_writer([], stored_bits=8),
     )
     dest = tmp_path / "out"
@@ -302,8 +302,8 @@ def test_clearing_the_variant_restores_the_source_representation():
 
 def test_a_missing_active_variant_is_an_explicit_error_not_a_fallback():
     """Silently generating from the source would be the dangerous outcome."""
-    from mflux_server.errors import APIError
-    from mflux_server.registry import _require_variant
+    from qds.errors import APIError
+    from qds.registry import _require_variant
 
     settings = Settings.model_validate({"models": {"z-image": {"prequantized_variant": 5}}})
     spec = settings.registry(include_disabled=True)["z-image"]
@@ -315,9 +315,9 @@ def test_a_missing_active_variant_is_an_explicit_error_not_a_fallback():
 
 
 def test_react_owns_no_prequantization_bit_depth_truth():
-    src = pathlib.Path(__file__).resolve().parents[2] / "desktop" / "src"
+    src = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "src"
     if not src.is_dir():  # pragma: no cover
-        pytest.skip("desktop sources not present")
+        pytest.skip("dashboard sources not present")
     offenders = [
         str(path)
         for path in src.rglob("*.tsx")

@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pytest
 
-from mflux_server import availability as av
-from mflux_server.settings import DEFAULT_HF_HOME, Settings, load_settings
+from qds import availability as av
+from qds.settings import DEFAULT_HF_HOME, Settings, load_settings
 
 
 def settings_with(tmp_path, storage=None, **extra):
@@ -22,7 +22,7 @@ def settings_with(tmp_path, storage=None, **extra):
     if storage is not None:
         payload["storage"] = storage
     config.write_text(json.dumps(payload), encoding="utf-8")
-    os.environ["MFLUX_SERVER_CONFIG"] = str(config)
+    os.environ["QDS_SERVER_CONFIG"] = str(config)
     return config
 
 
@@ -81,7 +81,7 @@ def test_applying_it_publishes_one_root_for_every_child(monkeypatch, tmp_path):
     settings = load_settings()
     applied = settings.apply_hf_home()
 
-    from mflux_server.fetch import _cache_dir
+    from qds.fetch import _cache_dir
 
     assert applied == str(chosen)
     assert os.environ["HF_HOME"] == str(chosen)
@@ -96,7 +96,7 @@ def test_a_stale_inherited_hub_cache_cannot_win_over_the_configured_root(monkeyp
     monkeypatch.setenv("HF_HUB_CACHE", "/stale/hub")
 
     load_settings().apply_hf_home()
-    from mflux_server.fetch import _cache_dir
+    from qds.fetch import _cache_dir
 
     assert _cache_dir() == str(chosen / "hub")
 
@@ -113,7 +113,7 @@ def test_changing_the_root_does_not_touch_the_old_one(monkeypatch, tmp_path):
     settings = load_settings()
     settings.apply_hf_home()
 
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     cache_status()
 
@@ -131,7 +131,7 @@ def test_a_configured_path_on_a_mounted_volume_behaves_normally(monkeypatch, tmp
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     load_settings().apply_hf_home()
 
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     rows = {row["key"]: row for row in cache_status()}
     remote = [row for row in rows.values() if not row["local"]]
@@ -147,7 +147,7 @@ def test_an_unmounted_configured_volume_reports_volume_unmounted(monkeypatch, tm
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     load_settings().apply_hf_home()
 
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     rows = {row["key"]: row for row in cache_status()}
     remote = [row for row in rows.values() if not row["local"]]
@@ -162,7 +162,7 @@ def test_reconnecting_restores_the_previous_state_with_no_rewrite(monkeypatch, t
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     load_settings().apply_hf_home()
 
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     # Absent, but not under /Volumes: a plain fresh root, so models read `missing`.
     missing_first = {row["key"]: row["availability"] for row in cache_status()}
@@ -181,7 +181,7 @@ def test_an_unreadable_configured_root_is_not_reported_as_missing(monkeypatch, t
     monkeypatch.delenv("HF_HUB_CACHE", raising=False)
     load_settings().apply_hf_home()
 
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     try:
         rows = {row["key"]: row for row in cache_status()}

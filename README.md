@@ -15,11 +15,12 @@ Open WebUI, the `openai` SDK, your own script) can be pointed at
 `http://127.0.0.1:8765/v1` and keep working. No account, no per-image cost, no
 prompt or image leaving the machine.
 
-The double-clickable app is the part you interact with. It installs its own
-Python environment on first launch, downloads model weights on demand, starts
-and supervises the server, shows generation progress live, and exposes every
-setting as a form. Nothing to install beforehand, no terminal required, no
-global Python or Homebrew involvement.
+A small **menubar app** installs the server on first launch and starts and
+stops it; everything you interact with is a **web dashboard the server serves
+itself**, at `http://127.0.0.1:8765/dashboard`. Nothing to install beforehand,
+no terminal required, no global Python or Homebrew involvement — and because
+the interface belongs to the server rather than to the app, a headless Mac gets
+exactly the same one.
 
 What makes it different from calling a command-line tool per image: **the model
 stays loaded in memory between requests**. A generation that costs 34s as a
@@ -28,7 +29,7 @@ that resident model also confiscates unified memory, an idle timer can hand it
 back automatically when you stop generating - a knob rather than a compromise.
 
 **Requirements:** an Apple Silicon Mac (M1 or later) on macOS 14 or newer. Count
-roughly 1.1 GB for the Python environment plus whatever the models weigh -
+roughly 1.1 GB for the Python runtime plus whatever the models weigh -
 several GB each, tens of GB for the largest, all shown per model in the app
 before you download anything. Memory is the real constraint rather than disk:
 the two models enabled by default are small and quantized to 4 bits, while the
@@ -56,7 +57,7 @@ holds ~58 GB resident while it generates.
   bounded, and saved variants can be activated independently of the source model.
 - **Gives the memory back** - `idle_unload_s` releases the model after a chosen
   period of inactivity, so a chat model or a build can have the RAM when you are
-  not generating. Or press *Free memory* in the app.
+  not generating. Or press *Free memory*, from the dashboard or the menu bar.
 - **Live progress, and a stop button** - step-by-step progress over
   Server-Sent Events, surfaced in the dashboard with elapsed time and a cancel
   that leaves the server usable.
@@ -67,7 +68,7 @@ holds ~58 GB resident while it generates.
 - **Editing and img2img** - instruction editing on the models that have an edit
   variant, image-to-image on the others, over the standard edits endpoint.
 - **Readable logs** - structured events and raw output side by side, filterable
-  by level, in the app's Logs tab.
+  by level, in the dashboard's Logs tab.
 - **Local by default** - binds to `127.0.0.1`; opening it to the network
   requires setting an API key, which the server enforces rather than suggests.
 
@@ -77,24 +78,28 @@ holds ~58 GB resident while it generates.
 There is no signed release: build the app once, from a clone.
 
 ```sh
-make install         # dependencies (needs Node, Rust and uv on the PATH)
-make build-desktop   # → dist/desktop/QDS.app and QDS.dmg
+make install     # dependencies (needs Node, Swift and uv on the PATH)
+make build-app   # → dist/app/QDS.app
 ```
 
 The bundle is ad-hoc signed and not notarized, so after moving it between
 machines macOS may need convincing: `xattr -d com.apple.quarantine "QDS.app"`
 (the quotes matter, the name contains spaces).
 
-Then, in the app:
+QDS lives in the menu bar: it has no window and no Dock icon. The interface is
+a **web dashboard the server itself serves**, at
+`http://127.0.0.1:8765/dashboard` — *Open Dashboard* in the menu opens it.
 
-1. **First launch** installs the Python environment - around 1.1 GB of
-   download, shown live. It happens once.
+Then:
+
+1. **First launch** installs the server from the wheel the app carries. Only
+   the Python runtime is downloaded, once.
 2. **Models tab** - pick a model and press *Install* to fetch its weights.
    `z-image-turbo` and `ernie-image-turbo` are enabled out of the box: both are
    Apache-2.0 and ungated, so a fresh install generates with no HuggingFace
    token, no access request and no licence to accept.
-3. **Dashboard** - *Start*. The server answers within a second; the first
-   generation is what actually loads the weights.
+3. The server answers within a second; the first generation is what actually
+   loads the weights.
 4. Point your client at `http://127.0.0.1:8765/v1`. Any API key value works
    unless you set one in the Configuration tab.
 
@@ -113,8 +118,8 @@ print(result.data[0].url)
 ```
 
 Prefer the command line, or running on a headless Mac? The server works on its
-own: `make dev-server`, or the `mflux-server` console script from the wheel. The
-app is a control panel over it, not a wrapper around it.
+own: `make dev-server`, or the `qds` console script from the wheel (`qds serve`).
+The app is a control panel over it, not a wrapper around it.
 
 
 ## Models
@@ -194,7 +199,7 @@ make install
 make test
 make lint
 make dev-server
-make dev-desktop
+make dev-dashboard
 make build
 make clean
 ```
@@ -204,20 +209,32 @@ Run `make help` for the complete list.
 
 ### Repository layout
 
-This repository contains two applications:
+Three pieces, each owning one thing:
 
 - [`src/server`](src/server/README.md): the Python API server exposing mflux
-  through an OpenAI Images-compatible API.
-- [`src/desktop`](src/desktop/README.md): the Tauri and React macOS control
-  panel.
-
+  through an OpenAI Images-compatible API. It also owns the control plane
+  (`/admin`) and serves the dashboard.
+- `src/dashboard`: the React interface, built into the Python package and
+  served at `/dashboard`. It is a pure HTTP client — same origin, no privileges
+  of its own.
+- `src/menubar`: the Swift menubar app. It does the two things a web page
+  cannot: install the server, and start and stop it.
 
 ```text
 src/
-├── server/       Python package, tests and configuration
-└── desktop/      React frontend and Tauri application
-build/            disposable compiler output and bundle staging
-dist/             distributable wheels, source archives, .app and .dmg files
+├── server/       Python package, tests, and the built dashboard it ships
+├── dashboard/    React sources for that interface
+└── menubar/      Swift menubar app (SwiftPM)
+dist/             the wheel, the source archive, and QDS.app
 ```
 
-Both `build/` and `dist/` are generated and ignored by Git.
+`dist/` is generated and ignored by Git.
+
+The menubar app starts the server and gets out of the way; the server owns its
+own configuration, its jobs and its interface. That split is why the same
+dashboard works on a headless Mac with no app at all:
+
+```sh
+uv tool install ./dist/server/qds-2.0.0-py3-none-any.whl
+qds serve      # then open http://127.0.0.1:8765/dashboard
+```

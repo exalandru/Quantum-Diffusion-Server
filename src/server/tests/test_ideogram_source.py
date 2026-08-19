@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import json
 
-from mflux_server import importing
-from mflux_server.registry import BASE_SPECS_BY_KEY, capability_for
-from mflux_server.settings import Settings
+from qds import importing
+from qds.registry import BASE_SPECS_BY_KEY, capability_for
+from qds.settings import Settings
 
 CLASS_NAME = "Ideogram4Transformer2DModel"
 
@@ -105,21 +105,21 @@ def test_recognising_the_family_grants_it_no_quantization():
 
 def test_the_catalogue_entry_publishes_no_component_list():
     """Fails closed on conversion while being perfectly locatable."""
-    from mflux_server import components
+    from qds import components
 
     assert components.is_supported("ideogram4") is False
     assert components.payload("ideogram4") == []
 
 
 def test_a_located_ideogram_reports_fixed_precision_and_no_conversion(monkeypatch, tmp_path):
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     path = source_dir(tmp_path)
     config = tmp_path / "server-config.json"
     config.write_text(
         json.dumps({"models": {"ideogram-4": {"model_path": str(path)}}}), encoding="utf-8"
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     row = {entry["key"]: entry for entry in cache_status()}["ideogram-4"]

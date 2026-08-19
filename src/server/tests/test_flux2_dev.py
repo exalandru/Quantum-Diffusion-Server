@@ -11,7 +11,7 @@ from __future__ import annotations
 import mlx.core as mx
 import pytest
 
-from mflux_server.flux2_dev import (
+from qds.flux2_dev import (
     TEXT_ENCODER_OUT_LAYERS,
     TEXT_ENCODER_OVERRIDES,
     TRANSFORMER_OVERRIDES,
@@ -21,7 +21,7 @@ from mflux_server.flux2_dev import (
     flux2_dev_model_config,
     single_component_definition,
 )
-from mflux_server.flux2_dev.weights import TEXT_ENCODER_PREFIX
+from qds.flux2_dev.weights import TEXT_ENCODER_PREFIX
 
 # ── Config ─────────────────────────────────────────────────────────────────
 
@@ -223,7 +223,7 @@ def test_guidance_must_be_premultiplied_by_a_thousand():
 
 
 def test_flux2_dev_premultiplies_guidance():
-    from mflux_server.flux2_dev.config import flux2_dev_model_config
+    from qds.flux2_dev.config import flux2_dev_model_config
 
     config = flux2_dev_model_config()
     # `Flux2Dev._guidance_embed` reproduces `config.guidance *
@@ -280,7 +280,7 @@ def test_tokenizer_strips_the_image_token():
 
 
 def test_system_message_matches_diffusers():
-    from mflux_server.flux2_dev import SYSTEM_MESSAGE
+    from qds.flux2_dev import SYSTEM_MESSAGE
 
     # The line break is in the upstream source and changes tokenization.
     assert SYSTEM_MESSAGE.startswith("You are an AI that reasons about image descriptions.")

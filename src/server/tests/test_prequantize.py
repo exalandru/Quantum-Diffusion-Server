@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import pytest
 
-from mflux_server import artifacts
-from mflux_server import availability as av
-from mflux_server.prequantize import (
+from qds import artifacts
+from qds import availability as av
+from qds.prequantize import (
     COMPONENT_ORDER,
     DISK_MARGIN_GB,
     InsufficientDisk,
@@ -54,11 +54,11 @@ class _Args:
 
 def test_the_disk_check_refuses_before_anything_heavy_starts(tmp_path, monkeypatch):
     """The point of a preflight: fail now, not two hours and 60 GB in."""
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 1.0)
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 1.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
     called = []
     monkeypatch.setattr(
-        "mflux_server.prequantize.convert_component",
+        "qds.prequantize.convert_component",
         lambda *a, **k: called.append(a),
     )
 
@@ -74,8 +74,8 @@ def test_the_disk_check_refuses_before_anything_heavy_starts(tmp_path, monkeypat
 
 
 def test_a_finished_conversion_writes_the_marker_last(tmp_path, monkeypatch):
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
 
     dest = tmp_path / "artifact"
 
@@ -92,7 +92,7 @@ def test_a_finished_conversion_writes_the_marker_last(tmp_path, monkeypatch):
         (dest / "tokenizer" / "tokenizer_config.json").write_text("{}", encoding="utf-8")
         return 6
 
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", fake_convert)
+    monkeypatch.setattr("qds.prequantize.convert_component", fake_convert)
 
     assert convert(_Args(dest, COMPONENT_ORDER)) == 0
     assert (dest / av.COMPLETION_MARKER).is_file()
@@ -107,8 +107,8 @@ def test_a_finished_conversion_writes_the_marker_last(tmp_path, monkeypatch):
 
 def test_a_partial_conversion_leaves_no_marker_and_is_not_present(tmp_path, monkeypatch):
     """Cancelled or failed output is preserved, but must never read as ready."""
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
 
     dest = tmp_path / "artifact"
 
@@ -125,7 +125,7 @@ def test_a_partial_conversion_leaves_no_marker_and_is_not_present(tmp_path, monk
         (dest / "tokenizer" / "tokenizer_config.json").write_text("{}", encoding="utf-8")
         return 6
 
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", fake_convert)
+    monkeypatch.setattr("qds.prequantize.convert_component", fake_convert)
 
     # Only one component requested: a real artifact needs all three. Converting
     # a subset is a legitimate way to work through a model in stages, so the run

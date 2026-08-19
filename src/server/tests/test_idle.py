@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 
-from mflux_server.idle import IdleUnloader
+from qds.idle import IdleUnloader
 from tests.conftest import wait_until
 
 
@@ -139,13 +139,13 @@ def test_a_real_engine_loads_once_for_a_multi_image_request(monkeypatch, tmp_pat
     image — a delay of 0 would release between the two images of an `n=2` request
     and reload for the second. Here it must load once and release once.
     """
-    from fastapi.testclient import TestClient
-
-    from mflux_server import engine as engine_module
-    from mflux_server.app import create_app
-    from mflux_server.engine import ModelEngine
-    from mflux_server.settings import Settings
+    from qds import engine as engine_module
+    from qds.app import create_app
+    from qds.engine import ModelEngine
+    from qds.settings import Settings
     from tests.test_engine import FakeModel
+
+    from .conftest import make_client
 
     loads: list[str] = []
 
@@ -165,7 +165,7 @@ def test_a_real_engine_loads_once_for_a_multi_image_request(monkeypatch, tmp_pat
         }
     )
     engine = ModelEngine(progress_log_every=0)
-    with TestClient(create_app(settings, engine)) as client:
+    with make_client(create_app(settings, engine)) as client:
         response = client.post(
             "/v1/images/generations",
             json={"prompt": "un renard", "n": 2, "model": "z-image-turbo"},

@@ -13,7 +13,7 @@ import os
 
 import pytest
 
-from mflux_server import availability as av
+from qds import availability as av
 
 # ── Building synthetic caches ──────────────────────────────────────────────
 

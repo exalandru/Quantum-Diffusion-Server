@@ -16,11 +16,11 @@ import json
 
 import pytest
 
-from mflux_server import artifacts, importing
-from mflux_server import availability as av
-from mflux_server.fetch import cache_status
-from mflux_server.registry import BASE_SPECS_BY_KEY, STRATEGY_QDS_MEMORY_BOUNDED
-from mflux_server.settings import Settings
+from qds import artifacts, importing
+from qds import availability as av
+from qds.fetch import cache_status
+from qds.registry import BASE_SPECS_BY_KEY, STRATEGY_QDS_MEMORY_BOUNDED
+from qds.settings import Settings
 
 from .test_artifacts import write_component
 
@@ -66,7 +66,7 @@ def test_the_catalogue_source_is_the_raw_repository():
 
 def test_a_missing_raw_source_offers_install_and_locate(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "absent.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "absent.json"))
 
     row = {entry["key"]: entry for entry in cache_status()}["flux2-dev"]
     assert row["availability"] == av.MISSING
@@ -146,7 +146,7 @@ def test_a_saved_variant_does_not_make_the_source_installed(monkeypatch, tmp_pat
     cache = tmp_path / "cache"
     saved_variant(cache)
     config.write_text(json.dumps({"storage": {"cache_dir": str(cache)}}), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     row = {entry["key"]: entry for entry in cache_status()}["flux2-dev"]
@@ -200,8 +200,8 @@ def test_quantization_capability_is_exactly_what_it_was():
 
 def test_generating_from_the_raw_source_is_refused_with_the_reason(monkeypatch):
     """111 GB of bf16 does not fit, and the refusal says what to do instead."""
-    from mflux_server.errors import APIError
-    from mflux_server.registry import _require_local_artifact
+    from qds.errors import APIError
+    from qds.registry import _require_local_artifact
 
     spec = BASE_SPECS_BY_KEY["flux2-dev"]
     with pytest.raises(APIError) as raised:

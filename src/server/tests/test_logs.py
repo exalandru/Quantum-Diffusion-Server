@@ -13,13 +13,13 @@ from pathlib import Path
 
 import pytest
 
-from mflux_server.logs import JsonFormatter, setup_logging
-from mflux_server.settings import ServerSettings
+from qds.logs import JsonFormatter, setup_logging
+from qds.settings import ServerSettings
 
 
 def _record(message: str = "hello", **extra) -> logging.LogRecord:
     record = logging.LogRecord(
-        name="mflux_server",
+        name="qds",
         level=logging.INFO,
         pathname=__file__,
         lineno=1,
@@ -38,7 +38,7 @@ def test_one_line_is_one_valid_json_object():
     assert "\n" not in line
     assert payload["message"] == "step 3/9"
     assert payload["level"] == "INFO"
-    assert payload["logger"] == "mflux_server"
+    assert payload["logger"] == "qds"
     assert "ts" in payload
 
 
@@ -91,11 +91,11 @@ def test_json_mode_writes_to_stdout_and_text_mode_to_stderr():
     import sys
 
     setup_logging("INFO", None, json_lines=True)
-    streams = [h.stream for h in logging.getLogger("mflux_server").handlers]
+    streams = [h.stream for h in logging.getLogger("qds").handlers]
     assert streams == [sys.stdout]
 
     setup_logging("INFO", None, json_lines=False)
-    streams = [h.stream for h in logging.getLogger("mflux_server").handlers]
+    streams = [h.stream for h in logging.getLogger("qds").handlers]
     assert streams == [sys.stderr]
 
 
@@ -103,9 +103,9 @@ def test_log_file_directory_is_created(tmp_path):
     """`FileHandler` neither creates parent directories nor expands `~`."""
     log_file = tmp_path / "logs" / "nested" / "mflux.log"
     setup_logging("INFO", log_file, json_lines=True)
-    logging.getLogger("mflux_server").info("hello", extra={"event": "test"})
+    logging.getLogger("qds").info("hello", extra={"event": "test"})
 
-    for handler in logging.getLogger("mflux_server").handlers:
+    for handler in logging.getLogger("qds").handlers:
         handler.flush()
     assert log_file.exists()
     payload = json.loads(log_file.read_text(encoding="utf-8").splitlines()[-1])
@@ -133,7 +133,7 @@ def test_tilde_is_expanded():
 
 def test_disabling_the_log_file_stays_possible():
     # The empty string is the documented way to disable the file through
-    # MFLUX_SERVER_LOG_FILE; it must not turn into a path.
+    # QDS_SERVER_LOG_FILE; it must not turn into a path.
     assert ServerSettings.model_validate({"log_file": ""}).log_file == ""
     assert ServerSettings.model_validate({"log_file": None}).log_file is None
 

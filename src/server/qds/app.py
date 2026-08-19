@@ -1,0 +1,1018 @@
+"""OpenAI-Images-compatible HTTP API.
+
+Standard endpoints: `/v1/models`, `/v1/models/{id}`, `/v1/images/generations`,
+`/v1/images/edits`. Local extensions: `/health`, `/v1/capabilities`,
+`/v1/progress`, `/v1/cancel`, `/v1/unload`, plus the `steps`, `seed`,
+`guidance`, `negative_prompt` and `strength` request fields — extra fields that
+the OpenAI SDKs simply ignore.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+import logging
+import os
+import random
+import shutil
+import sys
+import tempfile
+import time
+import uuid
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Annotated, Any
+
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field
+
+from qds import __version__, admin, logbuffer
+from qds import settings as settings_module
+from qds.auth import build_dependencies
+from qds.engine import GenerationJob, ModelEngine
+from qds.errors import APIError, error_payload, install_exception_handlers
+from qds.hosts import allows as host_allows
+from qds.hosts import build_allowlist
+from qds.idle import IdleUnloader
+from qds.jobs import JobManager
+from qds.logbuffer import LogBuffer
+from qds.logs import SERVER_LOGGER, setup_logging
+from qds.registry import ModelSpec, edit_enabled, parse_size
+from qds.session import SessionStore, discard_local_token, issue_local_token
+from qds.settings import (
+    RESPONSE_FORMATS,
+    ConfigError,
+    Settings,
+    load_settings,
+    recovery_settings,
+)
+from qds.store import ImageStore
+
+logger = logging.getLogger(SERVER_LOGGER)
+
+MAX_SEED = 2**32 - 1
+#: Value used when `/v1/images/edits` falls back to img2img without the client
+#: specifying `strength` (mflux/cli/defaults/defaults.py:14).
+DEFAULT_IMAGE_STRENGTH = 0.4
+#: Polling cadence of `/v1/progress`. A denoising step takes a few hundred
+#: milliseconds at best, so there is no point going faster.
+PROGRESS_POLL_S = 0.25
+#: Heartbeat when nothing changes, so departed clients get noticed.
+PROGRESS_PING_S = 15.0
+
+
+class ImageGenerationRequest(BaseModel):
+    # `extra="ignore"`: quality, style, user, background, output_format,
+    # moderation… are accepted and ignored rather than failing a standard
+    # OpenAI client's request.
+    model_config = ConfigDict(extra="ignore")
+
+    prompt: str = Field(min_length=1)
+    model: str | None = None
+    n: int = Field(default=1, ge=1)
+    size: str | None = None
+    response_format: str | None = None
+
+    # mflux extensions
+    steps: int | None = Field(default=None, ge=1)
+    seed: int | None = Field(default=None, ge=0, le=MAX_SEED)
+    guidance: float | None = Field(default=None, ge=0)
+    negative_prompt: str | None = None
+
+
+async def progress_events(
+    engine: Any,
+    *,
+    poll_s: float = PROGRESS_POLL_S,
+    ping_s: float = PROGRESS_PING_S,
+) -> AsyncIterator[str]:
+    """Progress SSE frames, until the consumer goes away.
+
+    An infinite generator by design: it is the client disconnecting that
+    cancels it, through `StreamingResponse`'s task group. Pulled out of the route
+    so it can be tested without HTTP — `TestClient` does not propagate
+    disconnects, so reading it through that would block forever.
+    """
+    last: str | None = None
+    last_emit = time.monotonic()
+    while True:
+        payload = json.dumps(engine.progress(), ensure_ascii=False)
+        now = time.monotonic()
+        if payload != last:
+            yield f"data: {payload}\n\n"
+            last = payload
+            last_emit = now
+        elif now - last_emit >= ping_s:
+            # An SSE comment: with no traffic, a client disconnect would stay
+            # invisible until the next generation.
+            yield ": ping\n\n"
+            last_emit = now
+        await asyncio.sleep(poll_s)
+
+
+def _restart_unavailable() -> None:
+    raise APIError(
+        "This server was not started in a way that can restart itself.",
+        status_code=501,
+        error_type="server_error",
+        code="restart_unavailable",
+    )
+
+
+def install_host_guard(app: FastAPI, settings: Settings) -> None:
+    """Refuse requests whose `Host` header is not one this server answers to.
+
+    This closes DNS rebinding, which authentication cannot: a page on
+    `evil.example` whose name resolves to 127.0.0.1 is same-origin *to the
+    browser*, so it may read the responses, and a default install has no API key
+    to stop it. What it cannot fake is the `Host` header, which carries the name
+    the browser dialled.
+
+    **It no longer steps aside for a wildcard bind.** It used to, which meant
+    turning on "listen on the local network" also turned this off — the
+    protection disappearing exactly when it started to matter. The allowlist
+    grows instead, to the addresses and names this machine answers to.
+    """
+    port = settings.server.port
+    # Computed once, at startup, and never on the request path: resolving this
+    # machine's own hostname can block on a network where it does not resolve.
+    allowed = build_allowlist(settings.server.host, port, settings.server.allowed_hosts)
+
+    @app.middleware("http")
+    async def guard_host(request: Request, call_next):
+        host = request.headers.get("host")
+        if not host_allows(host, allowed, port):
+            return JSONResponse(
+                status_code=421,
+                content=error_payload(
+                    f"This server does not answer to the host {host!r}. "
+                    f"Add it to server.allowed_hosts to permit it.",
+                    error_type="invalid_request_error",
+                    code="host_not_allowed",
+                ),
+            )
+        return await call_next(request)
+
+
+#: Built dashboard assets, put here by `make build-dashboard` and shipped inside
+#: the wheel. Absent in a source checkout that has never built the front end.
+DASHBOARD_DIR = Path(__file__).resolve().parent / "_dashboard"
+
+
+def mount_dashboard(app: FastAPI) -> None:
+    """Serve the dashboard at `/dashboard`, or explain why it is not there.
+
+    A missing build is answered with a 503 naming the command that fixes it,
+    not with a 404: the difference between "this server has no dashboard" and
+    "you typed the wrong path" is the whole diagnosis.
+    """
+    if (DASHBOARD_DIR / "index.html").is_file():
+        app.mount(
+            "/dashboard",
+            StaticFiles(directory=DASHBOARD_DIR, html=True),
+            name="dashboard",
+        )
+        return
+
+    @app.get("/dashboard", include_in_schema=False)
+    @app.get("/dashboard/{path:path}", include_in_schema=False)
+    async def dashboard_missing(path: str = "") -> JSONResponse:
+        return JSONResponse(
+            status_code=503,
+            content=error_payload(
+                "The dashboard was not built into this installation. "
+                "Run `make build-dashboard` and reinstall, or use the API directly.",
+                error_type="server_error",
+                code="dashboard_not_built",
+            ),
+        )
+
+
+def create_app(
+    settings: Settings | None = None,
+    engine: ModelEngine | None = None,
+    *,
+    request_restart: Callable[[], None] | None = None,
+    local_token: str | None = None,
+) -> FastAPI:
+    """Build the application.
+
+    `request_restart` is how `/admin/restart` reaches the process running this
+    app. It is injected rather than reached for, because only the caller that
+    owns the uvicorn server knows how to stop it — and an app embedded in a test
+    client owns nothing, which is why the default refuses instead of pretending.
+    """
+    settings = settings or load_settings()
+    setup_logging(settings.server.log_level, settings.server.log_file, settings.server.log_json)
+    if settings_module.missing_config_path is not None:
+        logger.warning(
+            "No configuration file at %s: every default applies. "
+            "Point QDS_SERVER_CONFIG at your server-config.json.",
+            settings_module.missing_config_path,
+        )
+
+    registry = settings.registry()
+    if not registry:
+        raise ValueError("No model enabled: check the 'models' section of server-config.json.")
+
+    engine = engine or ModelEngine(
+        request_timeout_s=settings.server.request_timeout_s,
+        progress_log_every=settings.server.progress_log_every,
+    )
+    store = ImageStore(
+        Path(settings.server.image_store).expanduser(),
+        ttl_s=settings.server.image_ttl_s,
+    )
+    idle_unloader = IdleUnloader(engine, settings.server.idle_unload_s)
+    scratch_dir = Path(tempfile.mkdtemp(prefix="mflux_scratch_"))
+    created_at = int(time.time())
+    jobs = JobManager()
+    log_buffer = LogBuffer()
+    pending = admin.PendingChanges()
+    # A finished conversion rewrites the configuration, which is the same fact a
+    # manual save reports: this process is now behind its file.
+    jobs.on_config_changed = lambda: setattr(pending, "restart_required", True)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        store.purge()
+        buffer_handler = logbuffer.attach(log_buffer)
+        logger.info(
+            "qds %s — %d model(s): %s | default: %s",
+            __version__,
+            len(registry),
+            ", ".join(sorted(registry)),
+            settings.default_model,
+        )
+        if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
+            logger.warning("Server exposed without an API key")
+        yield
+        # Before `engine.shutdown()`: a pending countdown would otherwise be left
+        # dangling on a loop that is closing.
+        idle_unloader.cancel()
+        # Before the engine too, and not on a best-effort basis: a download or a
+        # conversion that outlives this process becomes an orphan under launchd,
+        # holding the HuggingFace cache and invisible to whatever starts next.
+        await jobs.shutdown()
+        engine.shutdown()
+        shutil.rmtree(scratch_dir, ignore_errors=True)
+        logbuffer.detach(buffer_handler)
+        logger.info("Server stopped")
+
+    app = FastAPI(
+        title="Quantum Diffusion Server",
+        version=__version__,
+        lifespan=lifespan,
+    )
+    install_host_guard(app, settings)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.server.cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    install_exception_handlers(app)
+    app.mount("/images", StaticFiles(directory=store.directory), name="images")
+
+    # ── Authentication ─────────────────────────────────────────────────────
+    #
+    # One implementation, shared with `create_recovery_app`. See `qds/auth.py`
+    # for why that sharing is load-bearing rather than merely tidy.
+
+    sessions = SessionStore()
+    throttle = admin.LoginThrottle()
+    require_api, require_admin = build_dependencies(settings, sessions, local_token)
+    auth = Depends(require_api)
+
+    # ── Control plane ──────────────────────────────────────────────────────
+
+    app.include_router(
+        admin.build_router(
+            settings=settings,
+            jobs=jobs,
+            log_buffer=log_buffer,
+            auth=Depends(require_admin),
+            engine=engine,
+            version=__version__,
+            recovery_error=None,
+            request_restart=request_restart or _restart_unavailable,
+            pending=pending,
+            sessions=sessions,
+        )
+    )
+    app.include_router(
+        admin.build_session_router(
+            settings=settings, sessions=sessions, throttle=throttle, recovery_error=None
+        )
+    )
+    mount_dashboard(app)
+
+    # ── Helpers ────────────────────────────────────────────────────────────
+
+    #: Public identifier → spec. Built-ins publish their catalogue key; an
+    #: imported model publishes its `api_name` rather than the opaque
+    #: `local-…` id it is stored under.
+    by_public_name = {spec.public_name: spec for spec in registry.values()}
+
+    def resolve_spec(key: str | None) -> ModelSpec:
+        # The configured default may be an internal id — that is deliberate, and
+        # `default_model` stays a durable reference rather than a friendly name
+        # that would break the moment one were renamed.
+        key = key or settings.default_model
+        # Public name first, then the internal key. The second is an unadvertised
+        # legacy path: an imported model's id was the only way to name it before
+        # aliases existed, and silently breaking a script that used it would be a
+        # poor trade for a listing that is already clean.
+        spec = by_public_name.get(key) or registry.get(key)
+        if spec is None:
+            raise APIError(
+                f"Unknown model: {key!r}. Available models: {sorted(by_public_name)}",
+                param="model",
+                code="model_not_found",
+            )
+        return spec
+
+    def resolve_size(spec: ModelSpec, size: str | None) -> tuple[int, int]:
+        if size is None or size.lower() == "auto":
+            width, height = spec.default_width, spec.default_height
+        else:
+            try:
+                width, height = parse_size(size)
+            except ValueError as exc:
+                raise APIError(str(exc), param="size", code="invalid_size") from exc
+        # Checked on the default too, not just on an explicit size: otherwise a
+        # config-wide `default_size` outside the model's range would sail straight
+        # through and fail inside mflux, after the weights were loaded.
+        for label, value in (("width", width), ("height", height)):
+            if value < spec.min_dimension or (spec.max_dimension and value > spec.max_dimension):
+                bound = f"[{spec.min_dimension}, {spec.max_dimension or '∞'}]"
+                raise APIError(
+                    f"Model '{spec.key}' requires {label} in {bound}, got {value}.",
+                    param="size",
+                    code="invalid_size",
+                )
+        return width, height
+
+    def resolve_response_format(value: str | None) -> str:
+        fmt = value or settings.server.default_response_format
+        if fmt not in RESPONSE_FORMATS:
+            raise APIError(
+                f"response_format must be one of {sorted(RESPONSE_FORMATS)}, got {fmt!r}",
+                param="response_format",
+                code="invalid_response_format",
+            )
+        return fmt
+
+    def check_prompt(spec: ModelSpec, prompt: str) -> None:
+        """Refuse a prompt the model cannot read, before any weights are loaded.
+
+        FIBO's prompt encoder opens with a bare `json.loads(prompt)` whose result
+        is discarded — a validation gate. Plain text raises a `JSONDecodeError`,
+        which would reach the client as a 400 saying "Expecting value: line 1
+        column 1" *after* several GB of weights had been loaded. So we say it here,
+        and say what to do about it.
+        """
+        if "text" in spec.prompt_formats:
+            # Accepting text means accepting anything: a JSON caption is text too.
+            return
+        try:
+            parsed = json.loads(prompt)
+        except json.JSONDecodeError as exc:
+            raise APIError(
+                f"Model '{spec.key}' only accepts a structured JSON caption as its prompt, "
+                f"not plain text ({exc.msg}). Pass a JSON object describing the image — see the "
+                f"model card for the schema.",
+                param="prompt",
+                code="prompt_must_be_json",
+            ) from exc
+        if not isinstance(parsed, dict):
+            raise APIError(
+                f"Model '{spec.key}' expects a JSON *object* as its prompt, got "
+                f"{type(parsed).__name__}.",
+                param="prompt",
+                code="prompt_must_be_json",
+            )
+
+    def check_capabilities(spec: ModelSpec, *, negative_prompt: str | None, guidance: float | None) -> None:
+        if negative_prompt and not spec.supports_negative_prompt:
+            raise APIError(
+                f"Model '{spec.key}' does not support negative_prompt. "
+                f"Describe what you want in the prompt instead.",
+                param="negative_prompt",
+                code="unsupported_parameter",
+            )
+        if guidance is not None and not spec.supports_guidance:
+            fixed = spec.default_guidance
+            raise APIError(
+                f"Model '{spec.key}' is distilled, so its guidance is fixed"
+                + (f" at {fixed}." if fixed is not None else ".")
+                + " Drop the guidance parameter.",
+                param="guidance",
+                code="unsupported_parameter",
+            )
+
+    def check_n(n: int) -> None:
+        if n > settings.server.max_n:
+            raise APIError(
+                f"n={n} exceeds the server limit ({settings.server.max_n}). "
+                f"Images are generated one at a time.",
+                param="n",
+                code="n_too_large",
+            )
+
+    def seeds_for(seed: int | None, n: int) -> list[int]:
+        base = random.randint(0, MAX_SEED) if seed is None else seed
+        return [(base + index) % (MAX_SEED + 1) for index in range(n)]
+
+    def build_payload(
+        request: Request,
+        images: list[bytes],
+        response_format: str,
+        spec: ModelSpec,
+        width: int,
+        height: int,
+        steps: int,
+        seeds: list[int],
+    ) -> JSONResponse:
+        data: list[dict[str, Any]] = []
+        for png in images:
+            if response_format == "url":
+                name = store.save(png)
+                data.append({"url": f"{str(request.base_url).rstrip('/')}/images/{name}"})
+            else:
+                data.append({"b64_json": base64.b64encode(png).decode("ascii")})
+        return JSONResponse(
+            {
+                "created": int(time.time()),
+                "data": data,
+                # Extension: the effective size may differ from the requested
+                # one (mflux truncates to a multiple of 16).
+                "mflux": {
+                    # The public name, matching what the request sent and what
+                    # `/v1/models` lists. Echoing the internal `local-…` id here
+                    # would hand a client the one identifier it must not learn.
+                    "model": spec.public_name,
+                    "size": f"{width}x{height}",
+                    "steps": steps,
+                    "seeds": seeds,
+                },
+            }
+        )
+
+    async def run_jobs(
+        spec: ModelSpec,
+        *,
+        kind: str,
+        prompt: str,
+        width: int,
+        height: int,
+        steps: int,
+        seeds: list[int],
+        guidance: float | None,
+        negative_prompt: str | None,
+        image_path: Path | None = None,
+        image_strength: float | None = None,
+        steps_from_preset: bool = False,
+    ) -> list[bytes]:
+        # The idle countdown is armed here, on the way out, rather than inside
+        # the engine: it must measure the gap between *requests*, otherwise a
+        # delay of 0 would release the model between the images of a single one.
+        with idle_unloader:
+            images = []
+            for seed in seeds:
+                images.append(
+                    await engine.generate(
+                        GenerationJob(
+                            spec=spec,
+                            kind=kind,
+                            prompt=prompt,
+                            width=width,
+                            height=height,
+                            steps=steps,
+                            seed=seed,
+                            guidance=guidance,
+                            negative_prompt=negative_prompt,
+                            image_path=image_path,
+                            image_strength=image_strength,
+                            steps_from_preset=steps_from_preset,
+                        )
+                    )
+                )
+            return images
+
+    # ── Endpoints ──────────────────────────────────────────────────────────
+
+    @app.get("/health")
+    async def health() -> dict:
+        return {
+            "status": "ok",
+            "version": __version__,
+            "default_model": settings.default_model,
+            "models": sorted(registry),
+            "loaded_model": engine.loaded_model,
+            # Without this, "no warm model" is indistinguishable from a bug.
+            "idle_unload_s": settings.server.idle_unload_s,
+            "memory": engine.memory_stats(),
+        }
+
+    @app.get("/v1/models")
+    async def list_models(_: None = auth) -> dict:
+        # Public names, not internal keys: `local-c1587aa663c4` is a storage
+        # detail, and publishing it would make it the identifier every client
+        # copied into its configuration.
+        return {
+            "object": "list",
+            "data": [
+                {"id": name, "object": "model", "created": created_at, "owned_by": "mflux"}
+                for name in sorted(by_public_name)
+            ],
+        }
+
+    @app.get("/v1/models/{model_id}")
+    async def retrieve_model(model_id: str, _: None = auth) -> dict:
+        spec = resolve_spec(model_id)
+        return {
+            # The public name even when asked for by internal id, so a client
+            # that follows the legacy alias still learns the current one.
+            "id": spec.public_name,
+            "object": "model",
+            "created": created_at,
+            "owned_by": "mflux",
+            "mflux": _capabilities(spec),
+        }
+
+    @app.get("/v1/capabilities")
+    async def capabilities(_: None = auth) -> dict:
+        return {
+            "default_model": settings.default_model,
+            "max_n": settings.server.max_n,
+            "response_formats": sorted(RESPONSE_FORMATS),
+            "models": {key: _capabilities(spec) for key, spec in sorted(registry.items())},
+        }
+
+    @app.get("/v1/progress")
+    async def progress_stream(_: None = auth) -> StreamingResponse:
+        """Progress as Server-Sent Events.
+
+        We poll `engine.progress()` rather than push from the worker: progress is
+        produced on the inference thread, and a polled snapshot avoids any
+        cross-thread queue, any backpressure risk and any leak when a consumer
+        vanishes. Several clients can listen in parallel with no coordination.
+        """
+        return StreamingResponse(
+            progress_events(engine),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
+    @app.post("/v1/cancel")
+    async def cancel_generation(_: None = auth) -> dict:
+        """Interrupt the running generation at the next denoising step.
+
+        MLX cannot be cancelled from outside: the stop goes through the progress
+        callback, so it takes effect on the following step. The in-flight request
+        ends as a 499 `generation_stopped`.
+        """
+        cancelled = engine.request_cancel()
+        return {"cancelled": cancelled, "state": engine.progress()["state"]}
+
+    @app.post("/v1/unload")
+    async def unload_model(_: None = auth) -> dict:
+        """Release the resident weights without restarting the server.
+
+        Takes the engine lock: if a generation is running we wait for it to
+        finish rather than breaking it.
+        """
+        await engine.unload()
+        return {"loaded_model": engine.loaded_model, "memory": engine.memory_stats()}
+
+    @app.post("/v1/images/generations")
+    async def generate_images(request: Request, body: ImageGenerationRequest, _: None = auth):
+        spec = resolve_spec(body.model)
+        check_n(body.n)
+        check_prompt(spec, body.prompt)
+        check_capabilities(spec, negative_prompt=body.negative_prompt, guidance=body.guidance)
+        response_format = resolve_response_format(body.response_format)
+        if response_format == "raw" and body.n > 1:
+            raise APIError(
+                "response_format='raw' can only return a single image; use n=1 "
+                "or response_format='b64_json'.",
+                param="response_format",
+                code="invalid_response_format",
+            )
+
+        width, height = resolve_size(spec, body.size)
+        steps = body.steps or spec.default_steps
+        # No explicit step count on a preset model means deferring to the preset,
+        # schedule included.
+        steps_from_preset = body.steps is None and spec.preset is not None
+        seeds = seeds_for(body.seed, body.n)
+
+        images = await run_jobs(
+            spec,
+            kind="txt2img",
+            prompt=body.prompt,
+            width=width,
+            height=height,
+            steps=steps,
+            seeds=seeds,
+            guidance=body.guidance,
+            negative_prompt=body.negative_prompt,
+            steps_from_preset=steps_from_preset,
+        )
+
+        if response_format == "raw":
+            return Response(content=images[0], media_type="image/png")
+        return build_payload(request, images, response_format, spec, width, height, steps, seeds)
+
+    @app.post("/v1/images/edits")
+    async def edit_images(
+        request: Request,
+        prompt: Annotated[str, Form()],
+        image: Annotated[UploadFile, File()],
+        mask: Annotated[UploadFile | None, File()] = None,
+        model: Annotated[str | None, Form()] = None,
+        n: Annotated[int, Form()] = 1,
+        size: Annotated[str | None, Form()] = None,
+        response_format: Annotated[str | None, Form()] = None,
+        strength: Annotated[float | None, Form()] = None,
+        steps: Annotated[int | None, Form()] = None,
+        seed: Annotated[int | None, Form()] = None,
+        guidance: Annotated[float | None, Form()] = None,
+        negative_prompt: Annotated[str | None, Form()] = None,
+        _: None = auth,
+    ):
+        if mask is not None:
+            raise APIError(
+                "No model on this server does inpainting: the mask parameter is not supported.",
+                param="mask",
+                code="unsupported_parameter",
+            )
+
+        spec = resolve_spec(model)
+        check_n(n)
+        check_prompt(spec, prompt)
+        check_capabilities(spec, negative_prompt=negative_prompt, guidance=guidance)
+        fmt = resolve_response_format(response_format)
+        if fmt == "raw" and n > 1:
+            raise APIError(
+                "response_format='raw' can only return a single image.",
+                param="response_format",
+                code="invalid_response_format",
+            )
+
+        # img2img (noising the starting latent) and instruction editing
+        # (images as conditioning tokens) are two different mechanics. An
+        # explicit `strength` settles it in favour of the former.
+        if strength is not None:
+            kind, image_strength = "img2img", strength
+        elif edit_enabled(spec):
+            kind, image_strength = "edit", None
+        else:
+            kind, image_strength = "img2img", DEFAULT_IMAGE_STRENGTH
+
+        if kind == "img2img" and not spec.supports_image_to_image:
+            raise APIError(
+                f"Model '{spec.key}' supports neither editing nor image-to-image.",
+                param="model",
+                code="unsupported_parameter",
+            )
+
+        width, height = resolve_size(spec, size)
+        steps_val = steps or spec.default_steps
+        steps_from_preset = steps is None and spec.preset is not None
+        seeds = seeds_for(seed, n)
+
+        in_file = scratch_dir / f"in_{uuid.uuid4().hex}{Path(image.filename or '').suffix or '.png'}"
+        await _save_upload(image, in_file, settings.server.max_upload_mb)
+        try:
+            images = await run_jobs(
+                spec,
+                kind="edit" if kind == "edit" else "txt2img",
+                prompt=prompt,
+                width=width,
+                height=height,
+                steps=steps_val,
+                seeds=seeds,
+                guidance=guidance,
+                negative_prompt=negative_prompt,
+                image_path=in_file,
+                image_strength=image_strength,
+                steps_from_preset=steps_from_preset,
+            )
+        finally:
+            in_file.unlink(missing_ok=True)
+
+        if fmt == "raw":
+            return Response(content=images[0], media_type="image/png")
+        return build_payload(request, images, fmt, spec, width, height, steps_val, seeds)
+
+    return app
+
+
+def _capabilities(spec: ModelSpec) -> dict:
+    quantization = spec.quantization
+    return {
+        "repo": spec.repo,
+        "default_size": spec.default_size,
+        "default_steps": spec.default_steps,
+        "default_guidance": spec.default_guidance,
+        "quantize": spec.quantize,
+        # Which saved representation *this running process* loaded its registry
+        # with. The catalogue publishes the one the configuration currently
+        # selects; the two disagreeing is precisely what a restart would fix, and
+        # without this the interface had no way to tell that a variant it had
+        # just activated was not yet the one being generated from.
+        "active_variant": spec.prequantized_variant,
+        # The quantization contract, published so the app stops keeping its own
+        # copy of the bit-depth rules. `prequantized` used to stand in for all of
+        # this and meant three different things at once.
+        "supports_quantization": quantization.supports_quantization,
+        "quantize_choices": list(quantization.quantize_choices),
+        "supports_prequantize": quantization.supports_prequantize,
+        "prequantize_choices": list(quantization.prequantize_choices),
+        "prequantize_strategy": quantization.prequantize_strategy,
+        "quantization_note": quantization.note,
+        "license": spec.license,
+        "gated": spec.gated,
+        "prompt_formats": list(spec.prompt_formats),
+        "preset": spec.preset,
+        "min_dimension": spec.min_dimension,
+        "max_dimension": spec.max_dimension,
+        "scheduler": spec.scheduler,
+        "supports_guidance": spec.supports_guidance,
+        "supports_negative_prompt": spec.supports_negative_prompt,
+        "supports_image_to_image": spec.supports_image_to_image,
+        "supports_edit": edit_enabled(spec),
+    }
+
+
+async def _save_upload(upload: UploadFile, destination: Path, max_mb: float) -> None:
+    """Write the upload in chunks, rejecting anything past the limit."""
+    limit = int(max_mb * 1024 * 1024)
+    written = 0
+    with destination.open("wb") as handle:
+        while chunk := await upload.read(1024 * 1024):
+            written += len(chunk)
+            if written > limit:
+                handle.close()
+                destination.unlink(missing_ok=True)
+                raise APIError(
+                    f"Image too large (limit: {max_mb:g} MB).",
+                    status_code=413,
+                    param="image",
+                    code="file_too_large",
+                )
+            handle.write(chunk)
+    if written == 0:
+        destination.unlink(missing_ok=True)
+        raise APIError("The image file is empty.", param="image", code="invalid_image")
+
+
+def effective_bind_host(settings: Settings, recovery_error: str | None) -> str:
+    """Where the server may actually listen.
+
+    A pure function so the decision can be tested without starting uvicorn — a
+    test that cannot observe the bind proves nothing about it.
+
+    The rule closes a hole the recovery path opened: `recovery_settings()` takes
+    the host from the environment, so `QDS_SERVER_HOST=0.0.0.0` plus a config
+    file that will not parse produced a **wildcard-bound, unauthenticated
+    configuration writer**. Recovery mode deliberately leaves `/admin` open when
+    no password is set — that is the first-run path — and the two together are a
+    control plane on the network with no credential at all.
+
+    So a recovery server binds loopback unless a password exists to protect it.
+    The headless-repair case survives: a machine whose config went bad but whose
+    password is intact keeps its configured address.
+    """
+    if recovery_error is None:
+        return settings.server.host
+    from qds import credential
+
+    return settings.server.host if credential.is_set() else "127.0.0.1"
+
+
+def _original_argv() -> list[str]:
+    """The command to re-exec, rebuilt rather than remembered.
+
+    `sys.argv[0]` is the console script when started as `qds serve` and
+    `__main__.py` when started as `python -m qds`; neither is something to hand
+    back to `execv`. `sys.executable -m qds` plus the original arguments names
+    the same installation in both cases.
+    """
+    return [sys.executable, "-m", "qds", *sys.argv[1:]]
+
+
+def create_recovery_app(
+    settings: Settings,
+    message: str,
+    *,
+    request_restart: Callable[[], None] | None = None,
+    local_token: str | None = None,
+) -> FastAPI:
+    """The server a broken configuration gets: repairable, but not generating.
+
+    Refusing to start at all is fail-closed and was also a trap — the screen
+    that edits the configuration was served by the process the configuration
+    stopped from starting, so the only way out was hand-editing JSON. This keeps
+    the control plane and the dashboard up, and answers everything else with a
+    503 that names the reason.
+    """
+    setup_logging(settings.server.log_level, settings.server.log_file, settings.server.log_json)
+    jobs = JobManager()
+    log_buffer = LogBuffer()
+    pending = admin.PendingChanges()
+    jobs.on_config_changed = lambda: setattr(pending, "restart_required", True)
+
+    @asynccontextmanager
+    async def lifespan(_: FastAPI):
+        buffer_handler = logbuffer.attach(log_buffer)
+        logger.warning("qds %s — recovery mode: %s", __version__, message)
+        yield
+        await jobs.shutdown()
+        logbuffer.detach(buffer_handler)
+        logger.info("Server stopped")
+
+    app = FastAPI(title="Quantum Diffusion Server (recovery)", version=__version__, lifespan=lifespan)
+    install_host_guard(app, settings)
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.server.cors_origins,
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    install_exception_handlers(app)
+
+    sessions = SessionStore()
+    throttle = admin.LoginThrottle()
+    require_api, require_admin = build_dependencies(settings, sessions, local_token)
+
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        # Same endpoint, same shape, different `status`. A client that polls
+        # this — the menubar app, the dashboard — learns the server is up *and*
+        # why it cannot generate, from the one call it already makes.
+        return {
+            "status": "config_error",
+            "version": __version__,
+            "error": message,
+            "default_model": None,
+            "models": [],
+            "loaded_model": None,
+            "idle_unload_s": None,
+            "memory": {},
+        }
+
+    app.include_router(
+        admin.build_router(
+            settings=settings,
+            jobs=jobs,
+            log_buffer=log_buffer,
+            auth=Depends(require_admin),
+            engine=None,
+            version=__version__,
+            recovery_error=message,
+            request_restart=request_restart or _restart_unavailable,
+            pending=pending,
+            sessions=sessions,
+        )
+    )
+    app.include_router(
+        admin.build_session_router(
+            settings=settings, sessions=sessions, throttle=throttle, recovery_error=message
+        )
+    )
+    app.include_router(admin.build_recovery_router(message=message, version=__version__))
+    mount_dashboard(app)
+    return app
+
+
+def main(argv: list[str] | None = None) -> int:  # pragma: no cover - entry point
+    import argparse
+
+    import uvicorn
+
+    # An empty parser rather than none at all: `qds serve --port 9000` has to be
+    # refused rather than ignored. Binding and configuration come from
+    # `server-config.json` and the `QDS_SERVER_*` overrides, which is one
+    # precedence rule; a second one spelled on the command line would be two.
+    argparse.ArgumentParser(
+        prog="qds serve",
+        description=(
+            "Run the server. Configuration comes from server-config.json "
+            "(QDS_SERVER_CONFIG) and QDS_SERVER_* environment overrides."
+        ),
+    ).parse_args(argv)
+
+    # *Any* unreadable configuration starts a recovery server, not only one that
+    # breaks a runtime invariant. The distinction used to be load-bearing and was
+    # exactly backwards: a disabled default model got a repair screen, while the
+    # failures people actually produce by hand-editing JSON — a typo, an
+    # out-of-range value — killed the process outright and left no way back in
+    # except editing the same file again by hand.
+    #
+    # So three rungs, each falling to the next: strict, then lenient (which still
+    # refuses a structurally invalid document), then the environment and the
+    # defaults, which cannot fail and at least put the repair screen on the port
+    # whatever launched this process is waiting on.
+    recovery_error: str | None = None
+    settings: Settings
+    try:
+        settings = load_settings()
+    except (ConfigError, ValueError) as exc:
+        recovery_error = str(exc)
+        logger.error("Starting in recovery mode: %s", exc)
+        try:
+            settings = load_settings(strict=False)
+        except (ConfigError, ValueError):
+            settings = recovery_settings()
+
+    # The server keeps whatever root it is given here for its whole lifetime:
+    # mflux resolves the cache constant once, at import. Changing the setting
+    # therefore takes effect for this process only on restart.
+    settings.apply_hf_home()
+
+    restart_wanted = False
+
+    def request_restart() -> None:
+        nonlocal restart_wanted
+        restart_wanted = True
+        server.should_exit = True
+
+    # Issued before either app is built, and on every rung: it is the credential
+    # of last resort. If the password is forgotten, or the file holding its hash
+    # is the file that will not parse, this is what still lets the menubar app
+    # and the CLI reach the control plane and repair things.
+    local_token = issue_local_token()
+
+    app = (
+        create_recovery_app(
+            settings, recovery_error, request_restart=request_restart, local_token=local_token
+        )
+        if recovery_error is not None
+        else create_app(settings, request_restart=request_restart, local_token=local_token)
+    )
+
+    # `uvicorn.Server` rather than `uvicorn.run`, so `/admin/restart` has
+    # something to set `should_exit` on and this function gets control back
+    # afterwards.
+    bind_host = effective_bind_host(settings, recovery_error)
+    if bind_host != settings.server.host:
+        logger.warning(
+            "Recovery mode with no admin password: listening on %s instead of %s, "
+            "because an unauthenticated control plane must not be reachable from the network.",
+            bind_host,
+            settings.server.host,
+        )
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=bind_host,
+            port=settings.server.port,
+            log_level=settings.server.log_level.lower(),
+            # Without this, uvicorn waits forever on in-flight connections: a
+            # SIGTERM during a generation would block for up to
+            # `request_timeout_s` (40 min in the shipped config). A supervisor
+            # should still keep a SIGTERM → SIGKILL ladder, because a second
+            # SIGTERM does not force the exit on uvicorn's side — only SIGINT
+            # does.
+            timeout_graceful_shutdown=settings.server.shutdown_grace_s,
+            # In JSON mode, stdout is the structured-event channel: uvicorn's
+            # access log, which writes plain text there, would make it
+            # unparsable.
+            access_log=not settings.server.log_json,
+        )
+    )
+    server.run()
+
+    # A token file that outlives its server would be a credential for a process
+    # that no longer exists. Not before a re-exec, though: the replacement issues
+    # its own, and removing it here would leave a window with none.
+    if not restart_wanted:
+        discard_local_token()
+
+    if restart_wanted:
+        # Re-exec rather than exit-and-be-restarted: the pid survives, so this
+        # behaves the same whether the menubar app launched the server or
+        # somebody typed `qds serve`. Listening sockets do not follow, because
+        # Python marks its file descriptors close-on-exec (PEP 446) and uvicorn
+        # has closed them by now anyway.
+        logger.info("Restarting: re-executing %s", " ".join(_original_argv()))
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.execv(sys.executable, _original_argv())
+
+    return 0
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

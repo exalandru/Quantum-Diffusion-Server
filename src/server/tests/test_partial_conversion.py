@@ -11,10 +11,10 @@ Nothing here converts a model; components are synthesised in the shape
 
 from __future__ import annotations
 
-from mflux_server import artifacts, components
-from mflux_server import availability as av
-from mflux_server.prequantize import convert
-from mflux_server.registry import STRATEGY_QDS_MEMORY_BOUNDED
+from qds import artifacts, components
+from qds import availability as av
+from qds.prequantize import convert
+from qds.registry import STRATEGY_QDS_MEMORY_BOUNDED
 
 from .test_artifacts import _Args, component_writer, write_component, write_tokenizer
 
@@ -24,10 +24,10 @@ REQUIRED = components.required_components("z-image")
 
 def convert_one(monkeypatch, dest, component, *, bits=4, model="z-image"):
     """One run converting one component, with the heavy part stubbed out."""
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
     seen: list[str] = []
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", component_writer(seen))
+    monkeypatch.setattr("qds.prequantize.convert_component", component_writer(seen))
     code = convert(_Args(model, bits, dest=dest, components=[component]))
     return code, seen
 
@@ -184,8 +184,8 @@ def test_a_cancelled_component_is_never_recorded_as_complete(monkeypatch, tmp_pa
     *after* that component has been written and validated, so there is no path
     on which an interrupted component is marked done.
     """
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
 
     dest = tmp_path / "artifact"
     dest.mkdir()
@@ -210,7 +210,7 @@ def test_a_cancelled_component_is_never_recorded_as_complete(monkeypatch, tmp_pa
         (dest / name / "0.safetensors").write_bytes(b"half a shard")
         raise Killed()
 
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", killed)
+    monkeypatch.setattr("qds.prequantize.convert_component", killed)
     try:
         convert(_Args("z-image", 4, dest=dest, components=["vae"]))
     except Killed:
@@ -233,8 +233,8 @@ def test_a_rewrite_of_a_complete_artifact_drops_its_completion_first(monkeypatch
     it. If the run were cancelled halfway, the completion marker would still be
     vouching for a component that is now half-written.
     """
-    monkeypatch.delenv("MFLUX_SERVER_CONFIG", raising=False)
-    monkeypatch.setattr("mflux_server.prequantize.free_gb", lambda _: 10_000.0)
+    monkeypatch.delenv("QDS_SERVER_CONFIG", raising=False)
+    monkeypatch.setattr("qds.prequantize.free_gb", lambda _: 10_000.0)
 
     dest = tmp_path / "artifact"
     dest.mkdir()
@@ -266,7 +266,7 @@ def test_a_rewrite_of_a_complete_artifact_drops_its_completion_first(monkeypatch
         write_component(dest, name, bits="4")
         return 6
 
-    monkeypatch.setattr("mflux_server.prequantize.convert_component", observe)
+    monkeypatch.setattr("qds.prequantize.convert_component", observe)
     assert convert(_Args("z-image", 4, dest=dest, components=["vae"])) == 0
     assert seen == ["vae"]
     # Re-validated and re-recorded at the end of the run.

@@ -11,9 +11,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from mflux_server.app import create_app, progress_events
-from mflux_server.settings import Settings, load_settings
-from tests.conftest import tiny_png, wait_until
+from qds.app import create_app, progress_events
+from qds.settings import Settings, load_settings
+from tests.conftest import make_client, tiny_png, wait_until
 
 
 def generate(client: TestClient, **body):
@@ -244,7 +244,7 @@ def test_oversized_upload_is_rejected(tmp_path, engine):
             }
         }
     )
-    with TestClient(create_app(settings, engine)) as client:
+    with make_client(create_app(settings, engine)) as client:
         response = client.post(
             "/v1/images/edits",
             data={"prompt": "x"},
@@ -289,7 +289,7 @@ def secured_app(tmp_path, engine, api_key: str):
 
 @pytest.fixture
 def secured_client(tmp_path, engine):
-    with TestClient(secured_app(tmp_path, engine, "cle-secrete")) as test_client:
+    with make_client(secured_app(tmp_path, engine, "cle-secrete")) as test_client:
         yield test_client
 
 
@@ -310,7 +310,7 @@ def test_non_ascii_key_is_rejected_without_crashing(tmp_path, engine):
     rejects non-ASCII `str` outright, which is why the comparison is done on
     bytes.
     """
-    with TestClient(secured_app(tmp_path, engine, "secret-\u65e5\u672c")) as test_client:
+    with make_client(secured_app(tmp_path, engine, "secret-\u65e5\u672c")) as test_client:
         assert test_client.get("/v1/models", headers={"Authorization": "Bearer x"}).status_code == 401
 
 
@@ -341,7 +341,7 @@ def test_empty_prompt_returns_a_formatted_error(client):
 
 
 def test_shutdown_releases_the_engine(settings, engine):
-    with TestClient(create_app(settings, engine)):
+    with make_client(create_app(settings, engine)):
         pass
     assert engine.shutdown_called is True
 
@@ -406,7 +406,7 @@ def test_the_bound_also_covers_the_model_default(client, engine):
             "default_size": "2560x1440",
         }
     )
-    with TestClient(create_app(settings, engine)) as scoped:
+    with make_client(create_app(settings, engine)) as scoped:
         assert generate(scoped, model="ideogram-4").status_code == 400
         # Every other model is happy with it.
         assert generate(scoped, model="z-image-turbo").status_code == 200
@@ -434,7 +434,7 @@ def _client_with(settings_kwargs: dict, engine) -> TestClient:
     settings = Settings.model_validate(
         {"server": {"log_file": None, "progress_log_every": 0, **settings_kwargs}}
     )
-    return TestClient(create_app(settings, engine))
+    return make_client(create_app(settings, engine))
 
 
 def test_a_zero_delay_releases_once_per_request_not_per_image(engine, tmp_path):
@@ -472,7 +472,7 @@ def test_the_default_policy_is_never(client):
 def test_the_delay_is_settable_from_the_environment(monkeypatch, raw, expected):
     # An empty variable means "never", the same convention as log_file: without
     # it there would be no way to turn the setting back off from the environment.
-    monkeypatch.setenv("MFLUX_SERVER_IDLE_UNLOAD_S", raw)
+    monkeypatch.setenv("QDS_SERVER_IDLE_UNLOAD_S", raw)
     assert load_settings(Path("/nonexistent")).server.idle_unload_s == expected
 
 

@@ -6,9 +6,9 @@ mflux.log
 images/
 
 # Project outputs
-/build/
-/dist/
-src/build
+dist/
+build/
+.build/
 
 # Python
 __pycache__/
@@ -22,9 +22,11 @@ venv/
 .ruff_cache/
 .mypy_cache/
 
-# Desktop
-/src/desktop/node_modules/
-/src/desktop/src-tauri/gen/schemas/
+# Node
+node_modules/
 
 # macOS
 .DS_Store
+
+# Built dashboard, shipped as package data by `make build-server`.
+src/server/qds/_dashboard/

@@ -1,0 +1,10 @@
+// What ships: the sources, without the tests that exercise them.
+//
+// Separate from `tsconfig.json` so a build cannot be blocked by a test file,
+// and — more importantly — so it cannot be *unblocked* by deleting one. `npm
+// run typecheck` still covers everything, and that is the check that has to be
+// green before the work is done.
+{
+  "extends": "./tsconfig.json",
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/test-server.ts", "src/test-setup.ts"]
+}

@@ -17,8 +17,8 @@ import pathlib
 
 import pytest
 
-from mflux_server import components
-from mflux_server.registry import BASE_SPECS_BY_KEY, capability_for, family_structure
+from qds import components
+from qds.registry import BASE_SPECS_BY_KEY, capability_for, family_structure
 
 #: Every family the catalogue actually ships, so a new one cannot be added to the
 #: registry without either an established component list or an explicit refusal.
@@ -164,9 +164,9 @@ def test_react_owns_no_component_table_of_its_own():
     `test_react_keeps_no_quantization_table_of_its_own`, for the same reason: a
     list of model parts in a `.tsx` is a table that goes stale silently.
     """
-    src = pathlib.Path(__file__).resolve().parents[2] / "desktop" / "src"
+    src = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "src"
     if not src.is_dir():  # pragma: no cover - server-only checkout
-        pytest.skip("desktop sources not present")
+        pytest.skip("dashboard sources not present")
 
     offenders = []
     for path in sorted(src.rglob("*.tsx")) + sorted(src.rglob("*.ts")):

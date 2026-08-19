@@ -13,10 +13,10 @@ import io
 import pytest
 from PIL import Image
 
-from mflux_server import engine as engine_module
-from mflux_server.engine import GenerationJob, ModelEngine
-from mflux_server.errors import APIError
-from mflux_server.registry import BASE_SPECS_BY_KEY
+from qds import engine as engine_module
+from qds.engine import GenerationJob, ModelEngine
+from qds.errors import APIError
+from qds.registry import BASE_SPECS_BY_KEY
 
 #: What the double uses when no step count is passed, standing in for the step
 #: count a sampler preset would supply.

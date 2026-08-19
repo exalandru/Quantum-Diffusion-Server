@@ -1,10 +1,21 @@
 [project]
-name = "mflux-server"
-version = "1.0.0"
-description = "Local server exposing mflux behind an OpenAI-Images-compatible API"
+name = "qds"
+version = "2.0.0"
+description = "Quantum Diffusion Server: a local, OpenAI-Images-compatible image generation server for Apple Silicon"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.12,<3.14"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: MacOS X",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Graphics",
+]
 dependencies = [
     "mflux==0.18.0",
     "fastapi>=0.115",
@@ -14,15 +25,18 @@ dependencies = [
     "pillow>=12.1.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/exalandru/Quantum-Diffusion-Server"
+Repository = "https://github.com/exalandru/Quantum-Diffusion-Server"
+Issues = "https://github.com/exalandru/Quantum-Diffusion-Server/issues"
+
 [project.scripts]
-mflux-server = "mflux_server.app:main"
-mflux-server-prequantize = "mflux_server.prequantize:main"
-mflux-server-fetch = "mflux_server.fetch:main"
-mflux-server-import = "mflux_server.import_cli:main"
+qds = "qds.cli:main"
 
 [dependency-groups]
 dev = [
     "pytest>=8.3",
+    "pytest-asyncio>=1.0",
     "httpx>=0.28",
     "ruff>=0.9",
 ]
@@ -32,7 +46,18 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["mflux_server"]
+packages = ["qds"]
+
+# The built dashboard is package data: `uv tool install qds` gets a server that
+# already has its own interface, with no second artifact to fetch. `artifacts`
+# rather than a plain glob because the build output is gitignored, and hatchling
+# excludes what version control ignores — in the sdist too, so a wheel built
+# *from the sdist* is not silently missing an interface the one built from the
+# checkout had.
+artifacts = ["qds/_dashboard/**"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["qds/_dashboard/**"]
 
 [tool.ruff]
 line-length = 110
@@ -43,3 +68,7 @@ select = ["E", "F", "I", "UP", "B"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The job manager is asyncio all the way down; its tests drive a real event loop
+# rather than a `TestClient` thread, so they need the plugin's fixtures.
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"

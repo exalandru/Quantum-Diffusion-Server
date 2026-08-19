@@ -8,9 +8,9 @@ answering a question nobody asked.
 
 from __future__ import annotations
 
-from mflux_server import artifacts
-from mflux_server import availability as av
-from mflux_server.fetch import _disk_report
+from qds import artifacts
+from qds import availability as av
+from qds.fetch import _disk_report
 
 from .test_artifacts import write_component
 

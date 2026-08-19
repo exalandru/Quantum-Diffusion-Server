@@ -8,15 +8,33 @@ verified by hand (see the README).
 from __future__ import annotations
 
 import io
+import os
 import time
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from mflux_server.app import create_app
-from mflux_server.engine import GenerationJob
-from mflux_server.settings import Settings
+from qds.app import create_app
+from qds.engine import GenerationJob
+from qds.env import ENV_PREFIX, LEGACY_ENV_PREFIX
+from qds.settings import Settings
+
+
+@pytest.fixture(autouse=True)
+def _neutral_environment(monkeypatch):
+    """Start every test from an environment that names no configuration.
+
+    Both prefixes, and that is the whole point: a test that clears only
+    `QDS_SERVER_CONFIG` is still exposed to a `MFLUX_SERVER_CONFIG` left in the
+    developer's shell, because the deprecated spelling is deliberately still
+    read. The result was a suite whose greenness depended on who ran it — and,
+    worse, tests that silently read the real `server-config.json` instead of
+    their `tmp_path` one without asserting on the difference.
+    """
+    for name in list(os.environ):
+        if name.startswith((ENV_PREFIX, LEGACY_ENV_PREFIX)):
+            monkeypatch.delenv(name, raising=False)
 
 
 def wait_until(predicate, timeout: float = 2.0) -> bool:
@@ -112,7 +130,19 @@ def settings(tmp_path) -> Settings:
     )
 
 
+def make_client(app) -> TestClient:
+    """A `TestClient` dialling a host the server answers to.
+
+    `TestClient` defaults to `http://testserver`, and the server refuses a
+    `Host` header it does not recognise — that guard is what closes DNS
+    rebinding against a keyless loopback install. Adding "testserver" to the
+    allowlist would weaken the shipped server to spare the tests, so the tests
+    dial a loopback address instead, like a real client does.
+    """
+    return TestClient(app, base_url="http://127.0.0.1")
+
+
 @pytest.fixture
 def client(settings, engine):
-    with TestClient(create_app(settings, engine)) as test_client:
+    with make_client(create_app(settings, engine)) as test_client:
         yield test_client

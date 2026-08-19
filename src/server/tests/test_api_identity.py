@@ -13,11 +13,11 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from mflux_server import importing, library
-from mflux_server.app import create_app
-from mflux_server.settings import Settings
+from qds import importing, library
+from qds.app import create_app
+from qds.settings import Settings
 
-from .conftest import FakeEngine
+from .conftest import FakeEngine, make_client
 
 
 def imported(tmp_path, *, id="local-c1587aa663c4", display="My Z-Image", api_name="my-z-image"):
@@ -39,7 +39,7 @@ def imported(tmp_path, *, id="local-c1587aa663c4", display="My Z-Image", api_nam
 
 def settings_with(tmp_path, monkeypatch, rows, **overrides) -> Settings:
     library.save(rows, base=str(tmp_path))
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "server-config.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "server-config.json"))
     return Settings.model_validate({"models": {}, **overrides})
 
 
@@ -99,7 +99,7 @@ def test_valid_api_names_pass(good):
 
 def client_for(tmp_path, monkeypatch, rows, **overrides) -> TestClient:
     settings = settings_with(tmp_path, monkeypatch, rows, **overrides)
-    return TestClient(create_app(settings=settings, engine=FakeEngine()))
+    return make_client(create_app(settings=settings, engine=FakeEngine()))
 
 
 def test_v1_models_lists_the_alias_and_never_the_internal_id(tmp_path, monkeypatch):
@@ -141,7 +141,7 @@ def test_a_generation_request_by_alias_resolves_the_imported_model(tmp_path, mon
     settings = settings_with(tmp_path, monkeypatch, [imported(tmp_path)])
     engine = FakeEngine()
 
-    with TestClient(create_app(settings=settings, engine=engine)) as client:
+    with make_client(create_app(settings=settings, engine=engine)) as client:
         response = client.post(
             "/v1/images/generations",
             json={
@@ -164,7 +164,7 @@ def test_a_generation_request_by_internal_id_also_resolves(tmp_path, monkeypatch
     settings = settings_with(tmp_path, monkeypatch, [imported(tmp_path)])
     engine = FakeEngine()
 
-    with TestClient(create_app(settings=settings, engine=engine)) as client:
+    with make_client(create_app(settings=settings, engine=engine)) as client:
         response = client.post(
             "/v1/images/generations",
             json={

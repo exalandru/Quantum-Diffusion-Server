@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import json
 
-from mflux_server import importing, library
-from mflux_server.registry import BASE_SPECS_BY_KEY, build_registry
-from mflux_server.settings import ModelOverride
+from qds import importing, library
+from qds.registry import BASE_SPECS_BY_KEY, build_registry
+from qds.settings import ModelOverride
 
 CLASS_OF = {
     "z-image": "ZImageTransformer2DModel",
@@ -112,7 +112,7 @@ def test_locating_copies_nothing(tmp_path):
 
 
 def test_locating_creates_no_imported_row(tmp_path, monkeypatch):
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(tmp_path / "server-config.json"))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(tmp_path / "server-config.json"))
     importing.locate(str(source_dir(tmp_path / "weights")), "z-image")
     assert library.load() == []
 
@@ -148,12 +148,12 @@ def test_resetting_the_location_restores_the_catalogue_repository(tmp_path):
 
 
 def test_a_located_built_in_is_no_longer_downloadable(tmp_path, monkeypatch):
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     weights = str(source_dir(tmp_path / "weights"))
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps({"models": {"z-image": {"model_path": weights}}}))
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
 
     row = next(r for r in cache_status() if r["key"] == "z-image")
     assert row["availability"] == "present"
@@ -164,13 +164,13 @@ def test_a_located_built_in_is_no_longer_downloadable(tmp_path, monkeypatch):
 
 
 def test_a_located_path_on_an_absent_volume_reports_volume_unmounted(tmp_path, monkeypatch):
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     config = tmp_path / "server-config.json"
     config.write_text(
         json.dumps({"models": {"z-image": {"model_path": "/Volumes/Gone/models/z-image"}}})
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
 
     row = next(r for r in cache_status() if r["key"] == "z-image")
     assert row["availability"] == "volume_unmounted"

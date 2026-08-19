@@ -1,35 +1,50 @@
-# mflux-server
+# qds — Quantum Diffusion Server
 
 A local server exposing [mflux](https://github.com/filipstrand/mflux) — the MLX implementation of FLUX, Qwen-Image and Z-Image for Apple Silicon — behind an **OpenAI-Images-compatible API**. Enough to point any OpenAI-speaking frontend (Misty Studio, Open WebUI, the `openai` SDK…) at diffusion models running locally.
 
 The model is **loaded once and kept in memory** between requests, instead of being reloaded by a fresh process for every image.
 
+**Requirements: an Apple Silicon Mac (M1 or later) on macOS 14 or newer.** The inference stack is MLX, which has no Linux or Windows backend here; there is no headless build for those platforms and none is planned.
+
 ## Installation
+
+From a checkout, for development:
 
 ```sh
 uv sync
+uv run qds serve
+```
+
+Or as a standalone tool, from a wheel built by `make build-server`:
+
+```sh
+uv tool install ./dist/server/qds-<version>-py3-none-any.whl
+qds serve
 ```
 
 mflux is a project dependency — no need for a separate `uv tool install mflux`. Weights already present in the HuggingFace cache are reused as-is.
 
 Nothing else is required to generate: the two models enabled by default are ungated and Apache-2.0. Five of the ten catalogue entries *are* gated (`black-forest-labs/*`, `briaai/*`, `ideogram-ai/*`) and need a HuggingFace token with approved access (`hf auth login`) — they ship disabled for that reason. `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
 
+## The `qds` command
+
+One command, with subcommands:
+
+| Command | What it does |
+|---|---|
+| `qds serve` | run the server |
+| `qds fetch <key>` | download a model's weights ahead of time |
+| `qds fetch --status` | print the catalogue with cache state, as JSON |
+| `qds prequantize` | convert a model into a saved, already-quantized artifact |
+| `qds import …` | register a local model directory, without copying it |
+| `qds status` | print a running server's `/health` document |
+
+Every subcommand carries its own `--help`.
+
 ## Running
 
-There are two ways to use this: the desktop app, or the server on the command line.
-
-### Desktop app
-
-[`../desktop/`](../desktop/README.md) holds **Quantum Diffusion Server**, a macOS control panel (Tauri + React) that installs its own Python, starts and supervises the server, exposes the configuration as a form and drives model preparation. Nothing to install on the machine: the `.app` is 57 MB and handles the rest.
-
 ```sh
-make build-desktop
-```
-
-### Command line
-
-```sh
-uv run mflux-server
+qds serve
 ```
 
 The server listens on `http://127.0.0.1:8765`. Interactive docs at `/docs`.
@@ -117,11 +132,11 @@ The table above is the catalogue — what each model is worth on its own. The sh
 
 ### Downloading weights ahead of time
 
-The first generation on a model that is not in the HuggingFace cache pays the whole download — tens of gigabytes, inside an HTTP request that looks hung. `mflux-server-fetch` makes it an explicit step:
+The first generation on a model that is not in the HuggingFace cache pays the whole download — tens of gigabytes, inside an HTTP request that looks hung. `qds fetch` makes it an explicit step:
 
 ```sh
-uv run mflux-server-fetch --status          # what is cached, and how much room it takes
-uv run mflux-server-fetch ernie-image-turbo # download it now
+qds fetch --status          # what is cached, and how much room it takes
+qds fetch ernie-image-turbo # download it now
 ```
 
 `--status` prints one JSON object per catalogue entry (`cached`, `size_gb`, `gated`, `license`, `enabled`), which is what the app's Models tab shows next to an **Install** button — with the server stopped too, since it does not go through the HTTP API.
@@ -194,7 +209,7 @@ OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does
 
 ## Configuration
 
-`server-config.json` (JSON). Every key in the `server` section can be overridden by `MFLUX_SERVER_<KEY>` in upper case — `MFLUX_SERVER_PORT=9000`, `MFLUX_SERVER_API_KEY=…`, `MFLUX_SERVER_CORS_ORIGINS=https://a.example,https://b.example`. `MFLUX_SERVER_CONFIG` points at a different config file.
+`server-config.json` (JSON). Every key in the `server` section can be overridden by `QDS_SERVER_<KEY>` in upper case — `QDS_SERVER_PORT=9000`, `QDS_SERVER_API_KEY=…`, `QDS_SERVER_CORS_ORIGINS=https://a.example,https://b.example`. `QDS_SERVER_CONFIG` points at a different config file.
 
 ### The `server` section
 
@@ -236,7 +251,7 @@ That is also why `qwen-image-2512` and `fibo` point at their **raw bf16 repos** 
 
 `default_size` is the single knob for "one resolution everywhere", without repeating the value under each model. It is still overridable per model — see below — which is what you want when one model does not deserve the same area as the others: `flux2-dev` is a 32B, `flux2-klein` a distilled 9B.
 
-Both accept an environment override too: `MFLUX_SERVER_DEFAULT_MODEL`, `MFLUX_SERVER_DEFAULT_SIZE`.
+Both accept an environment override too: `QDS_SERVER_DEFAULT_MODEL`, `QDS_SERVER_DEFAULT_SIZE`.
 
 ### The `models` section — per model
 
@@ -435,14 +450,14 @@ To disable quantization and run in bf16:
 | scheduler | `ModelConfig`'s `sigma_*` defaults already match the repo's `scheduler_config.json`. |
 | text encoder | **the only real gap.** FLUX.2-dev stacks three hidden states of a `Mistral3ForConditionalGeneration` (40 layers, hidden 5120 → 3 × 5120 = `joint_attention_dim` = 15360), where klein uses Qwen3. |
 
-So the encoder is ported to MLX in [`mflux_server/flux2_dev/mistral3.py`](mflux_server/flux2_dev/mistral3.py). The Mistral decoder is standard dense and *the only* structural difference from mflux's `Qwen3VLAttention` is the absence of per-head `q_norm`/`k_norm` — the RMSNorm, the SwiGLU MLP, the RoPE and the GQA helpers are reused as-is. The result is validated against transformers' `MistralModel`: same weights, same hidden states to within 7e-7, across all three padding configurations.
+So the encoder is ported to MLX in [`qds/flux2_dev/mistral3.py`](qds/flux2_dev/mistral3.py). The Mistral decoder is standard dense and *the only* structural difference from mflux's `Qwen3VLAttention` is the absence of per-head `q_norm`/`k_norm` — the RMSNorm, the SwiGLU MLP, the RoPE and the GQA helpers are reused as-is. The result is validated against transformers' `MistralModel`: same weights, same hidden states to within 7e-7, across all three padding configurations.
 
 A pleasant consequence: **no Torch at inference**. Everything stays in MLX, the encoder stays warm alongside the transformer, and there is nothing to reload between prompts.
 
 **The repo ships bf16, and it does not fit.** A 64.5 GB transformer plus a 45.8 GB encoder plus the VAE, i.e. ~111 GB of resident weights. At 8 bits we drop to ~58 GB, comfortable on 96 GB of unified memory — but quantizing at load time requires holding the bf16 in memory first. Hence a one-time conversion up front:
 
 ```bash
-uv run mflux-server-prequantize            # → <app data>/cache/artifacts/
+qds prequantize            # → <app data>/cache/artifacts/
 ```
 
 The repo is *gated*: you need a HuggingFace token that has been granted access (`hf auth login`). Expect ~113 GB of download and ~58 GB written. The script works **one component at a time**, and quantizes the transformer **block by block**: without that the memory peak would reach ~96 GB, against ~66 GB this way. The default order (transformer, encoder, VAE) lets you purge the bf16 from the HF cache between steps — the disk peak falls from ~169 GB to ~97 GB, and the script reminds you what to delete.
@@ -450,7 +465,7 @@ The repo is *gated*: you need a HuggingFace token that has been granted access (
 To convert a single component, for instance to validate the encoder before committing to the transformer's 64 GB:
 
 ```bash
-uv run mflux-server-prequantize --components text_encoder
+qds prequantize --components text_encoder
 ```
 
 Reloading needs no configuration at all: mflux detects the `quantization_level` written into the safetensors metadata and quantizes the structure before applying the weights. If the artifact lives elsewhere, set `model_path`:
@@ -474,10 +489,10 @@ Finally, `request_timeout_s` goes to `2400`: 50 steps on a 32B model far exceed 
 
 ### JSON logs for a supervisor
 
-`"log_json": true` (or `MFLUX_SERVER_LOG_JSON=1`) switches the logs to JSON Lines, one object per line:
+`"log_json": true` (or `QDS_SERVER_LOG_JSON=1`) switches the logs to JSON Lines, one object per line:
 
 ```json
-{"ts":"2026-07-27T14:19:02","level":"INFO","logger":"mflux_server","message":"z-image-turbo seed=42 1280x720 — step 3/9","event":"generation_step","fields":{"step":3,"total":9}}
+{"ts":"2026-07-27T14:19:02","level":"INFO","logger":"qds","message":"z-image-turbo seed=42 1280x720 — step 3/9","event":"generation_step","fields":{"step":3,"total":9}}
 ```
 
 `event` is one of `model_loading`, `model_ready`, `model_unload`, `generation_start`, `generation_step`, `generation_done`, `generation_cancel_requested`, or on the conversion side `prequantize_component_start`, `prequantize_progress`, `prequantize_component_done`. The human-readable `message` stays alongside the structured fields.
@@ -487,7 +502,7 @@ Finally, `request_timeout_s` goes to `2400`: 50 steps on a 32B model far exceed 
 - **stdout**: the structured events, one line one valid JSON object, nothing else;
 - **stderr**: the human-readable text, the progress bars, and uvicorn's startup logs.
 
-`mflux-server-prequantize --json-logs` applies the same configuration to the conversion.
+`qds prequantize --json-logs` applies the same configuration to the conversion.
 
 ### Access from the local network
 
@@ -515,7 +530,7 @@ uv run ruff format .
 
 The tests cover the registry, OpenAI conformance and the engine (caching, serialization, unloading) with a fake model. **Real inference is verified by hand**:
 
-1. `uv run mflux-server`
+1. `qds serve`
 2. a first generation on `flux2-klein` — time it, loading included;
 3. **run it again identically: it must be noticeably faster.** That is the test that validates the cache;
 4. `negative_prompt` on `flux2-klein` → an explicit 400;

@@ -13,7 +13,7 @@ import pathlib
 
 import pytest
 
-from mflux_server.registry import (
+from qds.registry import (
     BASE_SPECS,
     BASE_SPECS_BY_KEY,
     QUANTIZE_CHOICES,
@@ -22,7 +22,7 @@ from mflux_server.registry import (
     build_registry,
     capability_for,
 )
-from mflux_server.settings import ModelOverride, Settings
+from qds.settings import ModelOverride, Settings
 
 
 def test_every_builtin_model_publishes_an_internally_consistent_capability():
@@ -133,8 +133,8 @@ def test_an_unsupported_bit_depth_is_rejected_by_the_backend(tmp_path, monkeypat
     # ...and `load_settings` is what makes that reach a real config file.
     config = tmp_path / "server-config.json"
     config.write_text(json.dumps({"default_quantize": 7}), encoding="utf-8")
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
-    from mflux_server.settings import load_settings
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+    from qds.settings import load_settings
 
     with pytest.raises(ValueError):
         load_settings()
@@ -153,10 +153,10 @@ def test_capabilities_endpoint_matches_the_spec(client):
 
 def test_react_keeps_no_quantization_table_of_its_own():
     """The whole point of the slice: one source of truth, and it is not the app."""
-    # tests/ -> server/ -> src/ ; the desktop app is src/desktop/src.
-    src = pathlib.Path(__file__).resolve().parents[2] / "desktop" / "src"
+    # tests/ -> server/ -> src/ ; the dashboard is src/dashboard/src.
+    src = pathlib.Path(__file__).resolve().parents[2] / "dashboard" / "src"
     if not src.is_dir():  # pragma: no cover - server-only checkout
-        pytest.skip("desktop sources not present")
+        pytest.skip("dashboard sources not present")
     offenders = []
     for path in src.rglob("*.ts*"):
         text = path.read_text(encoding="utf-8")
@@ -175,14 +175,14 @@ def test_the_catalogue_carries_capability_for_disabled_models_too(monkeypatch, t
     that endpoint left every disabled row with a dead control and no reason —
     which is most of the catalogue on a default install.
     """
-    from mflux_server.fetch import cache_status
+    from qds.fetch import cache_status
 
     config = tmp_path / "server-config.json"
     config.write_text(
         json.dumps({"models": {"ideogram-4": {"enabled": False}, "z-image": {"enabled": False}}}),
         encoding="utf-8",
     )
-    monkeypatch.setenv("MFLUX_SERVER_CONFIG", str(config))
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
 
     rows = {row["key"]: row for row in cache_status()}
