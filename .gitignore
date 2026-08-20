@@ -5,6 +5,14 @@ mflux.log
 # Generated images served for response_format="url"
 images/
 
+# Playground sessions database and images, when `playground_store` is set to a
+# relative path or a test leaves one behind. The shipped default puts the store
+# beside `server-config.json`, not here. Anchored on purpose:
+# `src/dashboard/src/playground/` is source, and a bare `playground/` would
+# swallow it.
+/playground/
+/src/server/playground/
+
 # Project outputs
 dist/
 build/

@@ -87,7 +87,10 @@ class ModelSpec:
     provenance: str = "built_in"
     #: For imported rows: the built-in profile the defaults were taken from.
     base_profile_key: str | None = None
-    #: Human name, for imported rows whose key is an opaque id.
+    #: Human name. Every built-in sets one, because a key is an API identifier
+    #: and not something to read: `qwen-image-2512` is what a request sends,
+    #: `Qwen` is what a person is shown. An imported row sets it too, its key
+    #: being an opaque id.
     display_name: str | None = None
     #: The public, machine-facing identifier for an imported model. `None` for a
     #: built-in, whose catalogue `key` already *is* its public name — which is
@@ -157,6 +160,7 @@ class ModelSpec:
 BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="flux2-klein",
+        display_name="Flux 2 Klein",
         family="flux2",
         repo="black-forest-labs/FLUX.2-klein-9B",
         model_config_name="flux2_klein_9b",
@@ -189,6 +193,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="flux2-dev",
+        display_name="Flux 2 Dev",
         family="flux2-dev",
         repo="black-forest-labs/FLUX.2-dev",
         # No factory on `ModelConfig`: mflux 0.18.0 does not know FLUX.2-dev.
@@ -202,12 +207,12 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # is, one saved variant among the possible ones. Source and saved
         # representation are two facts, and this is the source.
         model_path=None,
-        # 1024² rather than 1920x1072: 32B over 50 steps, area is expensive.
+        # 1024² rather than 1920x1072: 32B over 20 steps, area is expensive.
         default_width=1024,
         default_height=1024,
         # Base model, not step-distilled (see mflux cli/defaults/defaults.py,
         # MODEL_INFERENCE_STEPS for the flux2-klein-base entries).
-        default_steps=50,
+        default_steps=20,
         default_guidance=4.0,
         supports_guidance=True,
         # Guidance-distilled: the scalar is embedded in the transformer, so
@@ -221,6 +226,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="qwen-image-2512",
+        display_name="Qwen",
         family="qwen",
         repo="Qwen/Qwen-Image-2512",
         # Definitely not ModelConfig.from_name() here: resolving by name loses
@@ -240,11 +246,12 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         #
         # The two are not paid for the same way here. `qwen_image.py:106-119` runs
         # the negative pass *unconditionally*, whatever the guidance, so raising
-        # it to 4.0 costs nothing — unlike z-image, which skips that pass below
-        # 1.0. Steps do cost: two transformer forwards each, so 50 steps on a 20B
-        # is 100 passes per image. Lower `default_steps` in the config if that is
-        # too slow; lowering the guidance would only cost quality.
-        default_steps=50,
+        # it to 4.0 costs nothing - unlike z-image, which skips that pass below
+        # 1.0. Steps do cost: two transformer forwards each, so the card's 50 on a
+        # 20B is 100 passes per image. Hence 20 by default, which is what this
+        # server would rather spend; raise `default_steps` in the config to follow
+        # the card exactly.
+        default_steps=20,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -261,6 +268,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="z-image",
+        display_name="Z-Image",
         family="z-image",
         repo="mlx-community/Z-Image-bf16",
         model_config_name="z_image",
@@ -268,7 +276,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # An mlx-community conversion; the license follows Tongyi-MAI upstream.
         default_width=1920,
         default_height=1072,
-        default_steps=50,
+        default_steps=20,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -279,6 +287,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="z-image-turbo",
+        display_name="Z-Image Turbo",
         family="z-image",
         repo="mlx-community/Z-Image-Turbo-bf16",
         model_config_name="z_image_turbo",
@@ -296,16 +305,18 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="ernie-image",
+        display_name="Ernie",
         family="ernie",
         repo="baidu/ERNIE-Image",
         model_config_name="ernie_image",
         model_path=None,
         default_width=1024,
         default_height=1024,
-        # 50 steps and guidance 4.0: the model card, and what its own CLI forces
-        # (`ernie_image_generate.py:31-33`). Its signature defaults to 8 and 1.0,
-        # which are the *turbo* values — the constructor defaults to turbo too.
-        default_steps=50,
+        # The card and its own CLI (`ernie_image_generate.py:31-33`) ask for 50
+        # steps and guidance 4.0. Guidance is kept; the step count is not - 20 is
+        # this server's default everywhere a base model would otherwise cost 50.
+        # The signature's 8 and 1.0 are the *turbo* values, not these.
+        default_steps=20,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -317,6 +328,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="ernie-image-turbo",
+        display_name="Ernie Turbo",
         family="ernie",
         repo="baidu/ERNIE-Image-Turbo",
         model_config_name="ernie_image_turbo",
@@ -340,6 +352,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="fibo",
+        display_name="FIBO",
         family="fibo",
         repo="briaai/FIBO",
         # `ModelConfig.fibo().model_name` is already `briaai/FIBO`, so no path
@@ -349,7 +362,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         model_path=None,
         default_width=1024,
         default_height=1024,
-        default_steps=50,
+        default_steps=20,
         # 5.0, "base FIBO typical" per its CLI — not the 4.0 of the signature.
         default_guidance=5.0,
         supports_guidance=True,
@@ -367,6 +380,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="fibo-lite",
+        display_name="FIBO Lite",
         family="fibo",
         repo="briaai/Fibo-lite",
         model_config_name="fibo_lite",
@@ -389,6 +403,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="ideogram-4",
+        display_name="Ideogram 4",
         family="ideogram4",
         repo="ideogram-ai/ideogram-4-fp8",
         model_config_name="ideogram4_fp8",
@@ -768,6 +783,20 @@ def _model_config(name: str):
     return getattr(ModelConfig, name)()
 
 
+def generates_from_source(spec: ModelSpec) -> bool:
+    """Whether generation can load this spec's source weights directly.
+
+    False for FLUX.2-dev alone: its source ships bf16, ~111 GB, so generation
+    needs a saved quantized copy and `load_model` refuses the source outright.
+
+    Asked by anything that must not promise generation from a download. The
+    download path in particular: everywhere else "download" means "load the model
+    and exit", which for this one model would hit the guard below instead of
+    fetching anything.
+    """
+    return spec.family != "flux2-dev"
+
+
 def _require_local_artifact(spec: ModelSpec, model_path: str | None) -> None:
     """Fail early and clearly unless the pre-quantized artifact is actually complete.
 
@@ -979,3 +1008,50 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
         return Ideogram4(model_config=model_config, model_path=model_path, quantize=quantize)
 
     raise ValueError(f"Unknown model family: {family!r}")
+
+
+def latent_creator_for(family: str) -> Any | None:
+    """The latent unpacker for a family `load_model` knows, or None (no previews).
+
+    Mirrors each family's CLI registration of mflux's `StepwiseHandler`: that is
+    the reference for which creator belongs to which model. Only the unpacking
+    side is used here — turning a mid-loop latent back into a decodable tensor —
+    so the classes are returned, not instances (`unpack_latents` is a
+    staticmethod on every one of them).
+
+    Fail-closed: an unknown family yields `None`, which means "no preview", never
+    an error. Imports stay inside the function for the same reason they do in
+    `load_model`: this module is imported by the catalogue path, which must not
+    pull in torch.
+    """
+    if family in ("flux2", "flux2-dev", "flux2-edit"):
+        from mflux.models.flux2.latent_creator.flux2_latent_creator import Flux2LatentCreator
+
+        return Flux2LatentCreator
+
+    if family in ("qwen", "qwen-edit"):
+        from mflux.models.qwen.latent_creator.qwen_latent_creator import QwenLatentCreator
+
+        return QwenLatentCreator
+
+    if family == "z-image":
+        from mflux.models.z_image.latent_creator.z_image_latent_creator import ZImageLatentCreator
+
+        return ZImageLatentCreator
+
+    if family == "ernie":
+        from mflux.models.ernie_image.latent_creator.ernie_latent_creator import ErnieLatentCreator
+
+        return ErnieLatentCreator
+
+    if family == "fibo":
+        from mflux.models.fibo.latent_creator.fibo_latent_creator import FiboLatentCreator
+
+        return FiboLatentCreator
+
+    if family == "ideogram4":
+        from mflux.models.ideogram4.latent_creator.ideogram4_latent_creator import Ideogram4LatentCreator
+
+        return Ideogram4LatentCreator
+
+    return None

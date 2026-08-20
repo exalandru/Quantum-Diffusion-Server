@@ -157,6 +157,10 @@ The download works by loading the model and exiting. That is deliberate: the dow
 | `/v1/unload` | POST | extension: frees resident weights without restarting |
 | `/health` | GET | public even with an API key set; reports the warm model and MLX memory |
 | `/images/{name}.png` | GET | images served for `response_format="url"` |
+| `/playground` | GET | the browser playground page (see below) |
+| `/playground/api/…` | GET/POST/DELETE | its sessions, generations and cancellation |
+| `/playground/api/preview` | GET | the running playground generation's latest partially-denoised frame (JPEG); 404 when there is none |
+| `/playground/images/{name}.png` | GET | images owned by a playground session; **not** TTL-purged |
 
 ### Following, cancelling, freeing
 
@@ -207,6 +211,52 @@ Two genuinely different mechanics, and the server picks based on what you send:
 
 OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does inpainting.
 
+### The playground — `/playground`
+
+A prompt-driven studio the server serves itself, in the dashboard's design and
+at the dashboard's auth level (the data-plane credential, plus a same-origin
+check because it is a browser control surface).
+
+What separates it from `/v1/images/generations` is durability. A submission is
+accepted with `202` and a record, then runs on a single in-process FIFO worker
+that calls the same engine — so generations still serialize, and an `n=3`
+request still runs three images one after another:
+
+- the record and its images live in `playground_store` — by default a
+  `playground/` directory beside `server-config.json` — outside `image_store`,
+  so no TTL purge can reach them. They are deleted with their session, and only
+  then;
+- closing the browser loses nothing: reopening `/playground` reconstructs the
+  sessions, the transcript and the live status from the server alone;
+- every accepted generation reaches a terminal status. One interrupted by a
+  restart is marked `failed` with `Interrupted by server restart` at the next
+  startup, rather than staying `running` forever.
+
+Cancellation has three cases, because the engine can only be interrupted while
+it is denoising:
+
+- **queued** → cancelled by its record; it is never handed to the engine;
+- **running, mid-denoise** → the engine's global stop, the same mechanism
+  `/v1/cancel` exposes, taking effect at the next step;
+- **running, but loading weights, waiting on the engine lock, or between the
+  images of an `n>1` run** → the engine refuses the request there, so the runner
+  holds it and applies it at the next image boundary. The image already being
+  computed is kept; the record ends `cancelled` with the images it produced.
+
+It is not per-job cancellation: the engine's stop is global, so with an external
+`/v1` client holding the engine it is that request which stops.
+
+While a generation runs, the page shows the image being denoised: every second
+step the engine decodes the current latents into a small JPEG, keeps it in one
+in-memory slot, and bumps `preview_seq` in the `/v1/progress` snapshot; the page
+fetches the new frame from `GET /playground/api/preview` and fades it in over the
+previous one. A slow accent-tinted sheen crosses the box the whole time — that,
+not the frames, is what says "still working" while a partial image sits
+unchanged for several seconds. One slot is enough because the engine runs one
+generation at a time, and the bytes stay off the SSE stream, which the dashboard
+page shares. A family whose latent layout is not mapped, or a decode that fails,
+loses its previews for that run — never its generation.
+
 ## Configuration
 
 `server-config.json` (JSON). Every key in the `server` section can be overridden by `QDS_SERVER_<KEY>` in upper case — `QDS_SERVER_PORT=9000`, `QDS_SERVER_API_KEY=…`, `QDS_SERVER_CORS_ORIGINS=https://a.example,https://b.example`. `QDS_SERVER_CONFIG` points at a different config file.
@@ -221,6 +271,7 @@ OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does
 | `max_n` | `4` | bounds OpenAI's `n` (generations are sequential) |
 | `request_timeout_s` | `900` | interrupts the denoising loop past this point |
 | `image_store` / `image_ttl_s` | `images` / `3600` | directory and lifetime of images served as `url` |
+| `playground_store` | `null` | directory holding the playground's sessions database and its images. `null` = a `playground/` directory **beside this configuration file**, where the rest of the installation's state lives — not beside the working directory, which is read-only when the server is launched from the app bundle. A relative value set here is resolved against the working directory, like `image_store` |
 | `max_upload_mb` | `25` | maximum size of an image sent to `/v1/images/edits` |
 | `default_response_format` | `url` | value used when the client sends none. `url` is OpenAI's default: changing it breaks the SDKs |
 | `log_level` / `log_file` | `INFO` / `mflux.log` | `log_file: null` disables the file. The path is made absolute and parent directories are created |
@@ -517,7 +568,7 @@ The server refuses to start with a non-local host and no API key.
 - **One generation at a time.** That is deliberate: on unified memory, two live models saturate the machine. Concurrent requests are queued, not rejected.
 - **`n > 1` is sequential.** The model stays warm, but the images come out one after another.
 - **The timeout does not cover weight loading.** It is only checked between denoising steps — the only interruption point mflux offers. So a first call that downloads 30 GB can exceed `request_timeout_s`.
-- **No `partial_images`.** Step progress is available over `/v1/progress` (see above), but there is no preview of the image being denoised.
+- **No `partial_images` on `/v1`.** OpenAI's streamed partial images are not implemented; a `/v1` client gets step progress over `/v1/progress` and nothing else. The browser playground *does* show the image being denoised — every second step, decoded server-side and fetched from `/playground/api/preview` — and that is playground-only by construction: `/v1` jobs never ask for it.
 - **No LoRA, ControlNet, inpainting or upscaling.** mflux offers them; they are not exposed here.
 
 ## Development

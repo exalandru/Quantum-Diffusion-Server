@@ -29,7 +29,7 @@ from typing import Any
 
 from qds.errors import APIError, GenerationTimeout, translate_mflux_exception
 from qds.logs import SERVER_LOGGER, capture_stdout
-from qds.registry import ModelSpec, load_model
+from qds.registry import ModelSpec, latent_creator_for, load_model
 
 logger = logging.getLogger(SERVER_LOGGER)
 
@@ -69,6 +69,10 @@ class ProgressSnapshot:
     seed: int | None = None
     step: int = 0
     total: int = 0
+    #: 0 = no preview frame for the current run; otherwise the engine-lifetime
+    #: count of the latest frame. Monotonic across runs, so it doubles as the
+    #: cache-buster the client puts on the preview URL.
+    preview_seq: int = 0
     started_at: float | None = None
 
     def as_dict(self) -> dict[str, Any]:
@@ -80,6 +84,7 @@ class ProgressSnapshot:
             "seed": self.seed,
             "step": self.step,
             "total": self.total,
+            "preview_seq": self.preview_seq,
             "elapsed_s": elapsed,
         }
 
@@ -90,6 +95,7 @@ class ProgressSnapshot:
         self.seed = None
         self.step = 0
         self.total = 0
+        self.preview_seq = 0
         self.started_at = None
 
 
@@ -110,6 +116,54 @@ class GenerationJob:
     #: the request. Only then may the step count be left out of the call, which is
     #: what lets the preset's guidance schedule apply.
     steps_from_preset: bool = False
+    #: Decode a preview image every N denoising steps; 0 disables previews.
+    #: Set by the playground runner only — the `/v1` plane never opts in.
+    preview_every: int = 0
+
+
+@dataclass
+class _PreviewPlan:
+    """What one armed run needs in order to render previews."""
+
+    every: int
+    creator: Any
+    model: Any
+
+
+#: Previews are shown on the same 512px track as the feed's finished images, and
+#: are JPEG because they are transient frames, not the deliverable (which stays PNG).
+_PREVIEW_MAX_PX = 512
+_PREVIEW_JPEG_QUALITY = 80
+
+
+def _render_preview(*, model: Any, creator: Any, latents: Any, config: Any, seed: int, prompt: str) -> bytes:
+    """Decode a mid-loop latent into a small JPEG.
+
+    Mirrors mflux's own `StepwiseHandler._save_image`
+    (callbacks/instances/stepwise_handler.py) — that is the reference for how a
+    partially-denoised latent becomes an image. Standalone rather than a method
+    so tests can replace it without a model.
+    """
+    from mflux.utils.image_util import ImageUtil
+
+    unpacked = creator.unpack_latents(latents=latents, height=config.height, width=config.width)
+    if hasattr(model.vae, "decode_packed_latents"):
+        decoded = model.vae.decode_packed_latents(unpacked)
+    else:
+        decoded = model.vae.decode(unpacked)
+    image = ImageUtil.to_image(
+        decoded_latents=decoded,
+        config=config,
+        seed=seed,
+        prompt=prompt,
+        quantization=getattr(model, "bits", 0) or 0,
+        generation_time=0.0,
+    ).image
+    image = image.convert("RGB")
+    image.thumbnail((_PREVIEW_MAX_PX, _PREVIEW_MAX_PX))
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=_PREVIEW_JPEG_QUALITY)
+    return buffer.getvalue()
 
 
 class _ProgressCallback:
@@ -130,15 +184,38 @@ class _ProgressCallback:
         self.timed_out: bool = False
         self.cancel_requested: bool = False
         self.cancelled: bool = False
+        self._preview_plan: _PreviewPlan | None = None
+        #: Latest preview frame of the running generation, or None. Written here
+        #: on the worker thread, read from the event loop; see `ProgressSnapshot`
+        #: for why that needs no lock.
+        self.preview_jpeg: bytes | None = None
+        self._preview_count: int = 0  # never reset: monotonic across runs
 
-    def arm(self, label: str, deadline: float | None) -> None:
+    def arm(self, label: str, deadline: float | None, preview: _PreviewPlan | None = None) -> None:
         self.label = label
         self.deadline = deadline
         self.timed_out = False
         self.cancel_requested = False
         self.cancelled = False
+        self._preview_plan = preview
+        self.preview_jpeg = None
 
-    def call_in_loop(self, *, t: int, config: Any, time_steps: Any, **_: Any) -> None:
+    def disarm_preview(self) -> None:
+        """Drop the frame and the plan. The plan holds the model: it must not outlive the run."""
+        self.preview_jpeg = None
+        self._preview_plan = None
+
+    def call_in_loop(
+        self,
+        *,
+        t: int,
+        config: Any,
+        time_steps: Any,
+        latents: Any = None,
+        seed: int = 0,
+        prompt: str = "",
+        **_: Any,
+    ) -> None:
         from mflux.utils.exceptions import StopImageGenerationException
 
         step = t + 1
@@ -156,12 +233,33 @@ class _ProgressCallback:
         self._progress.total = total
         if self._log_every and (step % self._log_every == 0 or step == total):
             logger.info(
-                "%s — step %d/%d",
+                "%s - step %d/%d",
                 self.label,
                 step,
                 total,
                 extra={"event": "generation_step", "fields": {"step": step, "total": total}},
             )
+
+        plan = self._preview_plan
+        if plan is not None and step < total and step % plan.every == 0:
+            # `step < total`: the final step's image arrives moments later
+            # through the normal path, at full resolution.
+            try:
+                self.preview_jpeg = _render_preview(
+                    model=plan.model,
+                    creator=plan.creator,
+                    latents=latents,
+                    config=config,
+                    seed=seed,
+                    prompt=prompt,
+                )
+                # Bytes before the counter: the reader fetches on a counter
+                # change, so the frame must already be there.
+                self._preview_count += 1
+                self._progress.preview_seq = self._preview_count
+            except Exception:
+                logger.debug("Preview decode failed; previews disabled for this run", exc_info=True)
+                self._preview_plan = None
 
 
 class ModelEngine:
@@ -192,6 +290,14 @@ class ModelEngine:
             "loaded_model": self.loaded_model,
             "memory": self.memory_stats(),
         }
+
+    def preview(self) -> bytes | None:
+        """Latest preview JPEG of the running generation, if any. Lock-free.
+
+        Empty outside a run and whenever the running job did not opt in, which is
+        every `/v1` request.
+        """
+        return self._callback.preview_jpeg
 
     def request_cancel(self) -> bool:
         """Request that the running generation stop. `False` if nothing is running.
@@ -266,7 +372,14 @@ class ModelEngine:
             model = self._ensure_model(job.spec, job.kind)
             label = f"{job.spec.key} seed={job.seed} {job.width}x{job.height}"
             deadline = time.monotonic() + self._request_timeout_s if self._request_timeout_s else None
-            self._callback.arm(label, deadline)
+
+            preview = None
+            if job.preview_every > 0:
+                family = job.spec.edit.family if job.kind == "edit" and job.spec.edit else job.spec.family
+                creator = latent_creator_for(family)
+                if creator is not None:
+                    preview = _PreviewPlan(every=job.preview_every, creator=creator, model=model)
+            self._callback.arm(label, deadline, preview)
 
             self._snapshot.state = "generating"
             self._snapshot.model = job.spec.key
@@ -277,7 +390,7 @@ class ModelEngine:
             self._snapshot.started_at = time.monotonic()
 
             logger.info(
-                "▶ %s — %d steps",
+                "▶ %s - %d steps",
                 label,
                 job.steps,
                 extra={
@@ -297,7 +410,7 @@ class ModelEngine:
                 generated = model.generate_image(**self._generate_kwargs(job))
             elapsed = time.monotonic() - started
             logger.info(
-                "✓ %s — %.1f s",
+                "✓ %s - %.1f s",
                 label,
                 elapsed,
                 extra={
@@ -317,6 +430,9 @@ class ModelEngine:
             # crash — the engine is available again and SSE consumers must see
             # it. The loaded model, however, stays warm.
             self._snapshot.reset()
+            # The endpoint 404s again the moment the run is over, and the plan
+            # goes with it: holding it would keep the model alive past `unload()`.
+            self._callback.disarm_preview()
 
     def _generate_kwargs(self, job: GenerationJob) -> dict[str, Any]:
         spec = job.spec
@@ -384,7 +500,7 @@ class ModelEngine:
         self._snapshot.started_at = time.monotonic()
 
         logger.info(
-            "Loading %s (%s) — %s",
+            "Loading %s (%s) - %s",
             spec.key,
             kind,
             spec.repo,
@@ -401,7 +517,7 @@ class ModelEngine:
         self._loaded = target
         memory = self.memory_stats()
         logger.info(
-            "Model %s ready in %.1fs — memory %s",
+            "Model %s ready in %.1fs - memory %s",
             spec.key,
             time.monotonic() - started,
             memory,

@@ -13,6 +13,7 @@ const IDLE: Progress = {
   seed: null,
   step: 0,
   total: 0,
+  preview_seq: 0,
   elapsed_s: null,
   loaded_model: null,
   memory: {},
@@ -138,7 +139,7 @@ export function Dashboard({
           <div className="actions">
             <button
               onClick={() =>
-                void act("restart", api.serverRestart, "Restarting — this page will reconnect.")
+                void act("restart", api.serverRestart, "Restarting - this page will reconnect.")
               }
               disabled={anyBusy}
             >
@@ -279,19 +280,19 @@ export function Dashboard({
           </div>
           <div className="stat">
             <dt>MLX active</dt>
-            <dd>{memory.active_gb !== undefined ? `${memory.active_gb.toFixed(2)} GB` : "—"}</dd>
+            <dd>{memory.active_gb !== undefined ? `${memory.active_gb.toFixed(2)} GB` : "-"}</dd>
           </div>
           <div className="stat">
             <dt>Peak</dt>
-            <dd>{memory.peak_gb !== undefined ? `${memory.peak_gb.toFixed(2)} GB` : "—"}</dd>
+            <dd>{memory.peak_gb !== undefined ? `${memory.peak_gb.toFixed(2)} GB` : "-"}</dd>
           </div>
           <div className="stat">
             <dt>Cache</dt>
-            <dd>{memory.cache_gb !== undefined ? `${memory.cache_gb.toFixed(2)} GB` : "—"}</dd>
+            <dd>{memory.cache_gb !== undefined ? `${memory.cache_gb.toFixed(2)} GB` : "-"}</dd>
           </div>
           <div className="stat">
             <dt>Server version</dt>
-            <dd>{health?.version ?? "—"}</dd>
+            <dd>{health?.version ?? "-"}</dd>
           </div>
           <div className="stat">
             <dt>Release policy</dt>
@@ -301,7 +302,7 @@ export function Dashboard({
                 configured 10-second release — observed with the server stopped. */}
             <dd>
               {!health
-                ? "—"
+                ? "-"
                 : idleUnload === null || idleUnload === undefined
                   ? "keep warm"
                   : idleUnload === 0

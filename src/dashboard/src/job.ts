@@ -79,7 +79,7 @@ export function describeOutcome(
     const left = (missing ?? []).length;
     if (!done.length) return null;
     return (
-      `${done.join(", ")} converted — ` +
+      `${done.join(", ")} converted - ` +
       `${left} component${left === 1 ? "" : "s"} remaining before this variant can be used.`
     );
   }

@@ -209,3 +209,64 @@ def test_generating_from_the_raw_source_is_refused_with_the_reason(monkeypatch):
     message = raised.value.message
     assert "does not fit" in message
     assert "Quantization dialog" in message or "prequantized_variant" in message
+
+
+def test_downloading_the_source_does_not_go_through_the_generation_guard(monkeypatch, tmp_path):
+    """Install must fetch the weights, not refuse them for not being generatable.
+
+    The defect: `fetch()` downloads by loading the model, so FLUX.2-dev's Install
+    button ran into `_require_local_artifact` and reported "cannot be generated
+    from its source … no saved variant is selected" — a sentence about generation,
+    for a request that only asked for the bytes, and with no way out of the loop
+    (nothing could be downloaded, so nothing could be converted).
+    """
+    from qds import fetch as fetch_module
+    from qds.flux2_dev import Flux2DevWeightDefinition
+
+    config = tmp_path / "server-config.json"
+    config.write_text(json.dumps({"cache_dir": str(tmp_path / "cache")}), encoding="utf-8")
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+
+    calls: dict[str, object] = {}
+
+    def fake_snapshot_download(*, repo_id, allow_patterns):
+        calls["repo_id"] = repo_id
+        calls["allow_patterns"] = allow_patterns
+        return str(tmp_path / "snapshot")
+
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download", fake_snapshot_download, raising=True
+    )
+    # Loading is what must *not* happen: it is the call that refuses.
+    monkeypatch.setattr(
+        "qds.registry.load_model",
+        lambda *a, **k: pytest.fail("fetch loaded the model instead of downloading it"),
+    )
+
+    assert fetch_module.fetch("flux2-dev") == 0
+    assert calls["repo_id"] == RAW_REPO
+    # The patterns are the weight definition's own, not a second list to maintain
+    # — and they exclude the root monolith that duplicates `transformer/`.
+    assert calls["allow_patterns"] == Flux2DevWeightDefinition.get_download_patterns()
+    assert "*.safetensors" not in calls["allow_patterns"]
+
+
+def test_downloading_is_refused_when_the_source_is_already_a_local_directory(
+    monkeypatch, tmp_path
+):
+    """Nothing to fetch, and the reason names the directory rather than generation."""
+    from qds import fetch as fetch_module
+
+    weights = tmp_path / "weights"
+    weights.mkdir()
+    config = tmp_path / "server-config.json"
+    config.write_text(
+        json.dumps({"models": {"flux2-dev": {"model_path": str(weights)}}}), encoding="utf-8"
+    )
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+    monkeypatch.setattr(
+        "huggingface_hub.snapshot_download",
+        lambda **k: pytest.fail("a local source must not be downloaded"),
+    )
+
+    assert fetch_module.fetch("flux2-dev") == 2

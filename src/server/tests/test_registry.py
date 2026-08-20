@@ -10,6 +10,7 @@ from qds.registry import (
     BASE_SPECS_BY_KEY,
     build_registry,
     edit_enabled,
+    latent_creator_for,
     load_model,
     normalize_dimension,
     parse_size,
@@ -108,6 +109,23 @@ def test_qwen_edit_is_off_by_default_due_to_separate_download():
     assert edit_enabled(spec) is False
 
 
+def test_every_catalogued_family_has_a_latent_creator():
+    """Add a family without its unpacker and previews silently stop working.
+
+    Edit families count: the playground submits edits too, and they run the same
+    denoising loop.
+    """
+    families = {spec.family for spec in BASE_SPECS_BY_KEY.values()}
+    families |= {spec.edit.family for spec in BASE_SPECS_BY_KEY.values() if spec.edit is not None}
+    assert {family: latent_creator_for(family) is not None for family in sorted(families)} == {
+        family: True for family in sorted(families)
+    }
+
+
+def test_an_unknown_family_gets_no_previews_rather_than_an_error():
+    assert latent_creator_for("stable-diffusion-1.5") is None
+
+
 def test_qwen_does_not_use_from_name():
     # from_name() would lose the scheduler's sigma_* values; we pass the
     # canonical factory plus the repo as model_path. And the path is needed at all
@@ -122,15 +140,12 @@ def test_qwen_does_not_use_from_name():
 
 
 def test_qwen_follows_its_own_card_not_the_mflux_defaults():
-    """The Qwen-Image-2512 card asks for 50 steps and cfg 4.0.
+    """The Qwen-Image-2512 card asks for cfg 4.0; the step count is ours."""
 
-    mflux would give 20 steps (`MODEL_INFERENCE_STEPS["qwen"]`) and guidance 3.5
-    (`GUIDANCE_SCALE`, its blanket default for every model). qwen-image is the one
-    entry in the catalogue where the two disagree, so it is also the one that would
-    silently regress if someone "harmonized" the table against mflux.
-    """
+    # Guidance 4.0 comes from the card; 20 steps is this server's own default for a
+    # base model, not mflux's blanket 3.5 guidance.
     spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
-    assert spec.default_steps == 50
+    assert spec.default_steps == 20
     assert spec.default_guidance == 4.0
 
 
@@ -141,8 +156,8 @@ def test_flux2_dev_is_guidance_distilled_and_prequantized():
     assert spec.supports_guidance is True
     assert spec.supports_negative_prompt is False
     assert spec.default_guidance == 4.0
-    # Base model: 50 steps, and 1024² to avoid paying for area on a 32B.
-    assert spec.default_steps == 50
+    # Base model: 20 steps, and 1024² to avoid paying for area on a 32B.
+    assert spec.default_steps == 20
     assert (spec.default_width, spec.default_height) == (1024, 1024)
     # The upstream repo ships bf16: loading goes through a saved variant, which
     # is now a *variant* rather than the model's identity. Its source is the raw

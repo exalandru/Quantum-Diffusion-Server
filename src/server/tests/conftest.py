@@ -72,6 +72,8 @@ class FakeEngine:
         #: Simulates a running generation, to exercise `/v1/cancel`.
         self.busy = False
         self.cancel_requested = False
+        #: Whatever `/playground/api/preview` should serve right now.
+        self.preview_bytes: bytes | None = None
 
     async def generate(self, job: GenerationJob) -> bytes:
         self.jobs.append(job)
@@ -89,10 +91,14 @@ class FakeEngine:
             "seed": 42 if self.busy else None,
             "step": 3 if self.busy else 0,
             "total": 9 if self.busy else 0,
+            "preview_seq": 0,
             "elapsed_s": 1.5 if self.busy else None,
             "loaded_model": self.loaded_model,
             "memory": self.memory_stats(),
         }
+
+    def preview(self) -> bytes | None:
+        return self.preview_bytes
 
     def request_cancel(self) -> bool:
         if not self.busy:
@@ -120,6 +126,7 @@ def settings(tmp_path) -> Settings:
         {
             "server": {
                 "image_store": str(tmp_path / "images"),
+                "playground_store": str(tmp_path / "playground"),
                 "log_file": None,
                 "progress_log_every": 0,
                 "max_n": 4,

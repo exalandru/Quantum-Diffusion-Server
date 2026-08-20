@@ -111,6 +111,17 @@ export type ModelCapabilities = {
   supports_edit: boolean;
 };
 
+/** One entry of `/v1/models`, with its capabilities under `mflux`. */
+export type ModelEntry = {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+  mflux: ModelCapabilities;
+};
+
+export type ModelList = { object: string; data: { id: string; display_name: string }[] };
+
 export type Capabilities = {
   default_model: string;
   max_n: number;
@@ -126,9 +137,59 @@ export type Progress = {
   seed: number | null;
   step: number;
   total: number;
+  /**
+   * Monotonic id of the latest preview frame at `/playground/api/preview`;
+   * 0 when there is none.
+   */
+  preview_seq: number;
   elapsed_s: number | null;
   loaded_model: string | null;
   memory: Health["memory"];
+};
+
+/** A playground conversation, as `/playground/api/sessions` lists it. */
+export type PlaygroundSession = {
+  id: string;
+  /** The first prompt, truncated. Null until the session has one. */
+  title: string | null;
+  createdAt: number;
+  updatedAt: number;
+  /** Something in this session is queued or running: the sidebar's live dot. */
+  generating: boolean;
+};
+
+export type PlaygroundStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
+
+/**
+ * One durable generation record.
+ *
+ * Server-owned in full: closing the tab loses nothing, and reopening the page
+ * rebuilds the feed from these alone.
+ */
+export type PlaygroundGeneration = {
+  id: string;
+  sessionId: string;
+  /**
+   * The lineage this generation belongs to — its own id unless it was started
+   * from another generation's image. The feed renders one group as one entry.
+   */
+  groupId: string;
+  prompt: string;
+  /** Public model name, as `/v1/models` lists it. */
+  model: string;
+  kind: "txt2img" | "edit";
+  n: number;
+  size: string;
+  steps: number;
+  seeds: number[];
+  /** Root-relative URL of the reference image, when one was attached. */
+  contextImage: string | null;
+  status: PlaygroundStatus;
+  error: string | null;
+  images: { url: string; seed: number }[];
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
 };
 
 /**

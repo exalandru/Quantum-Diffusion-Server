@@ -16,6 +16,13 @@ Two modes, both aimed at the desktop app but usable on their own:
   in step with mflux. Loading also proves the thing works — gated access granted,
   quantization applied — instead of merely proving that files landed on disk.
 
+  One model cannot be downloaded that way. FLUX.2-dev's source is bf16, ~111 GB,
+  so it cannot be loaded at all and `load_model` refuses it: for that one the
+  files are fetched directly, still by its `WeightDefinition`'s patterns, and the
+  log says plainly that generation will need a conversion. Refusing to download it
+  at all was worse — it left the only path to a usable FLUX.2-dev behind an error
+  about generation, which is not what the button said it would do.
+
 What it does *not* buy: the quantization is not persisted, so the first real load
 pays it again. It is the download that is worth moving, and the download is what
 this moves.
@@ -400,15 +407,62 @@ def fetch(key: str) -> int:
             spec.repo,
             spec.license,
         )
-    logger.info("Fetching %s (%s) — %s", key, resolved_target(spec), spec.license)
+    logger.info("Fetching %s (%s) - %s", key, resolved_target(spec), spec.license)
 
-    from qds.registry import load_model
+    from qds.registry import generates_from_source, load_model
+
+    if not generates_from_source(spec):
+        return _download_source(spec)
 
     model = load_model(spec)
     # Dropping the reference is enough: the process exits right after, which is
     # the cheapest possible teardown.
     del model
     logger.info("%s is ready. The next generation will not wait for a download.", key)
+    return 0
+
+
+def _download_source(spec: Any) -> int:
+    """Download the weights without instantiating the model.
+
+    For a model whose source cannot be generated from, "load it and exit" is not
+    available: `load_model` refuses the source rather than fetching it. So the
+    files are pulled directly — but by the patterns of the family's own
+    `WeightDefinition`, which is what keeps this from becoming a second copy of
+    the file list that must track mflux. For FLUX.2-dev those patterns are also
+    what excludes the 64.8 GB root monolith duplicating `transformer/`.
+    """
+    from qds import availability as av
+
+    source = spec.model_path or spec.repo
+    if not av.looks_like_repo_id(source):
+        logger.error(
+            "%s already reads from %s: there is nothing to download.",
+            spec.key,
+            source,
+            extra={
+                "event": "job_failed",
+                "fields": {"reason": "local_source", "model": spec.key},
+            },
+        )
+        return 2
+
+    from huggingface_hub import snapshot_download
+
+    from qds.registry import family_structure
+
+    _, definition = family_structure(spec.family)
+    snapshot_download(repo_id=source, allow_patterns=definition.get_download_patterns())
+    # Deliberately not "ready": the weights are here, and generation still cannot
+    # use them. Saying otherwise is what sent people to the Quantization dialog
+    # only after a generation failed.
+    logger.info(
+        "%s is downloaded. Generation needs a saved quantized copy: convert it from the "
+        "Quantization dialog, at the bit depth you want. The conversion now reads this "
+        "cache instead of downloading each component - which also means the bf16 stays "
+        "on disk, so budget for it alongside the copy being written.",
+        spec.key,
+    )
     return 0
 
 

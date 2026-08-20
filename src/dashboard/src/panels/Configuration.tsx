@@ -213,7 +213,7 @@ export function Configuration({
 
   return (
     <>
-      <section className="panel">
+      <section className="panel panel-inset">
         <div className="row spread">
           <h2 style={{ margin: 0 }}>Configuration</h2>
           <div className="row">
@@ -231,8 +231,8 @@ export function Configuration({
             creates the situation. Nothing here restarts anything by itself. */}
         <p className="note">
           The generation server reads this file only at startup, so a saved change applies when
-          you restart it from the Dashboard. Model management — the catalogue, downloads, imports,
-          conversions — reads it immediately.
+          you restart it from the Dashboard. Model management - the catalogue, downloads, imports,
+          conversions - reads it immediately.
         </p>
         <ActionNote state={stateOf("save")} onDismiss={() => dismiss("save")} />
 
@@ -339,7 +339,11 @@ export function Configuration({
               <label className="setting-label" htmlFor="ttl">
                 Image lifetime <span className="setting-unit">seconds</span>
               </label>
-              <input id="ttl" min={0} {...number("image_ttl_s", server.image_ttl_s ?? 3600, patchServer)} />
+              <input id="ttl" min={0} {...number("image_ttl_s", server.image_ttl_s ?? 0, patchServer)} />
+              <p className="setting-help">
+                How long an image served as a <code>url</code> stays on disk. <code>0</code> keeps
+                them forever.
+              </p>
             </div>
 
             <div className="setting">
@@ -431,7 +435,7 @@ export function Configuration({
             </p>
             {!adminPasswordSet && (
               <p className="setting-help">
-                Without one, the control plane is open to anything that can reach this port — which
+                Without one, the control plane is open to anything that can reach this port - which
                 is only safe because the server refuses to listen beyond this machine until a
                 password exists.
               </p>
@@ -563,7 +567,7 @@ export function Configuration({
               )}
             </div>
             <p className="setting-help">
-              Where weights are downloaded to and discovered from — an external SSD works. Changing
+              Where weights are downloaded to and discovered from - an external SSD works. Changing
               it moves nothing: the previous folder is left exactly as it is, so models that live
               only there stop being listed until you point back at it. A folder on a volume that is
               not mounted is reported as unavailable rather than treated as empty.
@@ -605,7 +609,7 @@ export function Configuration({
             <p className="setting-help">
               Where QDS stores the pre-quantized copies it generates, with their completion records
               and component progress. Changing it moves nothing: existing copies stay where they
-              are, and only new conversions — and what the Models tab finds — follow the new folder.
+              are, and only new conversions - and what the Models tab finds - follow the new folder.
               A folder on a volume that is not mounted is reported as unavailable rather than
               treated as empty.
             </p>
@@ -618,7 +622,7 @@ export function Configuration({
             on the model's own row, which is also where you turn it on and
             download it. */}
         <p className="setting-help" style={{ marginTop: 16 }}>
-          Per-model settings — enabled, quantization, steps, guidance, editing — live on each
+          Per-model settings - enabled, quantization, steps, guidance, editing - live on each
           model's row in the <strong>Models</strong> view, beside its weights and saved variants.
           What is here is what applies to every model at once.
         </p>

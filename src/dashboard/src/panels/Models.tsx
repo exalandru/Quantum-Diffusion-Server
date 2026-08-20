@@ -69,6 +69,41 @@ function describeEntry(entry: DiskEntry): string {
   return entry.is_source ? `${bits}artifact (this model's source)` : `${bits}variant`;
 }
 
+/**
+ * The two halves of the built-in catalogue, as tabs.
+ *
+ * A table rather than two branches: the tablist, the counts and the shown list
+ * all read the same row, so a tab cannot end up labelled one thing and listing
+ * another. `models` picks from the already-filtered groups — the split itself is
+ * the backend's `gated`, never recomputed here.
+ */
+type CatalogueTab = {
+  id: "open" | "gated";
+  label: string;
+  heading: string;
+  note: string;
+  models: (groups: { gated: ModelStatus[]; ungated: ModelStatus[] }) => ModelStatus[];
+};
+
+/** The half that opens: installable right now, no account and nothing to request. */
+const OPEN_TAB: CatalogueTab = {
+  id: "open",
+  label: "Open",
+  heading: "Open models",
+  note: "Downloadable with no account and no token.",
+  models: ({ ungated }) => ungated,
+};
+
+const GATED_TAB: CatalogueTab = {
+  id: "gated",
+  label: "Gated",
+  heading: "Gated models",
+  note: "Access is granted per repository on its Hugging Face model card, and a token proves it.",
+  models: ({ gated }) => gated,
+};
+
+const CATALOGUE_TABS: readonly CatalogueTab[] = [OPEN_TAB, GATED_TAB];
+
 export function Models({
   state,
   config,
@@ -104,6 +139,8 @@ export function Models({
   const { run, dismiss, stateOf, busy, anyBusy } = useActions();
   /** Terminal job result the user has dismissed, keyed by when it finished. */
   const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  /** Which half of the catalogue is on screen. Open first: see `CATALOGUE_TABS`. */
+  const [tab, setTab] = useState<CatalogueTab["id"]>("open");
   /** Once the API name is typed in, it stops following the display name. */
   const apiNameEdited = useRef(false);
   /** Which path is being asked for, if any. Replaces the native folder chooser. */
@@ -352,6 +389,9 @@ export function Models({
   // is the backend's and not ours to reorder.
   const gated = builtIn.filter((model) => model.gated);
   const ungated = builtIn.filter((model) => !model.gated);
+  // `?? OPEN_TAB` rather than an index: the state only ever holds one of the
+  // table's own ids, and a named default is total where `[0]` is not.
+  const visibleTab = CATALOGUE_TABS.find(({ id }) => id === tab) ?? OPEN_TAB;
 
   const overrideOf = (key: string): Record<string, any> => {
     const models = (config as { models?: Record<string, any> } | null)?.models;
@@ -469,14 +509,17 @@ export function Models({
         ))}
 
         {/* The token itself is a global source setting and lives in
-            Configuration. What belongs here is only the consequence: these
-            particular rows cannot be downloaded until it exists. */}
+            Configuration. What belongs here is only the consequence: those
+            particular rows cannot be downloaded until it exists. It names the
+            Gated tab rather than "these repositories", which stopped being true
+            when the halves became tabs — the rows it is about are usually not the
+            ones on screen. */}
         {gated.length > 0 && !state.hfTokenPresent && (
           <p className="caution">
-            <span className="pill pill-warn">no token</span> {gated.length} of these repositories are
-            gated and will refuse a download with a 401. Add a Hugging Face token under{" "}
-            <strong>Configuration → Hugging Face</strong>, then grant your account access on each
-            model's card.
+            <span className="pill pill-warn">no token</span> The {gated.length} repositories in the{" "}
+            <strong>Gated</strong> tab will refuse a download with a 401. Add a Hugging Face token
+            under <strong>Configuration → Hugging Face</strong>, then grant your account access on
+            each model's card.
           </p>
         )}
 
@@ -485,7 +528,7 @@ export function Models({
             title={prompt.kind === "import" ? "Import a local model" : "Locate existing weights"}
             hint={
               prompt.kind === "import"
-                ? "The directory holding the model's files. It is registered where it is — nothing is copied or moved."
+                ? "The directory holding the model's files. It is registered where it is - nothing is copied or moved."
                 : `Where ${prompt.model.key}'s weights already live on this machine. The directory is checked against that entry before anything is bound.`
             }
             placeholder={prompt.kind === "locate" ? state.effectiveHfHome : undefined}
@@ -524,22 +567,40 @@ export function Models({
           </p>
         ) : (
           <>
-            {/* Open first: these are the ones that can be installed right now,
-                with no account and nothing to request. A reader scanning for
-                something to use should not have to pass the repositories they
-                may not have access to on the way. Each group keeps the
-                catalogue's own order — this changes what is read first, not what
-                the backend publishes. */}
+            {/* One list at a time, and Open is the one that opens: those can be
+                installed right now, with no account and nothing to request. The
+                two groups used to be stacked, which meant scrolling past five
+                repositories you may have no access to on the way to the ones you
+                can use. Each list keeps the catalogue's own order — this changes
+                what is read first, not what the backend publishes.
+
+                The shell's own tab vocabulary (`views`/`view-tab`, `role=tab`,
+                `aria-selected`), so there is one way tabs look and behave in this
+                app rather than a second one invented here. */}
+            <nav className="views catalogue-tabs" role="tablist" aria-label="Catalogue">
+              {CATALOGUE_TABS.map(({ id, label, models: pick }) => (
+                <button
+                  key={id}
+                  role="tab"
+                  aria-selected={tab === id}
+                  // A stable accessible name: the count changes as models are
+                  // imported or forgotten, and a control that renames itself is
+                  // one a screen reader cannot address.
+                  aria-label={label}
+                  className="view-tab"
+                  onClick={() => setTab(id)}
+                >
+                  {label}
+                  <span className="count" aria-hidden="true">
+                    {pick({ gated, ungated }).length}
+                  </span>
+                </button>
+              ))}
+            </nav>
             <CatalogueGroup
-              heading="Open models"
-              note="Downloadable with no account and no token."
-              models={ungated}
-              rowProps={rowProps}
-            />
-            <CatalogueGroup
-              heading="Gated models"
-              note="Access is granted per repository on its Hugging Face model card, and a token proves it."
-              models={gated}
+              heading={visibleTab.heading}
+              note={visibleTab.note}
+              models={visibleTab.models({ gated, ungated })}
               rowProps={rowProps}
             />
           </>
@@ -563,7 +624,7 @@ export function Models({
           </button>
         </div>
         <p className="note">
-          Register a model already on this machine. Nothing is copied — QDS records where it is, and
+          Register a model already on this machine. Nothing is copied - QDS records where it is, and
           Forget removes only that record.
         </p>
         <ActionNote state={stateOf("import")} onDismiss={() => dismiss("import")} />
@@ -629,18 +690,24 @@ function CatalogueGroup({
   models: ModelStatus[];
   rowProps: (model: ModelStatus) => RowProps;
 }) {
-  if (models.length === 0) return null;
+  // No early return for an empty group any more: it is now the *selected* tab's
+  // panel, and a tab that renders nothing at all reads as a broken view rather
+  // than as an empty one.
   return (
     <section className="catalogue-group">
       <h3 className="catalogue-heading">{heading}</h3>
       <p className="note" style={{ marginTop: 0 }}>
         {note}
       </p>
-      <ul className="models" aria-label={heading}>
-        {models.map((model) => (
-          <ModelRow key={model.key} {...rowProps(model)} />
-        ))}
-      </ul>
+      {models.length === 0 ? (
+        <p className="empty">Nothing in this half of the catalogue.</p>
+      ) : (
+        <ul className="models" aria-label={heading}>
+          {models.map((model) => (
+            <ModelRow key={model.key} {...rowProps(model)} />
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -1078,12 +1145,12 @@ function SizeBadge({
                   <span className="pill pill-accent">active</span>
                 )}
               </dt>
-              <dd>{formatBytes(entry.bytes) ?? "—"}</dd>
+              <dd>{formatBytes(entry.bytes) ?? "-"}</dd>
             </div>
           ))}
           <div className="size-line size-total">
             <dt>Total</dt>
-            <dd>{total ?? "—"}</dd>
+            <dd>{total ?? "-"}</dd>
           </div>
         </dl>
       </div>
@@ -1205,7 +1272,7 @@ function QuantizationDialog({
 
   return (
     <Modal
-      title={`Quantization — ${model.display_name}`}
+      title={`Quantization - ${model.display_name}`}
       subtitle={model.repo}
       onClose={onClose}
     >
@@ -1260,7 +1327,7 @@ function QuantizationDialog({
         <legend>Pre-quantized copy</legend>
         <p className="setting-help" style={{ marginTop: 0 }}>
           Writes a quantized copy of these weights to disk, once. QDS can then activate that copy and
-          load it instead of the source, which is left where it is — both remain on disk, and
+          load it instead of the source, which is left where it is - both remain on disk, and
           switching between them is a setting rather than another conversion.
         </p>
 
@@ -1351,7 +1418,7 @@ function QuantizationDialog({
                 <p className="setting-help">
                   Each component is loaded, quantized, written and released on its own, so the
                   memory needed is the largest single component rather than the whole model. They
-                  can be done in separate runs — what is already converted is kept.
+                  can be done in separate runs - what is already converted is kept.
                 </p>
                 {missing.length > 0 && converted.length > 0 && (
                   <p className="caution">
@@ -1497,7 +1564,7 @@ function ModelSettings({
 
   return (
     <Modal
-      title={`Model settings — ${model.display_name}`}
+      title={`Model settings - ${model.display_name}`}
       subtitle={model.repo}
       onClose={onClose}
     >
@@ -1644,13 +1711,13 @@ function ImportConfirmation({
               <option key={candidate} value={candidate}>
                 {candidate}
                 {capabilities?.models[candidate]
-                  ? ` — ${capabilities.models[candidate]!.default_steps} steps`
+                  ? ` - ${capabilities.models[candidate]!.default_steps} steps`
                   : ""}
               </option>
             ))}
           </select>
           <p className="setting-help">
-            Supplies this model's generation defaults — steps, guidance, scheduler.
+            Supplies this model's generation defaults - steps, guidance, scheduler.
           </p>
         </div>
 
@@ -1754,7 +1821,7 @@ function LocateConfirmation({
 
       {verdict.repo_verified ? (
         <p className="setting-help">
-          This folder is a Hugging Face cache entry for <code>{verdict.detected_repo}</code> — the
+          This folder is a Hugging Face cache entry for <code>{verdict.detected_repo}</code> - the
           same repository the catalogue names, so its identity is confirmed.
         </p>
       ) : (
@@ -1764,10 +1831,10 @@ function LocateConfirmation({
           {verdict.detected_repo ? (
             <>
               {" "}
-              — the folder identifies itself as <code>{verdict.detected_repo}</code>
+              - the folder identifies itself as <code>{verdict.detected_repo}</code>
             </>
           ) : (
-            " — it carries no Hugging Face cache metadata to check against"
+            " - it carries no Hugging Face cache metadata to check against"
           )}
           . Generation defaults will come from the catalogue entry regardless.
         </p>

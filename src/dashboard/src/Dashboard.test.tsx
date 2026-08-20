@@ -48,7 +48,7 @@ afterEach(() => vi.restoreAllMocks());
 it("does not claim a release policy it has not been told", async () => {
   // Server stopped: `client` is null, so nothing has answered `/health`.
   render(<Dashboard state={overview()} client={null} jobs={idleJobs()} onChanged={() => {}} />);
-  expect(stat("Release policy")).toBe("—");
+  expect(stat("Release policy")).toBe("-");
   expect(screen.queryByText("keep warm")).toBeNull();
 });
 

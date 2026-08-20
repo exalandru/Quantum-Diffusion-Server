@@ -19,12 +19,15 @@ export function Modal({
   title,
   subtitle,
   onClose,
+  className,
   children,
 }: {
   title: string;
   /** The model's source identity, so the dialog says which one it is editing. */
   subtitle?: string;
   onClose: () => void;
+  /** Extra class on the surface, for a dialog that needs another size. */
+  className?: string;
   children: ReactNode;
 }) {
   const titleId = useId();
@@ -59,7 +62,7 @@ export function Modal({
       }}
     >
       <div
-        className="modal"
+        className={className ? `modal ${className}` : "modal"}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}

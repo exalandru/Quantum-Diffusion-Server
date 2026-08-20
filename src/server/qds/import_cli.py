@@ -82,7 +82,7 @@ def do_register(path: str, base_profile: str, name: str | None, api_name: str | 
             "code": "api_name_taken",
             "reason": (
                 f"The API name {public!r} is already used by another model. Choose a "
-                f"different one — this is the identifier API requests will send."
+                f"different one - this is the identifier API requests will send."
             ),
         }
 

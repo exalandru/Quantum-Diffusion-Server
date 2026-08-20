@@ -248,7 +248,7 @@ def _quantize_incrementally(module, *, bits: int, predicate) -> None:
         mx.clear_cache()
         if index % 8 == 0 or index == len(units):
             logger.info(
-                "  quantized %d/%d blocks — %s",
+                "  quantized %d/%d blocks - %s",
                 index,
                 len(units),
                 _memory(),
@@ -350,7 +350,7 @@ def convert_component(
     # z-image's transformer, 4-bit: 12.41 GB peak with an eval here, 4.68 GB
     # without, and the two runs produced byte-identical shards. The eval was
     # buying nothing but an honest-looking number in the log line below.
-    logger.info("Source weights attached (lazily) — %s", _memory())
+    logger.info("Source weights attached (lazily) - %s", _memory())
 
     # `skip_quantization` is the family's own statement that quantizing this
     # component degrades it — Qwen says so of its text encoder — and mflux
@@ -368,7 +368,7 @@ def convert_component(
             bits=resolved_bits,
             predicate=family_definition.quantization_predicate,
         )
-        logger.info("Quantized to %d bits — %s", resolved_bits, _memory())
+        logger.info("Quantized to %d bits - %s", resolved_bits, _memory())
 
     shim = _ComponentShim(name, module)
     if definition.get_tokenizers():
@@ -414,7 +414,7 @@ def convert_component(
     del shim, module
     gc.collect()
     mx.clear_cache()
-    logger.info("Released — %s", _memory())
+    logger.info("Released - %s", _memory())
     return written_bytes
 
 
@@ -680,7 +680,7 @@ def _check_disk(spec, ordered: tuple[str, ...], *, dest: Path) -> None:
             f"so it refuses to start below {GENERIC_MIN_FREE_GB:.0f} GB."
         )
     logger.info(
-        "Disk check: %.0f GB free — %s",
+        "Disk check: %.0f GB free - %s",
         available,
         dest,
         extra={
@@ -752,7 +752,7 @@ def _finish(
 
     if missing:
         logger.info(
-            "Converted %s. Still missing: %s — %s stays partial until those are converted too.",
+            "Converted %s. Still missing: %s - %s stays partial until those are converted too.",
             ", ".join(present) or "nothing",
             ", ".join(missing),
             dest,
@@ -822,7 +822,7 @@ def _finish(
     )
     artifacts.clear_progress(dest)
     logger.info(
-        "Done — %s: %.1f GB, %d-bit",
+        "Done - %s: %.1f GB, %d-bit",
         dest,
         size_bytes / 1e9,
         bits,

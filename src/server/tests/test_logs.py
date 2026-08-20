@@ -46,10 +46,10 @@ def test_non_ascii_is_not_escaped():
     """`ensure_ascii=False`, so log text stays readable in a terminal and in the app.
 
     The probe is deliberately non-ASCII, and deliberately a real message: the
-    engine prefixes generation logs with `▶` and separates fields with an em
-    dash, and prompts carry accents of their own. Swapping the probe for plain
-    ASCII would make the assertion true by construction — the test would stay
-    green while covering nothing at all.
+    engine prefixes generation logs with `▶`, and a prompt or a model name
+    carries whatever the user typed — accents, dashes, punctuation. Swapping the
+    probe for plain ASCII would make the assertion true by construction — the
+    test would stay green while covering nothing at all.
     """
     formatted = JsonFormatter().format(_record("▶ z-image-turbo — step 3/9"))
     assert "▶" in formatted

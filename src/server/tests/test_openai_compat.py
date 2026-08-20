@@ -45,6 +45,19 @@ def test_model_list_is_conformant(client):
         assert entry["owned_by"] == "mflux"
 
 
+def test_model_list_carries_a_readable_name(client):
+    """The id is what a request sends; the name is what an interface shows.
+
+    Without this, every client has to invent something readable from an API
+    identifier, and they all invent something different.
+    """
+    rows = {entry["id"]: entry for entry in client.get("/v1/models").json()["data"]}
+    assert rows["qwen-image-2512"]["display_name"] == "Qwen"
+    assert rows["z-image-turbo"]["display_name"] == "Z-Image Turbo"
+    for name, entry in rows.items():
+        assert entry["display_name"], f"{name} publishes no readable name"
+
+
 def test_retrieving_a_model(client):
     payload = client.get("/v1/models/z-image-turbo").json()
     assert payload["id"] == "z-image-turbo"

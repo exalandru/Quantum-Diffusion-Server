@@ -25,9 +25,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -42,6 +42,7 @@ from qds.idle import IdleUnloader
 from qds.jobs import JobManager
 from qds.logbuffer import LogBuffer
 from qds.logs import SERVER_LOGGER, setup_logging
+from qds.playground import PlaygroundRunner, PlaygroundStore
 from qds.registry import ModelSpec, edit_enabled, parse_size
 from qds.session import SessionStore, discard_local_token, issue_local_token
 from qds.settings import (
@@ -165,13 +166,21 @@ DASHBOARD_DIR = Path(__file__).resolve().parent / "_dashboard"
 
 
 def mount_dashboard(app: FastAPI) -> None:
-    """Serve the dashboard at `/dashboard`, or explain why it is not there.
+    """Serve the dashboard at `/dashboard` and the playground at `/playground`.
 
     A missing build is answered with a 503 naming the command that fixes it,
     not with a 404: the difference between "this server has no dashboard" and
     "you typed the wrong path" is the whole diagnosis.
     """
+    playground_page = DASHBOARD_DIR / "playground.html"
     if (DASHBOARD_DIR / "index.html").is_file():
+        if playground_page.is_file():
+            # An exact-match route, never a catch-all: `/playground/api` and
+            # `/playground/images` are the same prefix and must keep working.
+            @app.get("/playground", include_in_schema=False)
+            async def playground_page_response() -> FileResponse:
+                return FileResponse(playground_page)
+
         app.mount(
             "/dashboard",
             StaticFiles(directory=DASHBOARD_DIR, html=True),
@@ -181,6 +190,7 @@ def mount_dashboard(app: FastAPI) -> None:
 
     @app.get("/dashboard", include_in_schema=False)
     @app.get("/dashboard/{path:path}", include_in_schema=False)
+    @app.get("/playground", include_in_schema=False)
     async def dashboard_missing(path: str = "") -> JSONResponse:
         return JSONResponse(
             status_code=503,
@@ -229,6 +239,10 @@ def create_app(
         ttl_s=settings.server.image_ttl_s,
     )
     idle_unloader = IdleUnloader(engine, settings.server.idle_unload_s)
+    # Outside `image_store` on purpose: these images belong to a durable session
+    # record, and the TTL purge must not be able to reach them. Where "outside"
+    # is, is `playground_directory`'s to decide — never this process's CWD.
+    playground = PlaygroundStore(settings_module.playground_directory(settings.server))
     scratch_dir = Path(tempfile.mkdtemp(prefix="mflux_scratch_"))
     created_at = int(time.time())
     jobs = JobManager()
@@ -241,9 +255,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         store.purge()
+        # Before the runner starts: a generation left `running` by a previous
+        # process has no way back, and a record stuck there would show as an
+        # eternal spinner.
+        playground.mark_interrupted()
+        runner.start()
         buffer_handler = logbuffer.attach(log_buffer)
         logger.info(
-            "qds %s — %d model(s): %s | default: %s",
+            "qds %s - %d model(s): %s | default: %s",
             __version__,
             len(registry),
             ", ".join(sorted(registry)),
@@ -252,8 +271,12 @@ def create_app(
         if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
             logger.warning("Server exposed without an API key")
         yield
-        # Before `engine.shutdown()`: a pending countdown would otherwise be left
-        # dangling on a loop that is closing.
+        # Before `engine.shutdown()`: the worker may be inside
+        # `engine.generate()`, and stopping the engine under it would raise from
+        # a task nobody is awaiting.
+        await runner.shutdown()
+        # Before `engine.shutdown()` too: a pending countdown would otherwise be
+        # left dangling on a loop that is closing.
         idle_unloader.cancel()
         # Before the engine too, and not on a best-effort basis: a download or a
         # conversion that outlives this process becomes an orphan under launchd,
@@ -279,6 +302,11 @@ def create_app(
     )
     install_exception_handlers(app)
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
+    app.mount(
+        "/playground/images",
+        StaticFiles(directory=playground.images_dir),
+        name="playground-images",
+    )
 
     # ── Authentication ─────────────────────────────────────────────────────
     #
@@ -338,6 +366,10 @@ def create_app(
             )
         return spec
 
+    # Constructed here rather than beside its store: the runner resolves a model
+    # at execution time, not at submission time, so it needs `resolve_spec`.
+    runner = PlaygroundRunner(playground, engine, idle_unloader, resolve_spec)
+
     def resolve_size(spec: ModelSpec, size: str | None) -> tuple[int, int]:
         if size is None or size.lower() == "auto":
             width, height = spec.default_width, spec.default_height
@@ -386,7 +418,7 @@ def create_app(
         except json.JSONDecodeError as exc:
             raise APIError(
                 f"Model '{spec.key}' only accepts a structured JSON caption as its prompt, "
-                f"not plain text ({exc.msg}). Pass a JSON object describing the image — see the "
+                f"not plain text ({exc.msg}). Pass a JSON object describing the image - see the "
                 f"model card for the schema.",
                 param="prompt",
                 code="prompt_must_be_json",
@@ -526,11 +558,21 @@ def create_app(
         # Public names, not internal keys: `local-c1587aa663c4` is a storage
         # detail, and publishing it would make it the identifier every client
         # copied into its configuration.
+        #
+        # `display_name` is an extra field, like `mflux` on the single-model
+        # route: the id is what a request must send, and an interface should not
+        # have to invent something readable from it.
         return {
             "object": "list",
             "data": [
-                {"id": name, "object": "model", "created": created_at, "owned_by": "mflux"}
-                for name in sorted(by_public_name)
+                {
+                    "id": name,
+                    "object": "model",
+                    "created": created_at,
+                    "owned_by": "mflux",
+                    "display_name": spec.display_name or name,
+                }
+                for name, spec in sorted(by_public_name.items())
             ],
         }
 
@@ -713,6 +755,186 @@ def create_app(
             return Response(content=images[0], media_type="image/png")
         return build_payload(request, images, fmt, spec, width, height, steps_val, seeds)
 
+    # ── Playground ─────────────────────────────────────────────────────────
+    #
+    # A browser control surface, so it carries the data-plane credential *and*
+    # `deny_cross_site`, like the dashboard's own routes: a page on another
+    # origin must not be able to spend this machine's GPU.
+
+    playground_api = APIRouter(
+        prefix="/playground/api",
+        tags=["playground"],
+        dependencies=[Depends(require_api), Depends(admin.deny_cross_site)],
+    )
+
+    def session_or_404(session_id: str) -> dict:
+        detail = playground.get_session(session_id)
+        if detail is None:
+            raise APIError(
+                f"No playground session {session_id!r}.",
+                status_code=404,
+                code="not_found",
+            )
+        return detail
+
+    @playground_api.post("/sessions", status_code=201)
+    async def playground_create_session() -> dict:
+        return playground.create_session()
+
+    @playground_api.get("/sessions")
+    async def playground_list_sessions() -> dict:
+        return {"sessions": playground.list_sessions()}
+
+    @playground_api.get("/sessions/{session_id}")
+    async def playground_get_session(session_id: str) -> dict:
+        return session_or_404(session_id)
+
+    @playground_api.delete("/sessions/{session_id}", status_code=204)
+    async def playground_delete_session(session_id: str) -> None:
+        session_or_404(session_id)
+        # Stop the engine first: the worker is inside a generation whose record
+        # is about to disappear, and it would otherwise keep the machine busy
+        # producing images for a session nobody can see.
+        runner.cancel_running_in({session_id})
+        playground.unlink(playground.delete_session(session_id))
+
+    @playground_api.post("/sessions/{session_id}/generations", status_code=202)
+    async def playground_generate(
+        session_id: str,
+        prompt: Annotated[str, Form()],
+        model: Annotated[str | None, Form()] = None,
+        n: Annotated[int, Form()] = 1,
+        size: Annotated[str | None, Form()] = None,
+        steps: Annotated[int | None, Form()] = None,
+        seed: Annotated[int | None, Form()] = None,
+        group: Annotated[str | None, Form()] = None,
+        image: Annotated[UploadFile | None, File()] = None,
+    ) -> dict:
+        spec = resolve_spec(model)
+        if n < 1:
+            raise APIError("n must be at least 1.", param="n", code="invalid_n")
+        check_n(n)
+        check_prompt(spec, prompt)
+        check_capabilities(spec, negative_prompt=None, guidance=None)
+        width, height = resolve_size(spec, size)
+        if steps is not None and steps < 1:
+            raise APIError("steps must be at least 1.", param="steps", code="invalid_steps")
+        steps_val = steps or spec.default_steps
+        if seed is not None and not (0 <= seed <= MAX_SEED):
+            raise APIError(
+                f"seed must be between 0 and {MAX_SEED}.", param="seed", code="invalid_seed"
+            )
+        seeds = seeds_for(seed, n)
+
+        kind, image_strength = "txt2img", None
+        if image is not None:
+            # Same decision as `/v1/images/edits` with no explicit strength.
+            if edit_enabled(spec):
+                kind = "edit"
+            elif spec.supports_image_to_image:
+                image_strength = DEFAULT_IMAGE_STRENGTH
+            else:
+                raise APIError(
+                    f"Model '{spec.key}' supports neither editing nor image-to-image.",
+                    param="model",
+                    code="unsupported_parameter",
+                )
+
+        # The upload lands directly in the playground's never-purged directory, so
+        # anything that goes wrong between writing it and owning it by a row must
+        # remove it: nothing else ever will. `/v1/images/edits` gets this from its
+        # scratch directory; here it is explicit.
+        destination: Path | None = None
+        try:
+            if image is not None:
+                destination = playground.context_path(Path(image.filename or "").suffix)
+                await _save_upload(image, destination, settings.server.max_upload_mb)
+            record = playground.add_generation(
+                session_id,
+                prompt=prompt,
+                model=spec.public_name,
+                kind=kind,
+                n=n,
+                width=width,
+                height=height,
+                steps=steps_val,
+                steps_from_preset=steps is None and spec.preset is not None,
+                seeds=seeds,
+                image_strength=image_strength,
+                context_image=destination.name if destination else None,
+                group=group,
+            )
+        except KeyError as exc:
+            if destination is not None:
+                destination.unlink(missing_ok=True)
+            raise APIError(
+                f"No playground session {session_id!r}.",
+                status_code=404,
+                code="not_found",
+            ) from exc
+        except ValueError as exc:
+            if destination is not None:
+                destination.unlink(missing_ok=True)
+            raise APIError(
+                f"No generation group {group!r} in this session.",
+                param="group",
+                code="invalid_group",
+            ) from exc
+        except BaseException:
+            if destination is not None:
+                destination.unlink(missing_ok=True)
+            raise
+        runner.submit(record["id"])
+        return record
+
+    @playground_api.post("/generations/{generation_id}/cancel")
+    async def playground_cancel(generation_id: str) -> dict:
+        record = runner.cancel(generation_id)
+        if record is None:
+            raise APIError(
+                f"No playground generation {generation_id!r}.",
+                status_code=404,
+                code="not_found",
+            )
+        return record
+
+    @playground_api.get("/preview")
+    async def playground_preview() -> Response:
+        """The running generation's latest partially-denoised image, if there is one.
+
+        A same-origin `<img>` sends the session cookie and no `Origin` header, so
+        it satisfies both router dependencies — the same auth story as the feed's
+        image fetches. 404 outside a run, or when the running job is a `/v1` one.
+
+        The client's `?v=<preview_seq>` is a cache-buster, not a selector: the one
+        slot always answers with its current frame, which can already be a newer
+        one. Matching the counter exactly would fail-close a frame the client is
+        entitled to whenever a fast model decodes the next one mid-fetch, and
+        "latest" is what the caller wants either way.
+        """
+        payload = engine.preview()
+        if payload is None:
+            raise APIError("No preview is available.", status_code=404, code="not_found")
+        return Response(payload, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+    @playground_api.delete("/images/{filename}", status_code=204)
+    async def playground_delete_image(filename: str) -> None:
+        # `unlink` runs only when a DB row matched, and rows only ever hold names
+        # minted by `save_image` (`uuid4().hex + ".png"`) or `context_path`
+        # (`ctx-<uuid><suffix>`), so a crafted path never reaches the filesystem.
+        matched = playground.delete_image(filename)
+        if matched is None:
+            raise APIError(
+                f"No playground image {filename!r}.", status_code=404, code="not_found"
+            )
+        _session_id, group_id = matched
+        # Deleting the group's last image dissolves the group itself, or an entry
+        # that is nothing but a prompt would be left behind; an active member
+        # keeps the group, since its image is still coming.
+        playground.unlink([filename, *playground.dissolve_empty_group(group_id)])
+
+    app.include_router(playground_api)
+
     return app
 
 
@@ -834,7 +1056,7 @@ def create_recovery_app(
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         buffer_handler = logbuffer.attach(log_buffer)
-        logger.warning("qds %s — recovery mode: %s", __version__, message)
+        logger.warning("qds %s - recovery mode: %s", __version__, message)
         yield
         await jobs.shutdown()
         logbuffer.detach(buffer_handler)

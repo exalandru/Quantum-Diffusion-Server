@@ -22,6 +22,7 @@ const SNAPSHOT: Progress = {
   seed: null,
   step: 0,
   total: 0,
+  preview_seq: 0,
   elapsed_s: null,
   loaded_model: null,
   memory: {},

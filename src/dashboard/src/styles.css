@@ -19,6 +19,7 @@
      read out of or type into, as opposed to things you look at. */
   --sunken: #12141a;
   --line: #2b2f38;
+  --fieldset: #21252e;
 
   --text: #e6e8ec;
   --muted: #9aa1ad;
@@ -56,6 +57,7 @@
   --font-md: 12px;
   --font-base: 13px;
   --font-lg: 16px;
+  --font-xl: 18px;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
 
   /* One control height, so a button, a select and an input sitting in the same
@@ -125,7 +127,7 @@ h1 {
 /* Section headings: a quiet label over the content, not a title competing with
    it. */
 h2 {
-  font-size: var(--font-sm);
+  font-size: var(--font-xl);
   font-weight: 600;
   margin: 0 0 10px;
   text-transform: uppercase;
@@ -189,6 +191,103 @@ h3 {
   font-size: var(--font-sm);
 }
 
+/* A way off this page, not one of its tabs. Same control vocabulary as
+   `.view-tab` - sunken surface, muted label, accent on hover - but with no
+   selected state and pushed to the far edge, so it never reads as a view.
+   `a` carries no base rules in this sheet, hence the box and the reset here. */
+.shell-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-left: auto;
+  min-height: var(--control-h);
+  padding: var(--s1) var(--s3);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  color: var(--muted);
+  font-size: var(--font-base);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.shell-link:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* The tab strip and the way out, on one line. */
+.view-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+/* ── Single-card pages ──────────────────────────────────────────────────── */
+
+/* The login screen and the server-not-answering notice are one card and nothing
+   else. They had no rules at all: `main.unreachable`, `.card` and `.muted` were
+   written by the components and matched by nothing, so both screens rendered as
+   unstyled text at the top of a 1100px page. */
+main.unreachable {
+  max-width: 460px;
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: var(--s4);
+}
+
+main.unreachable > header {
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s3);
+  margin-bottom: 0;
+}
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--s5);
+}
+
+.muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-md);
+  line-height: 1.6;
+}
+
+/* The form is a column so the label sits over its field and the button spans
+   the card: a password box is the only thing on this screen, and it should look
+   like the one thing to do. */
+.login-card form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  margin-top: var(--s4);
+}
+
+.login-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.login-card label {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--muted);
+}
+
+.login-card h2 {
+  margin-bottom: var(--s2);
+}
+
 /* ── Surfaces ───────────────────────────────────────────────────────────── */
 
 .panel {
@@ -197,6 +296,12 @@ h3 {
   border-radius: var(--radius-lg);
   padding: 14px 16px;
   margin-bottom: var(--s4);
+}
+
+/* A panel whose content is fieldsets: sunken, like the tab strip and like an
+   input, so the groups sitting on it are the thing you look at. */
+.panel.panel-inset {
+  background: var(--panel);
 }
 
 .grid {
@@ -751,7 +856,7 @@ select {
 }
 
 .model {
-  background: var(--panel);
+  background: var(--fieldset);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
   padding: 12px 14px;
@@ -778,7 +883,7 @@ select {
 
 .model-name {
   margin: 0;
-  font-size: var(--font-lg);
+  font-size: var(--font-xl);
   font-weight: 600;
   line-height: 1.3;
   color: var(--text);
@@ -808,11 +913,19 @@ select {
 
 /* ── Catalogue groups ───────────────────────────────────────────────────── */
 
-/* Gated and open built-ins are not interleaved: whether a repository needs
-   granted access decides whether Install can work at all, so it decides where
-   the row is read rather than being one pill among several. */
+/* Gated and open built-ins are not interleaved, and not stacked either: whether
+   a repository needs granted access decides whether Install can work at all, so
+   it decides which of two tabs the row is read in. */
 .catalogue-group {
   margin-top: var(--s4);
+}
+
+/* The shell's own tablist, brought inside a panel: `inline-flex` so the strip is
+   as wide as its two tabs rather than the panel, and pushed off the note above
+   it. Everything else — sunken track, accent-tinted selection, `.count` — is
+   inherited from `.views`/`.view-tab`, because there is one kind of tab here. */
+.catalogue-tabs {
+  margin-top: var(--s3);
 }
 
 .catalogue-heading {
@@ -1026,7 +1139,11 @@ select {
 
 /* ── Settings form ──────────────────────────────────────────────────────── */
 
+/* The fieldset keeps the panel colour and now says so, because the surface
+   behind it no longer supplies it: a bordered box on the same colour as its
+   background read as a hairline, not as a group. */
 .settings-group {
+  background: var(--fieldset);
   border: 1px solid var(--line);
   border-radius: var(--radius);
   margin: var(--s4) 0 0;
@@ -1440,4 +1557,637 @@ main.view-logs > .notice {
 
 .size-total dt {
   color: var(--text);
+}
+
+/* ── Playground ─────────────────────────────────────────────────────────────
+
+   A second page, not a second design system: every value below is one of the
+   tokens at the top of this file, and every control reuses the shapes the
+   dashboard already defines. What is new is the shell — a history sidebar next
+   to a scrolling transcript with the composer docked under it — because that is
+   the one layout the dashboard has no equivalent of. */
+
+main.playground {
+  /* The studio owns the window: full width, full height, and no page scroll.
+     The `main` shell's 1100px measure is right for a document read top to
+     bottom; a workspace with a fixed sidebar and a transcript that scrolls
+     inside itself wants the whole viewport instead. */
+  max-width: none;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* One view, so the masthead line carries the way out instead of a tab strip. */
+main.playground > header {
+  flex-direction: row;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.pg-layout {
+  display: flex;
+  gap: var(--s4);
+  flex: 1;
+  min-height: 0;
+}
+
+.pg-sidebar {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px;
+  overflow-y: auto;
+}
+
+.pg-sidebar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.pg-sidebar-head h2 {
+  margin: 0;
+}
+
+.pg-sessions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pg-session-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 2px;
+}
+
+/* Selected the way every "one of N is active" control in this app says it —
+   accent tint over an accent line, as `.view-tab` and `.variant` do. */
+.pg-session-row[aria-selected="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent-line);
+}
+
+.pg-session-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: none;
+  border: 0;
+  padding: var(--s1) var(--s2);
+  text-align: left;
+  color: var(--text);
+}
+
+.pg-session-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-md);
+}
+
+.pg-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+/* The live dot: a session generating right now, whether or not it is the one on
+   screen. It is the only thing on this page that moves without being asked. */
+.pg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  animation: pg-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pg-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-dot {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* Revealed on hover or keyboard focus, not on hover alone: a control a keyboard
+   user cannot reach is not a control. */
+.pg-session-delete {
+  visibility: hidden;
+}
+
+.pg-session-row:hover .pg-session-delete,
+.pg-session-delete:focus-visible {
+  visibility: visible;
+}
+
+.pg-studio {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.pg-feed {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  padding-right: var(--s1);
+}
+
+.pg-entry {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
+}
+
+.pg-prompt {
+  margin: 0 0 var(--s1);
+  line-height: 1.5;
+}
+
+.pg-meta {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-sm);
+}
+
+/* A thumbnail is a button now, so it must not look like one: no chrome, no
+   control height, just the picture and the cursor that says it opens. */
+.pg-thumb {
+  display: block;
+  padding: 0;
+  min-height: 0;
+  background: none;
+  border: 0;
+  border-radius: var(--radius);
+  cursor: zoom-in;
+  line-height: 0;
+}
+
+.pg-thumb img {
+  display: block;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.pg-thumb:hover img {
+  border-color: var(--accent-line);
+}
+
+.pg-context {
+  margin-top: var(--s2);
+}
+
+.pg-context img {
+  height: 56px;
+}
+
+.pg-images {
+  display: grid;
+  /* 512 rather than 220: these are the pictures, not a contact sheet. `min()`
+     clamps the track to the column when the window is narrower than one
+     thumbnail, which is what keeps the feed from scrolling sideways. */
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 512px), 1fr));
+  gap: var(--s2);
+  margin-top: var(--s3);
+}
+
+.pg-images .pg-thumb img {
+  width: 100%;
+}
+
+.pg-image-cell {
+  margin: 0; /* figure reset */
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.pg-image-tools {
+  display: flex;
+  gap: var(--s1);
+}
+
+.pg-tool {
+  position: relative;
+  padding: 3px 8px;
+  line-height: 0; /* same icon-button shape as .pg-gear */
+}
+
+/* Destructive action apart from the generating ones, pinned to the far edge of
+   the image: a misfire there costs a picture. */
+.pg-tool.danger {
+  margin-left: auto;
+}
+
+/* The custom tooltip: same panel vocabulary as the popover, shown on hover and
+   on keyboard focus. z-index 30 stays under the advanced popover's 40. */
+.pg-tool::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: calc(100% + var(--s1));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 2px 8px;
+  white-space: nowrap;
+  font-size: var(--font-sm);
+  line-height: 1.4;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+/* Pinned to the right edge, so its tooltip grows inwards: centred, it would
+   overhang the image and widen the feed's scrollable area. */
+.pg-tool.danger::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+
+.pg-tool:hover::after,
+.pg-tool:focus-visible::after {
+  opacity: 1;
+}
+
+.pg-running {
+  margin-top: var(--s3);
+}
+
+/* A cell of `.pg-images`, the one the running image will land in: same track as
+   its finished siblings, so a refine or a variation fills the next slot instead
+   of pushing a box below the grid. The aspect ratio of the request is set
+   inline, and `align-self` keeps it — a stretched grid item would take the row's
+   height and drop the ratio. */
+.pg-preview {
+  position: relative;
+  overflow: hidden;
+  align-self: start;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--line);
+}
+
+/* Stacked, so a new frame fades in over the previous one instead of replacing
+   it; the one underneath is removed once the fade is done. */
+.pg-preview img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 500ms ease;
+}
+
+.pg-preview img.on {
+  opacity: 1;
+}
+
+/* Ambience, not a read-out: the bar below already says how far along the run is,
+   so this only says "still working". Hence much slower than
+   `.bar-indeterminate`, an accent tint rather than a colour of its own, and
+   `screen` so it lights the picture instead of greying it. */
+.pg-preview-glow {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(100deg, transparent 34%, var(--accent-tint) 50%, transparent 66%);
+  background-size:
+    300% 100%,
+    300% 100%;
+  mix-blend-mode: screen;
+  animation: pg-preview-glow 2s ease-in-out infinite;
+}
+
+@keyframes pg-preview-glow {
+  from {
+    background-position:
+      100% 0,
+      100% 0;
+  }
+  to {
+    background-position:
+      0 0,
+      0 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-preview img {
+    transition: none;
+  }
+
+  .pg-preview-glow {
+    animation: none;
+    background: none;
+  }
+}
+
+.pg-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-top: var(--s2);
+}
+
+/* The empty state. The composer stays where it is with a transcript — docked at
+   the bottom of the window — and the hero takes the space above it, centred in
+   what is left. Centring the pair instead left the prompt box floating in the
+   middle of the page and moving as soon as the first generation arrived. */
+.pg-hero {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  text-align: center;
+}
+
+.pg-hero-icon {
+  display: grid;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: var(--radius-lg);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-line);
+  color: var(--accent);
+}
+
+.pg-hero-title {
+  margin: var(--s2) 0 0;
+  font-size: var(--font-xl);
+  text-transform: none;
+  letter-spacing: 0.2px;
+  color: var(--text);
+}
+
+.pg-hero-tagline {
+  margin: 0;
+  max-width: 42ch;
+  color: var(--muted);
+}
+
+.pg-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.pg-dropzone {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--s2) var(--s3);
+  color: var(--muted);
+  font-size: var(--font-md);
+}
+
+.pg-dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-tint);
+}
+
+.pg-dropzone .note {
+  margin: 0;
+}
+
+.pg-dropzone-label {
+  color: var(--muted);
+}
+
+.pg-attachment {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+}
+
+.pg-attachment img {
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.pg-attachment-name {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+}
+
+.pg-prompt-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: var(--s3);
+}
+
+.pg-textarea {
+  width: 100%;
+  resize: vertical;
+  font-size: var(--font-base);
+  line-height: 1.5;
+}
+
+.pg-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: var(--s2);
+}
+
+/* The stepper opens the right-hand cluster; the gear and Generate follow it. */
+.pg-controls .pg-stepper {
+  margin-left: auto;
+}
+
+.pg-advanced {
+  position: relative;
+}
+
+.pg-gear {
+  padding: 3px 8px;
+  line-height: 0;
+}
+
+.pg-gear.active {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* Opens upward and right-aligned: the composer is docked at the bottom and the
+   gear sits in the right-hand cluster. z-index stays below the modal's 50. */
+.pg-popover {
+  position: absolute;
+  bottom: calc(100% + var(--s2));
+  right: 0;
+  z-index: 40;
+  width: 320px;
+  padding: var(--s3) var(--s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+.pg-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.pg-field-label {
+  font-size: var(--font-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.pg-field .note {
+  margin: 0;
+}
+
+.pg-seg {
+  display: flex;
+  gap: var(--s1);
+  flex-wrap: wrap;
+}
+
+.pg-seg button {
+  min-height: var(--control-h-sm);
+  padding: 2px 8px;
+  font-size: var(--font-sm);
+}
+
+.pg-seg button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.pg-size-readout {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--font-sm);
+  color: var(--muted);
+}
+
+.pg-stepper {
+  display: flex;
+  align-items: center;
+  gap: var(--s1);
+  background: var(--sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 2px;
+}
+
+.pg-count {
+  min-width: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--font-md);
+}
+
+/* The image viewer. The app's one dialog, at the size a 1280×720 render needs:
+   the surface follows the picture rather than the 660px measure a form wants,
+   and the picture is bounded by the viewport so a portrait render does not push
+   its own close button off screen. */
+.modal.pg-viewer {
+  width: auto;
+  max-width: calc(100vw - 2 * var(--s4));
+}
+
+/* Keep the close button on the same row; the prompt is the flexible item and
+   wraps inside the image-sized surface instead of making the modal wider. */
+.pg-viewer .modal-head {
+  flex-wrap: nowrap;
+}
+
+.pg-viewer .modal-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.pg-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 12 * var(--s4));
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  margin: auto;
+}
+
+.pg-viewer-foot {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  margin-top: var(--s2);
+}
+
+.pg-viewer-link {
+  color: var(--accent);
+  font-size: var(--font-sm);
+}
+
+.pg-viewer-stats {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: var(--font-sm);
 }

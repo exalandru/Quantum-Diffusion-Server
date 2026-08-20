@@ -65,7 +65,7 @@ struct MenuBarLabel: View {
         // Without this the item announces itself as its symbol name — VoiceOver
         // read "sparkles rectangle stack", which names the picture rather than
         // the thing, and says nothing about the state the icon is there to show.
-        .accessibilityLabel(running ? "QDS — server running" : "QDS — server stopped")
+        .accessibilityLabel(running ? "QDS - server running" : "QDS - server stopped")
     }
 }
 
@@ -130,6 +130,8 @@ struct MenuContent: View {
 
         Divider()
 
+        Button("Open Playground") { model.openPlayground() }
+            .disabled(!model.isRunning)
         Button("Open Dashboard") { model.openDashboard() }
             .disabled(!model.isRunning)
 

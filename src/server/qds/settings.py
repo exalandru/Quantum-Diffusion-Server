@@ -44,7 +44,22 @@ class ServerSettings(BaseModel):
     request_timeout_s: float = Field(default=900.0, gt=0)
     #: Directory serving images for `response_format="url"`.
     image_store: str = "images"
-    image_ttl_s: int = Field(default=3600, ge=0)
+    #: How long an image served as a `url` survives. `0` keeps them forever, which
+    #: is the default: a generated image the user has not saved yet is worth more
+    #: than the disk it costs, and the playground's own images already live outside
+    #: this directory.
+    image_ttl_s: int = Field(default=0, ge=0)
+    #: Directory holding the playground's sessions database and its images.
+    #: Separate from `image_store`: playground images belong to a durable session
+    #: record and must survive the TTL purge.
+    #:
+    #: `None` means "beside the configuration file", which is where the rest of
+    #: this installation's state already lives (`admin-credential.json`). It is
+    #: **not** a CWD-relative default: a field default skips validators, so the
+    #: relative string that one would be reaches `mkdir` unresolved and lands
+    #: wherever the process happens to be — `/` when launched from an app bundle,
+    #: which is read-only. See `playground_directory`.
+    playground_store: str | None = None
     #: Value used when the client sends no `response_format`.
     #: "url" is the OpenAI default: changing it breaks the SDKs, which read
     #: `data[0].url` and find `None`.
@@ -66,7 +81,7 @@ class ServerSettings(BaseModel):
     #: text LLM typically; the cost is paying the load again on the next image.
     idle_unload_s: float | None = Field(default=None, ge=0)
 
-    @field_validator("image_store", "log_file")
+    @field_validator("image_store", "playground_store", "log_file")
     @classmethod
     def _absolute_path(cls, value: str | None) -> str | None:
         """Anchor the write paths, which are CWD-relative by default.
@@ -423,6 +438,25 @@ def config_path() -> Path:
     # "running on defaults, nothing in the log to say why" this variable exists
     # to prevent.
     return Path(env.get("CONFIG", str(DEFAULT_CONFIG_PATH))).expanduser()
+
+
+def playground_directory(server: ServerSettings) -> Path:
+    """Where the playground keeps its database and its images.
+
+    Anchored to the configuration file when unset, the same way
+    `credential.credential_path` anchors `admin-credential.json`: this is state
+    that belongs to one installation, and an installation is identified by its
+    config file, not by the directory someone launched from.
+
+    The alternative — a CWD-relative default — is what broke the app bundle: a
+    field default bypasses `_absolute_path`, so `"playground"` arrived at `mkdir`
+    still relative and resolved against `/`, which is read-only. An *explicit*
+    value keeps the CWD-relative-then-absolute behaviour of `image_store`, since
+    a written-down relative path is a choice rather than an accident.
+    """
+    if server.playground_store:
+        return Path(server.playground_store).expanduser()
+    return config_path().parent / "playground"
 
 
 def configured_default_model(path: Path | None = None) -> str:

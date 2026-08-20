@@ -440,7 +440,7 @@ describe("when a conversion finishes", () => {
     expect(stillOpen.getByText("Converted")).toBeTruthy();
     expect(stillOpen.getByText(/cannot be used until/i)).toBeTruthy();
     // Feedback where the operation was started from, not only in Logs.
-    expect(stillOpen.getByText(/Transformer converted — 1 component remaining/)).toBeTruthy();
+    expect(stillOpen.getByText(/Transformer converted - 1 component remaining/)).toBeTruthy();
   });
 
   it("reports a finished variant as ready and selected", async () => {
@@ -467,7 +467,7 @@ describe("when a conversion finishes", () => {
 
     await settle(partial(4));
 
-    expect(screen.getByText(/Transformer converted — 1 component remaining/)).toBeTruthy();
+    expect(screen.getByText(/Transformer converted - 1 component remaining/)).toBeTruthy();
     expect(screen.queryByText(/ready and selected/)).toBeNull();
   });
 
@@ -591,10 +591,10 @@ describe("when a conversion finishes", () => {
   });
 });
 
-describe("catalogue grouping", () => {
-  it("separates gated from open built-ins, and keeps imported models apart from both", async () => {
-    // Provenance and `gated` are backend facts; the grouping reads them and
-    // reorders nothing inside a group.
+describe("catalogue tabs", () => {
+  it("shows one half of the catalogue at a time, open first", async () => {
+    // Provenance and `gated` are backend facts; the tabs read them and reorder
+    // nothing inside either list.
     show([
       model({ key: "flux2-klein", display_name: "FLUX.2-klein", gated: true }),
       model({ key: "z-image", display_name: "Z-Image" }),
@@ -608,46 +608,51 @@ describe("catalogue grouping", () => {
       }),
     ]);
 
-    const gatedList = await screen.findByRole("list", { name: "Gated models" });
-    expect(namesIn(gatedList)).toEqual(["FLUX.2-klein", "FIBO"]);
-    expect(namesIn(screen.getByRole("list", { name: "Open models" }))).toEqual([
-      "Z-Image",
-      "Z-Image Turbo",
-    ]);
-    // The imported model is in neither catalogue group, whatever its state.
+    // What a reader meets first is what they can install right now.
+    const open = await screen.findByRole("list", { name: "Open models" });
+    expect(namesIn(open)).toEqual(["Z-Image", "Z-Image Turbo"]);
+    // The gated half is *not* on screen: that is the whole point of tabs over
+    // stacked groups — five repositories you may have no access to are no longer
+    // between the reader and the ones they can use.
+    expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+    // The imported models are their own panel, in neither tab.
     expect(namesIn(screen.getByRole("list", { name: "Imported local models" }))).toEqual([
       "My local model",
     ]);
-  });
 
-  it("puts open models before gated ones, and local models after both", async () => {
-    // What a reader meets first should be what they can install right now.
-    show([
-      model({ key: "flux2-klein", display_name: "FLUX.2-klein", gated: true }),
-      model({ key: "z-image", display_name: "Z-Image" }),
-      model({
-        key: "local-abc",
-        display_name: "My local model",
-        provenance: "imported_local",
-        can_download: false,
-      }),
+    const tabs = screen.getByRole("tablist", { name: "Catalogue" });
+    const [openTab, gatedTab] = within(tabs).getAllByRole("tab");
+    expect(openTab.getAttribute("aria-selected")).toBe("true");
+    expect(gatedTab.getAttribute("aria-selected")).toBe("false");
+    // Each tab counts its own half, whichever one is open.
+    expect(openTab.textContent).toBe("Open2");
+    expect(gatedTab.textContent).toBe("Gated2");
+
+    await userEvent.click(gatedTab);
+
+    expect(namesIn(screen.getByRole("list", { name: "Gated models" }))).toEqual([
+      "FLUX.2-klein",
+      "FIBO",
     ]);
-
-    await screen.findByRole("list", { name: "Open models" });
-    const lists = screen.getAllByRole("list").map((list) => list.getAttribute("aria-label"));
-    expect(lists).toEqual(["Open models", "Gated models", "Imported local models"]);
-
-    // Document order, not just presence: the headings read in the same order.
-    const open = screen.getByRole("list", { name: "Open models" });
-    const gated = screen.getByRole("list", { name: "Gated models" });
-    expect(open.compareDocumentPosition(gated) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Open models" })).toBeNull();
+    expect(gatedTab.getAttribute("aria-selected")).toBe("true");
+    // Still reachable, and still its own panel.
+    expect(screen.getByRole("list", { name: "Imported local models" })).toBeTruthy();
   });
 
-  it("shows no heading for a group the catalogue has nothing in", async () => {
+  it("says a half is empty rather than rendering nothing", async () => {
+    // A tab whose panel draws nothing at all reads as a broken view. The count
+    // says zero and the panel says why there is no list.
     show([model()]);
-    await screen.findByRole("list", { name: "Open models" });
+
+    const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
+    const gatedTab = within(tabs).getAllByRole("tab")[1];
+    expect(gatedTab.textContent).toBe("Gated0");
+
+    await userEvent.click(gatedTab);
+
+    expect(screen.getByText("Nothing in this half of the catalogue.")).toBeTruthy();
     expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
-    expect(screen.queryByText("Gated models")).toBeNull();
   });
 });
 

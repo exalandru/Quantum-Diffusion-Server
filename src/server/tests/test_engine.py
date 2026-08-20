@@ -440,3 +440,199 @@ def test_unload_releases_the_model(loaded):
     assert eng.loaded_model is None
     assert eng.progress()["loaded_model"] is None
     assert model.transformer is None
+
+
+# ── Step previews (playground only) ────────────────────────────────────────
+
+
+def test_preview_rendered_every_n_steps(loaded, monkeypatch):
+    """One frame every `preview_every` steps, and none for the last step.
+
+    The decode itself is replaced: what matters here is the cadence, the slot and
+    the counter the client watches, not mflux's VAE.
+    """
+    monkeypatch.setattr(engine_module, "_render_preview", lambda **_: b"jpeg")
+    seen: list[tuple[int, bytes | None]] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        # The warm-up run loads the model and asks for no previews, so the
+        # engine-lifetime counter starts this run at zero.
+        await eng.generate(job(steps=9))
+        loaded[0].step_hook = lambda _: seen.append((eng.progress()["preview_seq"], eng.preview()))
+        await eng.generate(job(steps=9, preview_every=2, seed=1))
+        return eng
+
+    eng = asyncio.run(scenario())
+    # Steps 1..9: the counter advances at 2, 4, 6 and 8. Not at 9 — the finished
+    # image is moments away through the normal path.
+    assert [seq for seq, _ in seen] == [0, 1, 1, 2, 2, 3, 3, 4, 4]
+    assert [payload for _, payload in seen[1:]] == [b"jpeg"] * 8
+    # Nothing is running any more: the endpoint must 404 and the bar must be bare.
+    assert eng.preview() is None
+    assert eng.progress()["preview_seq"] == 0
+    eng.shutdown()
+
+
+def test_preview_counter_keeps_climbing_across_runs(loaded, monkeypatch):
+    """The counter doubles as a cache-buster, so it must never repeat a value."""
+    monkeypatch.setattr(engine_module, "_render_preview", lambda **_: b"jpeg")
+    seen: list[int] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job(steps=4))  # loads the model, no previews
+        loaded[0].step_hook = lambda _: seen.append(eng.progress()["preview_seq"])
+        await eng.generate(job(steps=4, preview_every=2, seed=1))
+        await eng.generate(job(steps=4, preview_every=2, seed=2))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert seen == [0, 1, 1, 1, 0, 2, 2, 2]
+    eng.shutdown()
+
+
+def test_preview_failure_disables_previews_for_the_run(loaded, monkeypatch):
+    """A broken decode is not a broken generation."""
+    calls = 0
+
+    def exploding(**_):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("no vae here")
+
+    monkeypatch.setattr(engine_module, "_render_preview", exploding)
+    seen: list[int] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job(steps=9))  # loads the model, no previews
+        loaded[0].step_hook = lambda _: seen.append(eng.progress()["preview_seq"])
+        data = await eng.generate(job(steps=9, preview_every=2, seed=1))
+        return eng, data
+
+    eng, data = asyncio.run(scenario())
+    assert Image.open(io.BytesIO(data)).format == "PNG"
+    assert seen == [0] * 9
+    # Tried once, at step 2, then given up on for the rest of the run.
+    assert calls == 1
+    eng.shutdown()
+
+
+def test_no_preview_without_opt_in(loaded, monkeypatch):
+    """`/v1` never asks for previews, so nothing must be decoded for it."""
+    calls: list[dict] = []
+    monkeypatch.setattr(engine_module, "_render_preview", lambda **kwargs: calls.append(kwargs) or b"jpeg")
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job(steps=9))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert calls == []
+    assert eng.preview() is None
+    eng.shutdown()
+
+
+def test_preview_is_skipped_for_a_family_without_a_latent_creator(loaded, monkeypatch):
+    """Fail-closed: an unmapped family loses previews, not its generation."""
+    monkeypatch.setattr(engine_module, "latent_creator_for", lambda _family: None)
+    calls: list[dict] = []
+    monkeypatch.setattr(engine_module, "_render_preview", lambda **kwargs: calls.append(kwargs) or b"jpeg")
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        data = await eng.generate(job(steps=9, preview_every=2))
+        return eng, data
+
+    eng, data = asyncio.run(scenario())
+    assert Image.open(io.BytesIO(data)).format == "PNG"
+    assert calls == []
+    eng.shutdown()
+
+
+class _StubCreator:
+    """Records how the renderer calls an unpacker, and hands the latents back."""
+
+    calls: list[dict] = []
+
+    @staticmethod
+    def unpack_latents(**kwargs):
+        _StubCreator.calls.append({k: v for k, v in kwargs.items() if k != "latents"})
+        return kwargs["latents"]
+
+
+class _PackedVae:
+    """The mflux VAEs that expose the packed entry point; the renderer must prefer it."""
+
+    def __init__(self):
+        self.used = []
+
+    def decode_packed_latents(self, latents):
+        self.used.append("packed")
+        return latents
+
+    def decode(self, latents):  # pragma: no cover - must never be reached
+        self.used.append("plain")
+        return latents
+
+
+class _PlainVae:
+    def __init__(self):
+        self.used = []
+
+    def decode(self, latents):
+        self.used.append("plain")
+        return latents
+
+
+class _VaeOnlyModel:
+    bits = 8
+
+    def __init__(self, vae):
+        self.vae = vae
+
+
+@pytest.mark.parametrize("vae_class", [_PackedVae, _PlainVae])
+def test_the_real_renderer_produces_a_bounded_jpeg(vae_class):
+    """The one path the other preview tests monkeypatch away.
+
+    No weights: the latent unpacker and the VAE are stubs, but `mflux`'s own
+    `Config` and `ImageUtil` are the real ones, so a wrong keyword, a wrong VAE
+    entry point or a wrong `to_image` argument fails here instead of turning into
+    a debug line and silently missing previews at runtime.
+    """
+    import mlx.core as mx
+    from mflux.models.common.config.config import Config
+
+    from qds.registry import model_config_for
+
+    _StubCreator.calls.clear()
+    config = Config(
+        model_config=model_config_for(BASE_SPECS_BY_KEY["z-image-turbo"]),
+        num_inference_steps=6,
+        height=704,
+        width=1280,
+        guidance=1.0,
+    )
+    vae = vae_class()
+    data = engine_module._render_preview(
+        model=_VaeOnlyModel(vae),
+        creator=_StubCreator,
+        latents=mx.zeros((1, 3, 704, 1280)),
+        config=config,
+        seed=7,
+        prompt="un renard",
+    )
+
+    # The unpacker is given the run's dimensions, by keyword: every mflux creator
+    # takes `latents`, `height`, `width` and nothing else.
+    assert _StubCreator.calls == [{"height": 704, "width": 1280}]
+    assert vae.used == ["packed" if vae_class is _PackedVae else "plain"]
+    image = Image.open(io.BytesIO(data))
+    assert image.format == "JPEG"
+    assert image.mode == "RGB"
+    # Scaled down to the feed's track, aspect ratio kept.
+    assert max(image.size) == engine_module._PREVIEW_MAX_PX
+    assert image.size == (512, 282)

@@ -48,19 +48,19 @@ export function LoginPrompt({
   }
 
   return (
-    <main className="unreachable">
+    <main className="unreachable login">
       <header>
         <h1>Quantum Diffusion Server</h1>
         <span className="pill pill-down">{first ? "Unprotected" : "Locked"}</span>
       </header>
 
-      <section className="card">
+      <section className="card login-card">
         <h2>{first ? "Choose an admin password" : "Admin password"}</h2>
         <p className="muted">
           {first ? (
             <>
               This server has no admin password. Setting one protects the configuration, the
-              catalogue, the logs and the restart button. It is <strong>not</strong> the API key —
+              catalogue, the logs and the restart button. It is <strong>not</strong> the API key -
               that one stays for <code>/v1</code>, so anything you point at this server to generate
               images cannot also reconfigure it.
             </>
@@ -73,15 +73,17 @@ export function LoginPrompt({
         </p>
 
         <form onSubmit={submit}>
-          <label htmlFor="admin-password">{first ? "New password" : "Password"}</label>
-          <input
-            id="admin-password"
-            type="password"
-            autoComplete={first ? "new-password" : "current-password"}
-            autoFocus
-            value={value}
-            onChange={(event) => setValue(event.target.value)}
-          />
+          <div className="login-field">
+            <label htmlFor="admin-password">{first ? "New password" : "Password"}</label>
+            <input
+              id="admin-password"
+              type="password"
+              autoComplete={first ? "new-password" : "current-password"}
+              autoFocus
+              value={value}
+              onChange={(event) => setValue(event.target.value)}
+            />
+          </div>
           <button type="submit" className="primary" disabled={!value.trim() || busy}>
             {busy ? "Working…" : first ? "Set password" : "Unlock"}
           </button>

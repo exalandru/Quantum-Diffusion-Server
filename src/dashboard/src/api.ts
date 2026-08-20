@@ -23,7 +23,11 @@ import type {
   JobStatus,
   LocateVerdict,
   LogPage,
+  ModelEntry,
+  ModelList,
   Overview,
+  PlaygroundGeneration,
+  PlaygroundSession,
   Progress,
 } from "./types";
 
@@ -56,6 +60,19 @@ export class TooManyAttempts extends Error {
   }
 }
 
+/**
+ * Thrown for a 404, so a caller can tell "this is gone" from "I could not ask".
+ *
+ * The distinction is load-bearing on the playground: a deleted session must drop
+ * out of the view, while a failed poll must leave the view alone and say so.
+ */
+export class NotFound extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "NotFound";
+  }
+}
+
 function headers(extra: HeadersInit = {}): HeadersInit {
   return extra;
 }
@@ -69,6 +86,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   });
   if (response.status === 401) throw new Unauthorized((await describe(response)).message);
   if (response.status === 429) throw new TooManyAttempts((await describe(response)).message);
+  if (response.status === 404) throw new NotFound((await describe(response)).message);
   if (!response.ok) throw await describe(response);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -224,7 +242,55 @@ export const cancelGeneration = () =>
 export const unload = () =>
   send<{ loaded_model: string | null; memory: Health["memory"] }>("/v1/unload", "POST");
 
+/** Public model names, the identifiers `/v1` accepts and records store. */
+export const models = () => get<ModelList>("/v1/models");
+
+/** One model's capabilities, by public name. */
+export const modelInfo = (id: string) => get<ModelEntry>(`/v1/models/${encodeURIComponent(id)}`);
+
 export const docsUrl = () => "/docs";
+
+// ── Playground ─────────────────────────────────────────────────────────────
+//
+// Server-owned history: nothing here is cached in the browser, so a reopened
+// tab and a fresh one see the same thing.
+
+export const playgroundSessions = () =>
+  get<{ sessions: PlaygroundSession[] }>("/playground/api/sessions");
+
+export const playgroundSessionCreate = () =>
+  send<PlaygroundSession>("/playground/api/sessions", "POST");
+
+export const playgroundSession = (id: string) =>
+  get<{ session: PlaygroundSession; generations: PlaygroundGeneration[] }>(
+    `/playground/api/sessions/${encodeURIComponent(id)}`,
+  );
+
+export const playgroundSessionDelete = (id: string) =>
+  request<void>(`/playground/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+
+/**
+ * Accepted, not finished: the record comes back `queued`.
+ *
+ * Not `send`, which JSON-encodes: `fetch` must write the multipart
+ * `Content-Type` itself, or the boundary the server parses by is missing.
+ */
+export const playgroundGenerate = (sessionId: string, form: FormData) =>
+  request<PlaygroundGeneration>(
+    `/playground/api/sessions/${encodeURIComponent(sessionId)}/generations`,
+    { method: "POST", body: form },
+  );
+
+export const playgroundCancel = (generationId: string) =>
+  send<PlaygroundGeneration>(
+    `/playground/api/generations/${encodeURIComponent(generationId)}/cancel`,
+    "POST",
+  );
+
+export const playgroundImageDelete = (filename: string) =>
+  request<void>(`/playground/api/images/${encodeURIComponent(filename)}`, {
+    method: "DELETE",
+  });
 
 /**
  * Subscribe to `/v1/progress`, reconnecting until told to stop.

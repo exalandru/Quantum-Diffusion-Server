@@ -22,6 +22,11 @@ no terminal required, no global Python or Homebrew involvement — and because
 the interface belongs to the server rather than to the app, a headless Mac gets
 exactly the same one.
 
+The same server also serves a **playground** at
+`http://127.0.0.1:8765/playground`: a prompt box, a model picker, an optional
+reference image, and a history of everything generated. Generations are recorded
+server-side, so closing the tab mid-image loses neither the run nor the result.
+
 What makes it different from calling a command-line tool per image: **the model
 stays loaded in memory between requests**. A generation that costs 34s as a
 fresh subprocess costs 18.5s here, and the saving repeats on every image. Since

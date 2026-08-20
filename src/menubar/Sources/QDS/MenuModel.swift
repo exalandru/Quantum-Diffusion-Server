@@ -161,6 +161,10 @@ final class MenuModel {
         NSWorkspace.shared.open(config.baseURL.appendingPathComponent("dashboard/"))
     }
 
+    func openPlayground() {
+        NSWorkspace.shared.open(config.baseURL.appendingPathComponent("playground/"))
+    }
+
     /// One slot, because the menu offers one action at a time: every command
     /// here is disabled while another runs, so a second result could only ever
     /// overwrite a message nobody had read.
@@ -239,12 +243,12 @@ final class MenuModel {
         // and answering; what is stale is which build it is. Saying "not
         // installed" about a working server sends people looking for the wrong
         // problem.
-        case .outdated(let installed): return "Update available — \(installed) installed"
+        case .outdated(let installed): return "Update available - \(installed) installed"
         default: break
         }
         switch supervisorState {
         case .stopped:
-            return lastExit.map { "Stopped — \($0)" } ?? "Stopped"
+            return lastExit.map { "Stopped - \($0)" } ?? "Stopped"
         case .starting: return "Starting…"
         case .stopping: return "Stopping…"
         case .running(let port):
@@ -257,9 +261,9 @@ final class MenuModel {
                     : "Loading \(progress.model ?? "model")…"
             }
             if health?.status == "config_error" {
-                return "Recovery mode — fix the configuration"
+                return "Recovery mode - fix the configuration"
             }
-            if let warm = health?.loaded_model { return "Running :\(port) — \(warm) warm" }
+            if let warm = health?.loaded_model { return "Running :\(port) - \(warm) warm" }
             return "Running :\(port)"
         }
     }

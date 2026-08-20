@@ -129,7 +129,7 @@ def issue_local_token(path: Path | None = None) -> str | None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(token + "\n")
     except OSError as exc:
-        logger.warning("could not write %s: %s — local clients cannot authenticate", target, exc)
+        logger.warning("could not write %s: %s - local clients cannot authenticate", target, exc)
         return None
     return token
 

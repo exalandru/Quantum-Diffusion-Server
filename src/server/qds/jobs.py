@@ -291,7 +291,7 @@ class JobManager:
         target = f" ({self._status.target})" if self._status.target else ""
         raise JobBusy(
             f"{what}{target} is already running. Only one heavy model operation runs at a "
-            f"time — they compete for the same unified memory and the same HuggingFace "
+            f"time - they compete for the same unified memory and the same HuggingFace "
             f"cache. Wait for it, or cancel it first."
         )
 

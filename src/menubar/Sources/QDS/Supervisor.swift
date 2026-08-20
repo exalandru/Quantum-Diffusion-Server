@@ -119,7 +119,7 @@ final class Supervisor {
             if errno == EADDRINUSE {
                 throw QDSError(
                     """
-                    Port \(port) is already in use. Something else is holding it — a server left \
+                    Port \(port) is already in use. Something else is holding it - a server left \
                     over from a previous session, or `qds serve` started alongside. Stop it, or \
                     change the port in the dashboard's Configuration tab.
                     """)

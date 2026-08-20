@@ -22,7 +22,20 @@ const VIEWS: { id: View; label: string }[] = [
 ];
 
 export function App() {
-  const [view, setView] = useState<View>("dashboard");
+  // The view is in the URL, so "Server Config" from the playground can land on
+  // the screen it names, and so a reload keeps the screen you were on. An
+  // unknown or absent value is the dashboard, not an error.
+  const [view, setView] = useState<View>(() => {
+    const wanted = new URLSearchParams(window.location.search).get("view");
+    return VIEWS.some((entry) => entry.id === wanted) ? (wanted as View) : "dashboard";
+  });
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", view);
+    window.history.replaceState(null, "", url);
+  }, [view]);
+
   const [state, setState] = useState<Overview | null>(null);
   const [health, setHealth] = useState<Health | null>(null);
   const [config, setConfig] = useState<ConfigDocument | null>(null);
@@ -180,29 +193,53 @@ export function App() {
             {state.server.host}:{state.server.port}
           </code>
         </div>
-        <nav className="views" role="tablist" aria-label="Views">
-          {available.map(({ id, label }) => (
-            <button
-              key={id}
-              role="tab"
-              aria-selected={current === id}
-              // A stable accessible name. Without it the Logs tab is announced as
-              // "Logs 1"… "Logs 2" and renames itself several times a second while
-              // the server talks, which is useless to a screen reader and makes
-              // the control unaddressable by name.
-              aria-label={label}
-              className="view-tab"
-              onClick={() => setView(id)}
+        <div className="view-row">
+          <nav className="views" role="tablist" aria-label="Views">
+            {available.map(({ id, label }) => (
+              <button
+                key={id}
+                role="tab"
+                aria-selected={current === id}
+                // A stable accessible name. Without it the Logs tab is announced
+                // as "Logs 1"… "Logs 2" and renames itself several times a second
+                // while the server talks, which is useless to a screen reader and
+                // makes the control unaddressable by name.
+                aria-label={label}
+                className="view-tab"
+                onClick={() => setView(id)}
+              >
+                {label}
+                {id === "logs" && logs.entries.length > 0 && (
+                  <span className="count" aria-hidden="true">
+                    {logs.entries.length}
+                  </span>
+                )}
+              </button>
+            ))}
+          </nav>
+          {/* A way out of this page, not a tab: the playground is another page
+              served by this same server, with its own state and its own URL.
+              Kept off the tab strip so it stops reading as a fifth view. */}
+          <a className="shell-link" href="/playground" target="blank">
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
             >
-              {label}
-              {id === "logs" && logs.entries.length > 0 && (
-                <span className="count" aria-hidden="true">
-                  {logs.entries.length}
-                </span>
-              )}
-            </button>
-          ))}
-        </nav>
+              <path d="M12 3.5a8.5 8.5 0 1 0 0 17h1.4a1.9 1.9 0 0 0 1.5-3l-.3-.4a1.9 1.9 0 0 1 1.5-3h1.6a3.3 3.3 0 0 0 3.3-3.3c0-4-3.9-7.3-9-7.3z" />
+              <circle cx="8.2" cy="9.6" r="1.05" />
+              <circle cx="12.2" cy="7.4" r="1.05" />
+              <circle cx="16.2" cy="10" r="1.05" />
+            </svg>
+            Playground
+          </a>
+        </div>
       </header>
 
       {background}

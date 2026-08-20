@@ -82,7 +82,7 @@ class IdleUnloader:
             # Logged, and with figures: a silent release would read as the model
             # having leaked away on its own.
             logger.info(
-                "Released %s after %.10gs idle — memory %s → %s",
+                "Released %s after %.10gs idle - memory %s → %s",
                 model,
                 self._delay,
                 before.get("active_gb"),

@@ -27,6 +27,10 @@ export default defineConfig({
       "/v1": "http://127.0.0.1:8765",
       "/health": "http://127.0.0.1:8765",
       "/images": "http://127.0.0.1:8765",
+      // The playground's API and its images. `/playground` itself is the page,
+      // which Vite serves as `/dashboard/playground.html` in dev.
+      "/playground/api": "http://127.0.0.1:8765",
+      "/playground/images": "http://127.0.0.1:8765",
     },
   },
   build: {
@@ -37,5 +41,14 @@ export default defineConfig({
     sourcemap: true,
     outDir: fileURLToPath(new URL("../server/qds/_dashboard", import.meta.url)),
     emptyOutDir: true,
+    // Two pages, one design system. Rollup needs both entries named, or
+    // `playground.html` is simply not built and the server answers its route
+    // with a missing file.
+    rollupOptions: {
+      input: {
+        dashboard: fileURLToPath(new URL("./index.html", import.meta.url)),
+        playground: fileURLToPath(new URL("./playground.html", import.meta.url)),
+      },
+    },
   },
 });
