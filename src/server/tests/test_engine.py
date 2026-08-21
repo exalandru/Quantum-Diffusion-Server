@@ -636,3 +636,256 @@ def test_the_real_renderer_produces_a_bounded_jpeg(vae_class):
     # Scaled down to the feed's track, aspect ratio kept.
     assert max(image.size) == engine_module._PREVIEW_MAX_PX
     assert image.size == (512, 282)
+
+
+# ── The second slot: upscaling ─────────────────────────────────────────────
+
+
+class FakeUpscaler:
+    """Nearest x4, with the hooks a test needs to time a cancellation."""
+
+    def __init__(self, key: str):
+        self.key = key
+        self.tiles = 0
+        self.delay = 0.0
+        self.tile_hook = None
+
+    def __call__(self, x):
+        import time
+
+        import mlx.core as mx
+
+        self.tiles += 1
+        if self.delay:
+            time.sleep(self.delay)
+        if self.tile_hook is not None:
+            self.tile_hook(self.tiles)
+        return mx.repeat(mx.repeat(x, 4, axis=1), 4, axis=2)
+
+
+@pytest.fixture
+def upscalers(monkeypatch):
+    """Replace weight loading, and record every instance built."""
+    from qds.upscale import weights as weights_module
+
+    built: list[FakeUpscaler] = []
+
+    def fake_load_upscaler(spec, **_kwargs):
+        model = FakeUpscaler(spec.key)
+        built.append(model)
+        return model
+
+    monkeypatch.setattr(weights_module, "load_upscaler", fake_load_upscaler)
+    return built
+
+
+def upscale_job(tmp_path, *, key: str = "realesrgan-x4plus", outscale: int = 4, size=(8, 8)):
+    from qds.engine import UpscaleJob
+    from qds.upscale import by_key
+
+    path = tmp_path / f"{key}-{size[0]}x{size[1]}.png"
+    Image.new("RGB", size, "blue").save(path)
+    return UpscaleJob(
+        spec=by_key(key),
+        image_path=path,
+        target=(size[0] * outscale, size[1] * outscale),
+    )
+
+
+def test_an_upscale_does_not_disturb_the_diffusion_model(loaded, upscalers, tmp_path):
+    """I1, the reason the second slot exists at all.
+
+    If `_ensure_upscaler` reached for `_unload_sync` the way `_ensure_model`
+    does, this would build the weights twice and the user would pay a reload
+    for every enlarged image.
+    """
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        warm = eng.loaded_model
+        await eng.upscale(upscale_job(tmp_path))
+        assert eng.loaded_model == warm, "the upscale evicted the diffusion model"
+        await eng.generate(job(seed=43))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert len(loaded) == 1, "the diffusion weights were reloaded around the upscale"
+    assert len(upscalers) == 1
+    assert eng.loaded_model == "flux2-klein:txt2img"
+    assert eng.loaded_upscaler == "realesrgan-x4plus"
+    eng.shutdown()
+
+
+def test_the_upscaler_stays_warm_between_upscales(upscalers, tmp_path):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.upscale(upscale_job(tmp_path))
+        await eng.upscale(upscale_job(tmp_path, outscale=2))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert len(upscalers) == 1
+    eng.shutdown()
+
+
+def test_switching_upscaler_releases_the_previous_one(upscalers, tmp_path):
+    """One upscaler, as with diffusion models -- but only among upscalers."""
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.upscale(upscale_job(tmp_path))
+        await eng.upscale(upscale_job(tmp_path, key="realesrgan-x4plus-anime"))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert len(upscalers) == 2
+    assert eng.loaded_upscaler == "realesrgan-x4plus-anime"
+    eng.shutdown()
+
+
+def test_upscales_and_generations_are_serialized(loaded, upscalers, tmp_path):
+    """I2: one MLX job at a time, across both kinds of work."""
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())  # load once, so the delay is the generation's
+        loaded[0].delay = 0.15
+        order: list[str] = []
+
+        async def generation():
+            await eng.generate(job(seed=44))
+            order.append("generate")
+
+        async def upscale():
+            await asyncio.sleep(0.02)
+            await eng.upscale(upscale_job(tmp_path))
+            order.append("upscale")
+
+        await asyncio.gather(generation(), upscale())
+        return eng, order
+
+    eng, order = asyncio.run(scenario())
+    # The upscale started second and could only run once the lock was free.
+    assert order == ["generate", "upscale"]
+    eng.shutdown()
+
+
+def test_progress_reports_the_upscale_and_its_tiles(upscalers, tmp_path):
+    """I3. `state` is its own value, not `generating` with a different model."""
+    seen: list[dict] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        # Prime the slot so the observed run is the upscale, not the load.
+        await eng.upscale(upscale_job(tmp_path, size=(4, 4)))
+        upscalers[0].delay = 0.05
+        upscalers[0].tile_hook = lambda _n: seen.append(eng.progress())
+        # 3x3 tiles at tile=192 needs a source larger than one tile.
+        await eng.upscale(upscale_job(tmp_path, size=(400, 400)))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert seen, "no tile was observed"
+    assert {snapshot["state"] for snapshot in seen} == {"upscaling"}
+    assert {snapshot["kind"] for snapshot in seen} == {"upscale"}
+    assert {snapshot["model"] for snapshot in seen} == {"realesrgan-x4plus"}
+    assert seen[-1]["total"] == 9  # ceil(400/192) squared
+    assert seen[0]["seed"] is None
+    assert eng.progress()["state"] == "idle"
+    eng.shutdown()
+
+
+def test_an_upscale_can_be_cancelled_between_tiles(upscalers, tmp_path):
+    """I4. `request_cancel` answers False today; this is what extends it."""
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.upscale(upscale_job(tmp_path, size=(4, 4)))
+
+        armed: list[bool] = []
+        upscalers[0].tile_hook = lambda _n: armed.append(eng.request_cancel())
+
+        with pytest.raises(APIError) as caught:
+            await eng.upscale(upscale_job(tmp_path, size=(400, 400)))
+        return eng, caught.value, armed
+
+    eng, error, armed = asyncio.run(scenario())
+    assert armed[0] is True, "request_cancel refused a running upscale"
+    assert error.code == "generation_stopped"
+    # And the engine is usable afterwards: the cancel flag was re-armed clean
+    # by the next `arm()`, and the upscaler is still resident.
+    assert eng.progress()["state"] == "idle"
+    upscalers[0].tile_hook = None
+    asyncio.run(eng.upscale(upscale_job(tmp_path, size=(4, 4))))
+    assert len(upscalers) == 1, "the cancelled run cost the resident upscaler"
+    eng.shutdown()
+
+
+def test_request_cancel_still_refuses_when_nothing_runs(upscalers):
+    eng = ModelEngine(progress_log_every=0)
+    assert eng.request_cancel() is False
+    eng.shutdown()
+
+
+def test_unload_releases_both_slots(loaded, upscalers, tmp_path):
+    """I5, first half: "Free memory" must mean all of it."""
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        await eng.upscale(upscale_job(tmp_path))
+        assert eng.loaded_model is not None and eng.loaded_upscaler is not None
+        await eng.unload()
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_model is None
+    assert eng.loaded_upscaler is None
+    eng.shutdown()
+
+
+def test_unloading_a_diffusion_model_leaves_the_upscaler_alone(loaded, upscalers, tmp_path):
+    """I5, second half: the test that resists a future "simplification".
+
+    `_ensure_model` calls `_unload_sync` on every model switch. If that ever
+    grew to release the upscaler too, every alternation between generating and
+    upscaling would reload 33 MB, and nothing else would notice.
+    """
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.upscale(upscale_job(tmp_path))
+        await eng.generate(job())
+        await eng.generate(job(key="z-image-turbo"))  # forces a model switch
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert len(loaded) == 2, "the model switch did not happen"
+    assert len(upscalers) == 1, "_unload_sync took the upscaler with it"
+    assert eng.loaded_upscaler == "realesrgan-x4plus"
+    eng.shutdown()
+
+
+def test_shutdown_releases_both_slots(loaded, upscalers, tmp_path):
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        await eng.upscale(upscale_job(tmp_path))
+        return eng
+
+    eng = asyncio.run(scenario())
+    eng.shutdown()
+    assert eng.loaded_model is None
+    assert eng.loaded_upscaler is None
+
+
+@pytest.mark.parametrize("outscale", [2, 4])
+def test_upscale_returns_a_png_at_the_requested_scale(upscalers, tmp_path, outscale):
+    data = asyncio.run(
+        ModelEngine(progress_log_every=0).upscale(
+            upscale_job(tmp_path, outscale=outscale, size=(8, 12))
+        )
+    )
+    with Image.open(io.BytesIO(data)) as out:
+        assert out.size == (8 * outscale, 12 * outscale)

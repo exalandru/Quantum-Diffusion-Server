@@ -16,7 +16,7 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { type Mock, expect, it, vi } from "vitest";
 
-import type { PlaygroundGeneration, Progress } from "../types";
+import type { PlaygroundGeneration, Progress, Upscaler } from "../types";
 import { GenerationFeed } from "./GenerationFeed";
 
 const IDLE: Progress = {
@@ -31,6 +31,25 @@ const IDLE: Progress = {
   loaded_model: null,
   memory: {},
 };
+
+const UPSCALERS: Upscaler[] = [
+  {
+    id: "realesrgan-x4plus",
+    name: "Real-ESRGAN ×4 (photo)",
+    scales: [2, 4],
+    downloaded: true,
+    sizeMb: 33.5,
+    license: "BSD-3-Clause",
+  },
+  {
+    id: "realesrgan-x4plus-anime",
+    name: "Real-ESRGAN ×4 (illustration)",
+    scales: [2, 4],
+    downloaded: false,
+    sizeMb: 9,
+    license: "BSD-3-Clause",
+  },
+];
 
 // jsdom has no layout engine and so no `scrollIntoView`. The feed calls it to
 // keep new activity in view, which is not what these tests observe.
@@ -66,6 +85,7 @@ type Spies = {
   onCancel: Mock;
   onRefine: Mock;
   onVariation: Mock;
+  onUpscale: Mock;
   onDeleteImage: Mock;
   onDeleteGroup: Mock;
 };
@@ -80,6 +100,8 @@ function element(
   progress: Progress = IDLE,
   // Only the paused tests care.
   paused = false,
+  // Empty is the fail-closed case, which one test exercises on purpose.
+  upscalers: Upscaler[] = UPSCALERS,
 ) {
   return (
     <GenerationFeed
@@ -90,6 +112,8 @@ function element(
       busy={false}
       onRefine={spies.onRefine}
       onVariation={spies.onVariation}
+      onUpscale={spies.onUpscale}
+      upscalers={upscalers}
       onDeleteImage={spies.onDeleteImage}
       onDeleteGroup={spies.onDeleteGroup}
       paused={paused}
@@ -111,6 +135,7 @@ function handlers(): Spies {
     onCancel: vi.fn(),
     onRefine: vi.fn(),
     onVariation: vi.fn(),
+    onUpscale: vi.fn(),
     onDeleteImage: vi.fn(),
     onDeleteGroup: vi.fn(),
   };
@@ -180,11 +205,9 @@ it("keeps the destructive action last, behind a confirmation", async () => {
   expect(tools.map((button) => button.getAttribute("aria-label"))).toEqual([
     "Refine",
     "New variation",
-    "Upscale ×2 - coming soon",
+    "Upscale",
     "Delete image",
   ]);
-  // The placeholder is a promise, not a control.
-  expect((tools[2] as HTMLButtonElement).disabled).toBe(true);
   // Nothing here says its name in a native tooltip: the visual one is CSS.
   expect(tools.every((button) => button.getAttribute("title") === null)).toBe(true);
 
@@ -492,4 +515,118 @@ it("holds the full blur while the step count is somebody else's", () => {
 
   const box = container.querySelector(".pg-preview") as HTMLElement;
   expect(Number.parseFloat(box.style.getPropertyValue("--pg-preview-blur"))).toBe(20);
+});
+
+
+// ── Upscaling ──────────────────────────────────────────────────────────────
+
+it("takes a factor and a model, and hands back the image it was opened on", async () => {
+  const spies = handlers();
+  const root = generation({ id: "root" });
+  feed([root], spies);
+
+  const toolbar = screen.getByRole("toolbar");
+  await userEvent.click(within(toolbar).getByRole("button", { name: "Upscale" }));
+
+  const panel = screen.getByRole("dialog", { name: "Upscale options" });
+  // The panel is a sibling of the toolbar, not a member of it: a toolbar holds
+  // peer controls, and this keeps its four buttons four while the panel is open.
+  expect(within(toolbar).getAllByRole("button")).toHaveLength(4);
+
+  await userEvent.click(within(panel).getByRole("button", { name: "×4" }));
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Real-ESRGAN ×4 (illustration)" }),
+  );
+  await userEvent.click(within(panel).getByRole("button", { name: "Upscale" }));
+
+  expect(spies.onUpscale).toHaveBeenCalledWith(
+    root,
+    { url: "/playground/images/root.png", seed: 41 },
+    { model: "realesrgan-x4plus-anime", scale: 4 },
+  );
+  // And it closes behind itself.
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
+});
+
+it("says when the first use will cost a download, and only then", async () => {
+  feed([generation({ id: "root" })], handlers());
+  await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
+  const panel = screen.getByRole("dialog", { name: "Upscale options" });
+
+  // The default entry is already downloaded: nothing to warn about.
+  expect(within(panel).queryByText(/First use downloads/)).toBeNull();
+  await userEvent.click(
+    within(panel).getByRole("button", { name: "Real-ESRGAN ×4 (illustration)" }),
+  );
+  expect(within(panel).getByText("First use downloads 9 MB.")).toBeTruthy();
+});
+
+it("stays inert when the server offered no upscaler", () => {
+  render(element([generation({ id: "root" })], handlers(), undefined, IDLE, false, []));
+  const button = within(screen.getByRole("toolbar")).getAllByRole("button")[2] as HTMLButtonElement;
+  expect(button.getAttribute("aria-label")).toBe("Upscale unavailable");
+  expect(button.disabled).toBe(true);
+});
+
+it("labels an upscaled image, which the entry's own heading cannot", () => {
+  const root = generation({ id: "root", size: "512x288" });
+  const upscaled = generation({
+    id: "up",
+    groupId: "root",
+    kind: "upscale",
+    model: "realesrgan-x4plus",
+    size: "2048x1152",
+    images: [{ url: "/playground/images/up.png", seed: 42 }],
+  });
+  feed([root, upscaled], handlers());
+
+  // The heading still reads the root's request, which is right -- the upscale
+  // joined that lineage. The image itself has to say what it is.
+  expect(screen.getByText("Upscaled · 2048x1152")).toBeTruthy();
+});
+
+it("counts tiles, not steps, while an upscale runs", () => {
+  const root = generation({ id: "root" });
+  const running = generation({
+    id: "up",
+    groupId: "root",
+    kind: "upscale",
+    status: "running",
+    images: [],
+  });
+  render(
+    element([root, running], handlers(), undefined, {
+      ...IDLE,
+      state: "upscaling",
+      step: 3,
+      total: 9,
+    }),
+  );
+  expect(screen.getByText(/Upscaling - tile 3 of 9/)).toBeTruthy();
+});
+
+it("closes the panel from the button that opened it", async () => {
+  feed([generation({ id: "root" })], handlers());
+  const open = screen.getByRole("button", { name: "Upscale" });
+
+  await userEvent.click(open);
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).not.toBeNull();
+  expect(open.getAttribute("aria-expanded")).toBe("true");
+
+  // Without the trigger being exempt from "pressed outside", `mousedown`
+  // closes and the button's own `click` reopens: a toggle that never toggles
+  // off, while `aria-expanded` announces one that does.
+  await userEvent.click(open);
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
+});
+
+it("still closes on Escape and on a press outside", async () => {
+  feed([generation({ id: "root" })], handlers());
+  await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
+  await userEvent.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
+
+  await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
+  fireEvent.mouseDown(document.body);
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
 });

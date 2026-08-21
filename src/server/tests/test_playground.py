@@ -40,6 +40,14 @@ class BlockingEngine(FakeEngine):
         self.release = False
 
     async def generate(self, job):
+        await self._block()
+        return await super().generate(job)
+
+    async def upscale(self, job):
+        await self._block()
+        return await super().upscale(job)
+
+    async def _block(self):
         self.busy = True
         try:
             while not self.release:
@@ -50,7 +58,6 @@ class BlockingEngine(FakeEngine):
                 await asyncio.sleep(0.005)
         finally:
             self.busy = False
-        return await super().generate(job)
 
 
 class LoadingEngine(FakeEngine):
@@ -1153,3 +1160,300 @@ def test_a_v1_request_still_releases_the_model_while_the_queue_is_paused(setting
             json={"prompt": "a fox", "model": "z-image-turbo", "response_format": "b64_json"},
         ).status_code == 200
         assert wait_until(lambda: engine.unload_count > before)
+
+
+# ── Upscaling ──────────────────────────────────────────────────────────────
+
+
+def generated_image_name(client: TestClient, session_id: str) -> str:
+    """Submit one generation, wait for it, and return its image's filename."""
+    assert submit(client, session_id).status_code == 202
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    return generations(client, session_id)[0]["images"][0]["url"].rsplit("/", 1)[-1]
+
+
+def upscale(client: TestClient, session_id: str, image: str, **fields):
+    body = {"image": image, "model": "realesrgan-x4plus", "scale": 2, **fields}
+    headers = body.pop("headers", None)
+    return client.post(
+        f"/playground/api/sessions/{session_id}/upscales", json=body, headers=headers
+    )
+
+
+def test_the_catalogue_of_upscalers_is_published(client):
+    listed = client.get("/playground/api/upscalers")
+    assert listed.status_code == 200
+    entries = listed.json()["upscalers"]
+    assert [entry["id"] for entry in entries] == [
+        "realesrgan-x4plus",
+        "realesrgan-x4plus-anime",
+    ]
+    for entry in entries:
+        assert entry["scales"] == [2, 4]
+        assert isinstance(entry["downloaded"], bool)
+        assert entry["sizeMb"] > 0
+        assert "BSD-3-Clause" in entry["license"]
+
+
+def test_an_upscale_is_recorded_and_runs(client, engine, settings):
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    source = generations(client, session_id)[0]
+
+    accepted = upscale(client, session_id, name, scale=4)
+    assert accepted.status_code == 202
+    record = accepted.json()
+    assert record["kind"] == "upscale"
+    assert record["n"] == 1
+    assert record["steps"] == 0
+    assert record["model"] == "realesrgan-x4plus"
+    # The row records the *output* size, which is what the runner hands the
+    # engine -- no factor is derived back out of it anywhere.
+    # The fake source is 2x2, so x4 is 8x8.
+    assert record["size"] == "8x8"
+    # It joins the entry its source came from rather than starting a new one.
+    assert record["groupId"] == source["groupId"]
+    assert record["prompt"] == source["prompt"]
+    assert record["seeds"] == [source["images"][0]["seed"]]
+
+    assert wait_until(lambda: status_of(client, session_id, 1) == "completed")
+    done = generations(client, session_id)[1]
+    assert len(done["images"]) == 1
+    assert client.get(done["images"][0]["url"]).status_code == 200
+    # The engine was asked for an upscale, not a generation.
+    assert len(engine.upscales) == 1
+    assert engine.upscales[0].target == (8, 8)
+
+
+def test_an_upscale_copies_its_source_rather_than_referencing_it(client, settings):
+    """Deleting the source must not leave the upscale pointing at nothing."""
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    accepted = upscale(client, session_id, name)
+    assert accepted.status_code == 202
+    assert wait_until(lambda: status_of(client, session_id, 1) == "completed")
+
+    context = generations(client, session_id)[1]["contextImage"]
+    assert context is not None
+    copy_name = context.rsplit("/", 1)[-1]
+    assert copy_name != name, "the source was referenced, not copied"
+    assert images_dir(settings).joinpath(copy_name).is_file()
+
+    assert client.delete(f"/playground/api/images/{name}").status_code == 204
+    upscaled = generations(client, session_id)[1]
+    assert client.get(upscaled["images"][0]["url"]).status_code == 200
+    assert client.get(upscaled["contextImage"]).status_code == 200
+
+
+def test_deleting_the_group_unlinks_the_copy(client, settings):
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    assert upscale(client, session_id, name).status_code == 202
+    assert wait_until(lambda: status_of(client, session_id, 1) == "completed")
+
+    copy_name = generations(client, session_id)[1]["contextImage"].rsplit("/", 1)[-1]
+    group_id = generations(client, session_id)[1]["groupId"]
+    assert client.delete(f"/playground/api/groups/{group_id}").status_code == 204
+    # The assertion is on the directory, not the return value: what matters is
+    # that a directory which is never purged did not keep the file.
+    assert not images_dir(settings).joinpath(copy_name).exists()
+
+
+# ── Upscaling: authority ───────────────────────────────────────────────────
+
+
+def test_an_image_from_another_session_is_not_upscalable(client):
+    owner = new_session(client)
+    name = generated_image_name(client, owner)
+    intruder = new_session(client)
+    refused = upscale(client, intruder, name)
+    assert refused.status_code == 404
+    # "unknown", not "not yours": existence must not depend on who asks.
+    assert refused.json()["error"]["code"] == "not_found"
+
+
+def test_an_invented_filename_is_a_404(client):
+    session_id = new_session(client)
+    assert upscale(client, session_id, "../../etc/passwd").status_code == 404
+    assert upscale(client, session_id, "nope.png").status_code == 404
+
+
+def test_a_context_image_is_not_upscalable(client, settings):
+    """`session_of_image` would accept one; `generated_image` must not.
+
+    A context file keeps the suffix it was uploaded with, so it need not be a
+    PNG, and it has no seed -- while `generation_images.seed` is NOT NULL.
+    """
+    session_id = new_session(client)
+    assert submit(
+        client, session_id, model="qwen-image-2512", files={"image": ("ref.png", tiny_png())}
+    ).status_code == 202
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    context = generations(client, session_id)[0]["contextImage"]
+    assert context is not None
+
+    refused = upscale(client, session_id, context.rsplit("/", 1)[-1])
+    assert refused.status_code == 404
+
+
+def test_an_unknown_upscaler_names_the_valid_keys(client):
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    refused = upscale(client, session_id, name, model="realesrgan-x9000")
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "invalid_model"
+    assert "realesrgan-x4plus" in refused.json()["error"]["message"]
+
+
+def test_an_unsupported_scale_is_refused(client):
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    refused = upscale(client, session_id, name, scale=3)
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "invalid_scale"
+
+
+def test_an_oversized_job_is_refused_and_leaves_no_copy(client, settings, monkeypatch):
+    """The guard between one click and a multi-gigabyte allocation.
+
+    The directory assertion is the one that matters: it is what proves the
+    cleanup protocol ran, in a directory nothing ever purges.
+    """
+    from qds.upscale import catalogue as upscale_catalogue
+
+    monkeypatch.setattr(upscale_catalogue, "MAX_RENDER_PIXELS", 4)
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    before = set(p.name for p in images_dir(settings).iterdir())
+
+    refused = upscale(client, session_id, name, scale=4)
+    assert refused.status_code == 400
+    assert refused.json()["error"]["code"] == "image_too_large"
+    assert set(p.name for p in images_dir(settings).iterdir()) == before
+
+
+def test_the_size_guard_measures_what_is_rendered_not_what_is_asked_for(
+    client, settings, monkeypatch
+):
+    """The hole a target-based guard leaves open.
+
+    RRDBNet always renders at x4, so a x2 request does the same work as a x4 one
+    and then throws three quarters of it away. A guard on the *target* therefore
+    lets a x2 job through that is four times heavier than the x4 job it refuses
+    on the same source -- and it is reachable, because an upscale's output is a
+    generated image and can be upscaled again.
+
+    The source here is 2x2, so either factor renders 8x8 -- 64 pixels. With the
+    limit one pixel below that, *both* requests must be refused, because both
+    do the same work. A target-based guard would refuse only the x4.
+    """
+    from qds.upscale import catalogue as upscale_catalogue
+
+    monkeypatch.setattr(upscale_catalogue, "MAX_RENDER_PIXELS", 63)
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+
+    for scale in (4, 2):
+        refused = upscale(client, session_id, name, scale=scale)
+        assert refused.status_code == 400, f"x{scale} slipped past the guard"
+        assert refused.json()["error"]["code"] == "image_too_large"
+        # The rendered size, named, so the limit does not look arbitrary.
+        assert "8x8" in refused.json()["error"]["message"]
+
+    # One pixel of headroom and both are allowed, for the same reason.
+    monkeypatch.setattr(upscale_catalogue, "MAX_RENDER_PIXELS", 64)
+    assert upscale(client, session_id, name, scale=2).status_code == 202
+    assert upscale(client, session_id, name, scale=4).status_code == 202
+
+
+def test_upscaling_a_locked_session_needs_the_token(client):
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+    password = "correct horse battery"
+    assert client.post(
+        f"/playground/api/sessions/{session_id}/password", json={"password": password}
+    ).status_code in (200, 204)
+
+    refused = upscale(client, session_id, name)
+    assert refused.status_code == 403
+    assert refused.json()["error"]["code"] == "session_locked"
+
+    token = client.post(
+        f"/playground/api/sessions/{session_id}/unlock", json={"password": password}
+    ).json()["token"]
+    accepted = upscale(client, session_id, name, headers={"X-QDS-Session-Token": token})
+    assert accepted.status_code == 202
+
+
+def test_an_upscale_needs_no_schema_change(tmp_path):
+    """I9: a store written before upscales existed takes them without migrating."""
+    store = PlaygroundStore(tmp_path)
+    before = {row[1] for row in store._db.execute("PRAGMA table_info(generations)")}
+    store.create_session()
+    sessions = store.list_sessions()
+    store.add_generation(
+        sessions[0]["id"],
+        prompt="a fox",
+        model="realesrgan-x4plus",
+        kind="upscale",
+        n=1,
+        width=2048,
+        height=2048,
+        steps=0,
+        steps_from_preset=False,
+        seeds=[7],
+        context_image="ctx-abc.png",
+    )
+    after = {row[1] for row in store._db.execute("PRAGMA table_info(generations)")}
+    assert after == before, "an upscale row required a new column"
+
+    reopened = PlaygroundStore(tmp_path)
+    record = reopened.get_session(sessions[0]["id"])["generations"][0]
+    assert record["kind"] == "upscale"
+    assert record["size"] == "2048x2048"
+
+
+def test_an_upscale_in_flight_can_be_cancelled(settings):
+    """Cancelled, not failed, and with nothing half-written on disk."""
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as client:
+        session_id = new_session(client)
+        # The source generation must finish; only the upscale is held.
+        engine.release = True
+        assert submit(client, session_id).status_code == 202
+        assert wait_until(lambda: status_of(client, session_id) == "completed")
+        name = generations(client, session_id)[0]["images"][0]["url"].rsplit("/", 1)[-1]
+        engine.release = False
+
+        record = upscale(client, session_id, name).json()
+        assert wait_until(lambda: status_of(client, session_id, 1) == "running")
+        assert client.post(
+            f"/playground/api/generations/{record['id']}/cancel"
+        ).status_code == 200
+        assert wait_until(lambda: status_of(client, session_id, 1) == "cancelled")
+        assert generations(client, session_id)[1]["images"] == []
+
+
+def test_a_vanished_source_fails_with_an_answer_about_the_source(client, settings):
+    """A real failure path, and it used to answer about model weights.
+
+    `Image.open` on a missing file raises `FileNotFoundError`, which
+    `translate_mflux_exception` renders as "Weights or model not found". The
+    row reached a terminal status either way; the message was about the wrong
+    thing.
+    """
+    session_id = new_session(client)
+    name = generated_image_name(client, session_id)
+
+    # Held, so the file is gone before the runner ever claims the row: without
+    # this the upscale usually wins the race and the test proves nothing.
+    assert client.post("/playground/api/queue", json={"paused": True}).status_code == 200
+    accepted = upscale(client, session_id, name)
+    assert accepted.status_code == 202
+    images_dir(settings).joinpath(accepted.json()["contextImage"].rsplit("/", 1)[-1]).unlink()
+    assert client.post("/playground/api/queue", json={"paused": False}).status_code == 200
+
+    assert wait_until(lambda: status_of(client, session_id, 1) == "failed")
+    error = generations(client, session_id)[1]["error"]
+    assert "source image" in error
+    assert "Weights" not in error, f"answered about the wrong thing: {error}"

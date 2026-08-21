@@ -75,15 +75,21 @@ class IdleUnloader:
             await asyncio.sleep(self._delay or 0)
             before = self._engine.memory_stats()
             model = self._engine.loaded_model
-            if model is None:
+            upscaler = self._engine.loaded_upscaler
+            # Both, or an upscale done without generating first — a reopened
+            # session, or a model already released — would leave the upscaler
+            # resident forever: the countdown would arm, wake, see no diffusion
+            # model, and give up.
+            if model is None and upscaler is None:
                 return
             await self._engine.unload()
             after = self._engine.memory_stats()
             # Logged, and with figures: a silent release would read as the model
             # having leaked away on its own.
+            released = " + ".join(filter(None, (model, upscaler))) or "nothing"
             logger.info(
                 "Released %s after %.10gs idle - memory %s → %s",
-                model,
+                released,
                 self._delay,
                 before.get("active_gb"),
                 after.get("active_gb"),
@@ -91,6 +97,7 @@ class IdleUnloader:
                     "event": "model_idle_unload",
                     "fields": {
                         "model": model,
+                        "upscaler": upscaler,
                         "idle_unload_s": self._delay,
                         "active_gb_before": before.get("active_gb"),
                         "active_gb_after": after.get("active_gb"),

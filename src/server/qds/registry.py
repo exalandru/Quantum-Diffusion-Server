@@ -209,12 +209,15 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # is, one saved variant among the possible ones. Source and saved
         # representation are two facts, and this is the source.
         model_path=None,
-        # 1024² rather than 1920x1072: 32B over 20 steps, area is expensive.
+        # 1024² rather than 1920x1072: 32B over 50 steps, area is expensive.
         default_width=1024,
         default_height=1024,
-        # Base model, not step-distilled (see mflux cli/defaults/defaults.py,
-        # MODEL_INFERENCE_STEPS for the flux2-klein-base entries).
-        default_steps=20,
+        # Base model, not step-distilled. The card's diffusers example says
+        # `num_inference_steps=50` with `#28 steps can be a good trade-off`
+        # beside it, and `guidance_scale=4`. mflux has no FLUX.2-dev entry to
+        # follow — its `MODEL_INFERENCE_STEPS` covers only the klein rows, where
+        # the base ones are 50 too (cli/defaults/defaults.py).
+        default_steps=50,
         default_guidance=4.0,
         supports_guidance=True,
         # Guidance-distilled: the scalar is embedded in the transformer, so
@@ -396,16 +399,17 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         default_height=1072,
         # The Qwen-Image-2512 card, not mflux: its MODEL_INFERENCE_STEPS says 20
         # and GUIDANCE_SCALE 3.5, which is the blanket default it applies to every
-        # model. The card asks for 50 steps and cfg 4.0.
+        # model and which Qwen never published. The card's own example is
+        # `num_inference_steps=50, true_cfg_scale=4.0`, and that is what this row
+        # follows.
         #
-        # The two are not paid for the same way here. `qwen_image.py:106-119` runs
-        # the negative pass *unconditionally*, whatever the guidance, so raising
-        # it to 4.0 costs nothing - unlike z-image, which skips that pass below
-        # 1.0. Steps do cost: two transformer forwards each, so the card's 50 on a
-        # 20B is 100 passes per image. Hence 20 by default, which is what this
-        # server would rather spend; raise `default_steps` in the config to follow
-        # the card exactly.
-        default_steps=20,
+        # Note the parameter name: `true_cfg_scale`, not `guidance_scale`. This is
+        # real CFG, a second pass — `qwen_image.py:106-119` runs the negative pass
+        # *unconditionally*, whatever the value, unlike z-image, which skips it
+        # below 1.0. So 50 steps on a 20B is 100 transformer forwards per image.
+        # That is the card's price, and it is expensive; lower `default_steps` in
+        # the config to trade quality for time.
+        default_steps=50,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -436,7 +440,13 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # An mlx-community conversion; the license follows Tongyi-MAI upstream.
         default_width=1920,
         default_height=1072,
-        default_steps=20,
+        # The only card here that publishes a *range* rather than an example:
+        # "Inference steps: 28 - 50" and "Guidance scale: 3.0 - 5.0", with its
+        # code sample at 50 and 4. This row takes the top of the step range, as
+        # mflux does (`MODEL_INFERENCE_STEPS["z-image"] = 50`). A default below
+        # 28 would sit outside what the model's authors say the model is for,
+        # which is a different thing from spending less than an example suggests.
+        default_steps=50,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -472,11 +482,16 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         model_path=None,
         default_width=1024,
         default_height=1024,
-        # The card and its own CLI (`ernie_image_generate.py:31-33`) ask for 50
-        # steps and guidance 4.0. Guidance is kept; the step count is not - 20 is
-        # this server's default everywhere a base model would otherwise cost 50.
-        # The signature's 8 and 1.0 are the *turbo* values, not these.
-        default_steps=20,
+        # 50 steps and guidance 4.0: the card says both in prose ("typically 50
+        # inference steps", "Guidance scale: 4.0") and in its diffusers example,
+        # and mflux agrees. The two live in different places there, which is why
+        # naming one file would be wrong: guidance is set in
+        # `ernie_image/cli/ernie_image_generate.py:22,30-31`, the step count in
+        # `cli/defaults/defaults.py:32`.
+        #
+        # The signature's 8 and 1.0 are the *turbo* values — the constructor
+        # defaults to turbo too, so neither is this model's.
+        default_steps=50,
         default_guidance=4.0,
         supports_guidance=True,
         supports_negative_prompt=True,
@@ -522,7 +537,10 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         model_path=None,
         default_width=1024,
         default_height=1024,
-        default_steps=20,
+        # The card has no prose recommendation at all; its three examples
+        # (Generate, Refine, Inspire) all call `num_inference_steps=50,
+        # guidance_scale=5`. mflux matches on both.
+        default_steps=50,
         # 5.0, "base FIBO typical" per its CLI — not the 4.0 of the signature.
         default_guidance=5.0,
         supports_guidance=True,

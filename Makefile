@@ -9,7 +9,7 @@ export UV_PROJECT_ENVIRONMENT := $(ROOT)/.venv
 
 .PHONY: help install install-server install-dashboard dev-server dev-dashboard \
 	test test-server test-dashboard test-app lint build build-server build-dashboard \
-	build-app clean
+	build-app build-dmg clean
 
 help:
 	@printf '%s\n' \
@@ -18,10 +18,11 @@ help:
 		'make dev-dashboard    Run the dashboard against a running server' \
 		'make test             Run the test suites' \
 		'make lint             Run Python lint and TypeScript checks' \
-		'make build            Build the wheel and QDS.app' \
+		'make build            Build the wheel, QDS.app and the DMG' \
 		'make build-dashboard  Build the web dashboard into the Python package' \
 		'make build-server     Build the wheel, dashboard included' \
 		'make build-app        Build QDS.app, wheel and uv included' \
+		'make build-dmg        Package QDS.app into dist/app/QDS-<version>.dmg' \
 		'make clean            Remove build/ and dist/'
 
 install: install-server install-dashboard
@@ -63,7 +64,7 @@ lint:
 	uv run --project "$(SERVER_DIR)" ruff check "$(SERVER_DIR)"
 	npm --prefix "$(DASHBOARD_DIR)" run typecheck
 
-build: build-server build-app clean-build
+build: build-server build-app build-dmg clean-build
 
 build-dashboard:
 	npm --prefix "$(DASHBOARD_DIR)" run build
@@ -81,6 +82,11 @@ build-server: build-dashboard
 # The app bundles the wheel, so it cannot be built before one exists.
 build-app: build-server
 	"$(ROOT)/scripts/bundle-menubar.sh"
+
+# What the Tauri bundler used to produce, and what v2 lost with it: the app on
+# its own is not something to hand someone.
+build-dmg: build-app
+	"$(ROOT)/scripts/make-dmg.sh"
 
 clean-build:
 	rm -rf "$(BUILD_DIR)" "$(MENUBAR_DIR)/.build"

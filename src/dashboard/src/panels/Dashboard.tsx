@@ -94,6 +94,9 @@ export function Dashboard({
 
   const memory = progress.memory.active_gb !== undefined ? progress.memory : (health?.memory ?? {});
   const loaded = progress.loaded_model ?? health?.loaded_model ?? null;
+  // "Free memory" releases both slots, so it must also be live when the only
+  // thing resident is the upscaler.
+  const holding = loaded !== null || (progress.upscaler ?? null) !== null;
   const job = jobs.job;
   const generating = progress.state !== "idle";
   const idleUnload = health?.idle_unload_s;
@@ -230,17 +233,25 @@ export function Dashboard({
         <div className="actions" style={{ marginTop: 14 }}>
           <button
             onClick={() => void act("cancel", api.cancelGeneration, "Cancellation requested.")}
-            disabled={anyBusy || progress.state !== "generating"}
+            // An upscale is cancellable too — it stops at the next tile — so
+            // this must not stay inert while one runs.
+            disabled={anyBusy || (progress.state !== "generating" && progress.state !== "upscaling")}
             title={
-              progress.state === "generating" ? undefined : "Available while a generation is running."
+              progress.state === "generating" || progress.state === "upscaling"
+                ? undefined
+                : "Available while a generation is running."
             }
           >
-            {busy("cancel") ? "Cancelling…" : "Cancel generation"}
+            {busy("cancel")
+              ? "Cancelling…"
+              : progress.state === "upscaling"
+                ? "Cancel upscale"
+                : "Cancel generation"}
           </button>
           <button
             onClick={() => void act("unload", api.unload, "Model released.")}
-            disabled={anyBusy || !loaded}
-            title={loaded ? undefined : "No model is loaded."}
+            disabled={anyBusy || !holding}
+            title={holding ? undefined : "Nothing is loaded."}
           >
             {busy("unload") ? "Releasing…" : "Free memory"}
           </button>

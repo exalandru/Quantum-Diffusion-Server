@@ -292,6 +292,41 @@ class PlaygroundStore:
             ).fetchone()
         return None if row is None else row["session_id"]
 
+    def generated_image(self, filename: str) -> dict[str, Any] | None:
+        """A *generated* image and its lineage, or None.
+
+        Deliberately not `session_of_image`, which also matches
+        `context_image`. Two reasons an upscale must not accept one of those:
+        a context file keeps whatever suffix it was uploaded with, so it may be
+        a JPEG or a WebP rather than the PNG this promises, and it has no seed
+        -- while `generation_images.seed` is NOT NULL, so the row an upscale
+        writes would have nothing to put there.
+
+        The filename never reaches the filesystem before a row has matched,
+        which is the traversal guard `GET /playground/images/{filename}`
+        already relies on.
+        """
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT g.session_id AS session_id, g.group_id AS group_id,
+                       g.prompt AS prompt, g.model AS model, gi.seed AS seed
+                FROM generation_images gi JOIN generations g ON g.id = gi.generation_id
+                WHERE gi.filename = ?
+                LIMIT 1
+                """,
+                (filename,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "session_id": row["session_id"],
+            "group_id": row["group_id"] or row["session_id"],
+            "prompt": row["prompt"],
+            "model": row["model"],
+            "seed": row["seed"],
+        }
+
     def session_of_generation(self, generation_id: str) -> str | None:
         with self._lock:
             row = self._db.execute(
@@ -743,11 +778,16 @@ class PlaygroundRunner:
         engine: Any,
         idle_unloader: Any,
         resolve_spec: Callable[[str | None], ModelSpec],
+        resolve_upscaler: Callable[[str], Any] | None = None,
     ):
         self._store = store
         self._engine = engine
         self._idle = idle_unloader
         self._resolve_spec = resolve_spec
+        #: Injected the same way `resolve_spec` is, so the runner keeps its one
+        #: dependency direction: it is handed how to look things up, it does not
+        #: reach into a catalogue itself.
+        self._resolve_upscaler = resolve_upscaler
         #: Created by `start()`, not here: an `asyncio.Queue` binds to the loop
         #: that first uses it, and one app may be run by several loops in turn
         #: (every `TestClient` context is a fresh one). Binding it at startup
@@ -951,12 +991,92 @@ class PlaygroundRunner:
                 if self._cancel_requested == generation_id:
                     self._cancel_requested = None
 
+    async def _run_upscale(self, generation_id: str, row: Any) -> None:
+        """One enlargement: no seed loop, one image, one terminal status.
+
+        Keeps the boundaries `_run` owns and drops the rest. `_await_resume`
+        before starting, so a paused queue holds an upscale as it holds a
+        generation; `with self._idle:` around the work, so the idle countdown
+        is not armed while it runs; a cancellation check before committing, so
+        a request that arrived during the work is not lost.
+        """
+        from qds.engine import UpscaleJob
+
+        if self._resolve_upscaler is None:  # pragma: no cover - wired at start-up
+            self._store.finish(generation_id, "failed", "Upscaling is not configured.")
+            return
+
+        spec = self._resolve_upscaler(row["model"])
+        if spec is None:
+            self._store.finish(
+                generation_id, "failed", f"Unknown upscaler: {row['model']!r}."
+            )
+            return
+
+        context = row["context_image"]
+        if not context:  # pragma: no cover - the route always writes one
+            self._store.finish(generation_id, "failed", "The source image is missing.")
+            return
+        source = self._store.images_dir / context
+        if not source.is_file():
+            # Said here rather than letting `Image.open` raise into
+            # `translate_mflux_exception`, which would render a missing file as
+            # "Weights or model not found" -- a real failure path with an
+            # answer about something else entirely.
+            self._store.finish(
+                generation_id, "failed", "The source image is no longer on disk."
+            )
+            return
+
+        try:
+            if not await self._await_resume(generation_id):
+                self._store.finish(generation_id, "cancelled")
+                return
+            if self._cancel_requested == generation_id:
+                self._store.finish(generation_id, "cancelled")
+                return
+
+            with self._idle:
+                png = await self._engine.upscale(
+                    UpscaleJob(
+                        spec=spec,
+                        image_path=source,
+                        target=(row["width"], row["height"]),
+                    )
+                )
+
+            if self._cancel_requested == generation_id:
+                # Requested while the tiles ran but after the last checkpoint.
+                self._store.finish(generation_id, "cancelled")
+                return
+
+            filename = self._store.save_image(png)
+            seeds: list[int] = json.loads(row["seeds"])
+            if not self._store.add_image(generation_id, 0, filename, seeds[0] if seeds else 0):
+                # The session or the row went away while this ran.
+                self._store.unlink([filename])
+                return
+        except Exception as exc:
+            error = translate_mflux_exception(exc)
+            if error.code == "generation_stopped":
+                self._store.finish(generation_id, "cancelled")
+            else:
+                self._store.finish(generation_id, "failed", error.message)
+            return
+        self._store.finish(generation_id, "completed")
+
     async def _run(self, generation_id: str) -> None:
         row = self._store.claim(generation_id)
         if row is None:
             # Cancelled or deleted while it waited its turn.
             return
         self.current_id = generation_id
+        if row["kind"] == "upscale":
+            # Diverted before `_resolve_spec`, which would raise `model_not_found`
+            # on an upscaler key and fail the row with "Unknown model". An upscale
+            # is a short, single job: no seed loop, no preset steps, no previews.
+            await self._run_upscale(generation_id, row)
+            return
         try:
             spec = self._resolve_spec(row["model"])
         except APIError as exc:

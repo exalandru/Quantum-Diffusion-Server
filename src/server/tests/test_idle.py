@@ -16,6 +16,7 @@ from tests.conftest import wait_until
 class StubEngine:
     def __init__(self) -> None:
         self.loaded_model: str | None = "z-image-turbo:txt2img"
+        self.loaded_upscaler: str | None = None
         self.unload_count = 0
 
     def memory_stats(self) -> dict[str, float]:
@@ -24,6 +25,7 @@ class StubEngine:
     async def unload(self) -> None:
         self.unload_count += 1
         self.loaded_model = None
+        self.loaded_upscaler = None
 
 
 def test_the_model_is_released_after_the_delay():
@@ -185,4 +187,43 @@ def test_releasing_an_empty_engine_is_a_no_op():
         return engine
 
     # Nothing to release: `unload()` is not even called.
+    assert asyncio.run(scenario()).unload_count == 0
+
+
+def test_an_upscaler_alone_is_still_released():
+    """The countdown must not give up just because no diffusion model is loaded.
+
+    Upscaling without generating first is ordinary -- a reopened session, or a
+    model already released. Checking only `loaded_model` would arm the timer,
+    wake, see None, return, and leave the upscaler resident for good.
+    """
+
+    async def scenario():
+        engine = StubEngine()
+        engine.loaded_model = None
+        engine.loaded_upscaler = "realesrgan-x4plus"
+        unloader = IdleUnloader(engine, 0.05)
+        with unloader:
+            pass
+        await asyncio.sleep(0.12)
+        return engine
+
+    engine = asyncio.run(scenario())
+    assert engine.unload_count == 1
+    assert engine.loaded_upscaler is None
+
+
+def test_an_idle_engine_holding_nothing_is_left_alone():
+    """The control for the test above: with both slots empty there is nothing
+    to release, and `unload()` must not be called for the sake of it."""
+
+    async def scenario():
+        engine = StubEngine()
+        engine.loaded_model = None
+        engine.loaded_upscaler = None
+        with IdleUnloader(engine, 0.05):
+            pass
+        await asyncio.sleep(0.12)
+        return engine
+
     assert asyncio.run(scenario()).unload_count == 0

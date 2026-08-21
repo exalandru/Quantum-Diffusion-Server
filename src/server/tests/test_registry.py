@@ -272,12 +272,14 @@ def test_qwen_does_not_use_from_name():
 
 
 def test_qwen_follows_its_own_card_not_the_mflux_defaults():
-    """The Qwen-Image-2512 card asks for cfg 4.0; the step count is ours."""
+    """Both numbers come from the card, and neither matches mflux.
 
-    # Guidance 4.0 comes from the card; 20 steps is this server's own default for a
-    # base model, not mflux's blanket 3.5 guidance.
+    mflux would give 20 steps and guidance 3.5 — its blanket defaults, applied
+    to every model and never published by Qwen. The card's own example is
+    `num_inference_steps=50, true_cfg_scale=4.0`.
+    """
     spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
-    assert spec.default_steps == 20
+    assert spec.default_steps == 50
     assert spec.default_guidance == 4.0
 
 
@@ -288,8 +290,8 @@ def test_flux2_dev_is_guidance_distilled_and_prequantized():
     assert spec.supports_guidance is True
     assert spec.supports_negative_prompt is False
     assert spec.default_guidance == 4.0
-    # Base model: 20 steps, and 1024² to avoid paying for area on a 32B.
-    assert spec.default_steps == 20
+    # Base model: the card's 50 steps, and 1024² to avoid paying for area on a 32B.
+    assert spec.default_steps == 50
     assert (spec.default_width, spec.default_height) == (1024, 1024)
     # The upstream repo ships bf16: loading goes through a saved variant, which
     # is now a *variant* rather than the model's identity. Its source is the raw
@@ -491,3 +493,38 @@ def test_non_local_binding_requires_both_credentials(tmp_path, monkeypatch):
     settings = Settings.model_validate({"server": {"host": "0.0.0.0", "api_key": "secret"}})
     assert settings.server.is_loopback is False
     assert settings.runtime_issues() == []
+
+
+def test_base_models_default_to_the_step_count_their_cards_publish():
+    """No base model is quietly cheaper than what its authors recommend.
+
+    These five were dropped to 20 together, which made the catalogue disagree
+    with every one of their model cards at once. They are checked as a group
+    because that is how they drifted: a blanket number applied across rows whose
+    only shared property was being expensive.
+
+    z-image is the one that mattered most. Its card publishes a *range* —
+    "Inference steps: 28 - 50" — so 20 was not a thriftier reading of an
+    example, it was outside what the model is documented to do.
+    """
+    published = {
+        "flux2-dev": 50,  # card: num_inference_steps=50 (with "#28 ... trade-off")
+        "qwen-image-2512": 50,  # card: num_inference_steps=50, true_cfg_scale=4.0
+        "z-image": 50,  # card: "Inference steps: 28 - 50", example at 50
+        "ernie-image": 50,  # card: "typically 50 inference steps"
+        "fibo": 50,  # card: every example calls num_inference_steps=50
+    }
+    assert {key: BASE_SPECS_BY_KEY[key].default_steps for key in published} == published
+
+
+def test_ideogram_keeps_the_step_count_of_its_preset():
+    """Not one of the five: 20 here is a fact about the sampler, not a budget.
+
+    Ideogram 4 takes its schedule from a preset, and `V4_DEFAULT_20` carries 20.
+    Raising this number alone would not buy any steps — it would only make
+    `/v1/capabilities` and the progress bar report a count the sampler is not
+    running. Changing it means changing `preset`.
+    """
+    spec = BASE_SPECS_BY_KEY["ideogram-4"]
+    assert spec.default_steps == 20
+    assert spec.preset == "V4_DEFAULT_20"

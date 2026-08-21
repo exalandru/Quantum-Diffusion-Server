@@ -131,7 +131,7 @@ export type Capabilities = {
 
 /** Snapshot streamed by `/v1/progress`. */
 export type Progress = {
-  state: "idle" | "loading" | "generating";
+  state: "idle" | "loading" | "generating" | "upscaling";
   model: string | null;
   kind: string | null;
   seed: number | null;
@@ -144,6 +144,11 @@ export type Progress = {
   preview_seq: number;
   elapsed_s: number | null;
   loaded_model: string | null;
+  /**
+   * The resident upscaler's key, or null. Optional so the several `IDLE`
+   * literals in the app and its tests keep type-checking unchanged.
+   */
+  upscaler?: string | null;
   memory: Health["memory"];
 };
 
@@ -173,6 +178,17 @@ export type PlaygroundSessionList = {
   paused: boolean;
 };
 
+/** One entry of the upscaler catalogue, as `/playground/api/upscalers` serves it. */
+export type Upscaler = {
+  id: string;
+  name: string;
+  scales: number[];
+  /** Whether using it now avoids a download. Asked of the file, not the repo. */
+  downloaded: boolean;
+  sizeMb: number;
+  license: string;
+};
+
 export type PlaygroundStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 /**
@@ -199,7 +215,7 @@ export type PlaygroundGeneration = {
   negativePrompt: string | null;
   /** Public model name, as `/v1/models` lists it. */
   model: string;
-  kind: "txt2img" | "edit";
+  kind: "txt2img" | "edit" | "upscale";
   n: number;
   size: string;
   steps: number;

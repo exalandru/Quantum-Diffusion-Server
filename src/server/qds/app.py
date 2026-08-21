@@ -29,6 +29,7 @@ from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Query, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from qds import __version__, admin, credential, logbuffer, playground_lock
@@ -53,6 +54,7 @@ from qds.settings import (
     recovery_settings,
 )
 from qds.store import ImageStore
+from qds.upscale import catalogue as upscale_catalogue
 
 logger = logging.getLogger(SERVER_LOGGER)
 
@@ -89,6 +91,24 @@ class QueueStateRequest(BaseModel):
 class SessionPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     password: str
+
+
+class UpscaleRequest(BaseModel):
+    """Enlarge an image the session already owns.
+
+    No image bytes: `image` names a file the server wrote and can attribute.
+    `model` and `scale` are checked against the catalogue in the route rather
+    than by an enum here, so the error names the valid values.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+    #: Filename of a *generated* image, as served by `/playground/images/`.
+    image: str = Field(max_length=255)
+    model: str = Field(max_length=64)
+    scale: int
+    #: Feed entry to join. Defaults to the source's, so an upscale grows the
+    #: entry its image came from rather than starting a new one.
+    group: str | None = Field(default=None, max_length=64)
 
 
 class ImageGenerationRequest(BaseModel):
@@ -392,7 +412,9 @@ def create_app(
 
     # Constructed here rather than beside its store: the runner resolves a model
     # at execution time, not at submission time, so it needs `resolve_spec`.
-    runner = PlaygroundRunner(playground, engine, idle_unloader, resolve_spec)
+    runner = PlaygroundRunner(
+        playground, engine, idle_unloader, resolve_spec, upscale_catalogue.by_key
+    )
 
     def resolve_size(spec: ModelSpec, size: str | None) -> tuple[int, int]:
         if size is None or size.lower() == "auto":
@@ -1020,6 +1042,139 @@ def create_app(
         except BaseException:
             if destination is not None:
                 destination.unlink(missing_ok=True)
+            raise
+        runner.submit(record["id"])
+        return record
+
+    @playground_api.get("/upscalers")
+    def playground_upscalers() -> dict:
+        """What the image toolbar can offer, and whether it will cost a wait.
+
+        `downloaded` is asked of the *file*, not the repository:
+        `availability.scan_repos` answers "this repo is in the cache", which is
+        right for a status report and wrong here -- it would say present for a
+        repo from which some other file had been pulled. This decides whether a
+        click starts a download, so it asks the exact question.
+        """
+        from qds.upscale.weights import is_downloaded
+
+        return {
+            "upscalers": [
+                {
+                    "id": spec.key,
+                    "name": spec.display_name,
+                    "scales": list(upscale_catalogue.SCALES),
+                    "downloaded": is_downloaded(spec),
+                    "sizeMb": spec.size_mb,
+                    "license": spec.license,
+                }
+                for spec in upscale_catalogue.SPECS
+            ]
+        }
+
+    @playground_api.post("/sessions/{session_id}/upscales", status_code=202, dependencies=[unlocked])
+    async def playground_upscale(session_id: str, body: UpscaleRequest) -> dict:
+        """Enlarge an image this session already owns.
+
+        A separate route rather than a field on `/generations`, and JSON rather
+        than multipart, for the same reason: the source is by construction a
+        file the server already holds and already knows the owner of. `refine`
+        round-trips its PNG through the browser because a refinement may
+        legitimately start from an image the server has never seen; an upscale
+        cannot. Sending those bytes out and back would be pure work, and would
+        put a trust boundary where there was none.
+        """
+        spec = upscale_catalogue.by_key(body.model)
+        if spec is None:
+            raise APIError(
+                f"Unknown upscaler {body.model!r}. Available: "
+                f"{', '.join(upscale_catalogue.KEYS)}.",
+                param="model",
+                code="invalid_model",
+            )
+        if body.scale not in upscale_catalogue.SCALES:
+            raise APIError(
+                f"scale must be one of {', '.join(str(s) for s in upscale_catalogue.SCALES)}.",
+                param="scale",
+                code="invalid_scale",
+            )
+
+        # Only a generated image, and only one of this session's. `not_found`
+        # rather than `forbidden` for someone else's: the answer to "does this
+        # exist" should not depend on who is asking.
+        source_row = playground.generated_image(body.image)
+        if source_row is None or source_row["session_id"] != session_id:
+            raise APIError(
+                f"No playground image {body.image!r} in this session.",
+                status_code=404,
+                param="image",
+                code="not_found",
+            )
+        source = playground.images_dir / body.image
+        if not source.is_file():
+            raise APIError(
+                f"No playground image {body.image!r} in this session.",
+                status_code=404,
+                param="image",
+                code="not_found",
+            )
+
+        with Image.open(source) as opened:
+            source_width, source_height = opened.size
+        width, height = source_width * body.scale, source_height * body.scale
+        # Bounded on what the network renders, which is not what was asked for:
+        # it always works at `native_scale` and a smaller factor is that result
+        # resampled down. See `MAX_RENDER_PIXELS`.
+        rendered = source_width * source_height * spec.native_scale**2
+        if rendered > upscale_catalogue.MAX_RENDER_PIXELS:
+            side = source_width * spec.native_scale, source_height * spec.native_scale
+            raise APIError(
+                f"Upscaling {source_width}x{source_height} means rendering "
+                f"{side[0]}x{side[1]} ({rendered} pixels), past the "
+                f"{upscale_catalogue.MAX_RENDER_PIXELS} pixel limit. The network "
+                f"always works at x{spec.native_scale}, so x{body.scale} costs the same.",
+                param="image",
+                code="image_too_large",
+            )
+
+        # A copy, not a reference: deleting the source image must not leave the
+        # upscale pointing at a missing file. The copy lives and dies with the
+        # row, through the same `context_image` cleanup every other path uses.
+        destination = playground.context_path(".png")
+        try:
+            shutil.copyfile(source, destination)
+            record = playground.add_generation(
+                session_id,
+                prompt=source_row["prompt"],
+                model=spec.key,
+                kind="upscale",
+                n=1,
+                width=width,
+                height=height,
+                steps=0,
+                steps_from_preset=False,
+                # `generation_images.seed` is NOT NULL, and the honest value is
+                # the seed the source was generated with.
+                seeds=[source_row["seed"]],
+                context_image=destination.name,
+                group=body.group or source_row["group_id"],
+            )
+        except KeyError as exc:
+            destination.unlink(missing_ok=True)
+            raise APIError(
+                f"No playground session {session_id!r}.", status_code=404, code="not_found"
+            ) from exc
+        except ValueError as exc:
+            destination.unlink(missing_ok=True)
+            raise APIError(
+                f"No generation group {body.group!r} in this session.",
+                param="group",
+                code="invalid_group",
+            ) from exc
+        except BaseException:
+            # The images directory is never purged: a file no row owns stays
+            # there for good.
+            destination.unlink(missing_ok=True)
             raise
         runner.submit(record["id"])
         return record

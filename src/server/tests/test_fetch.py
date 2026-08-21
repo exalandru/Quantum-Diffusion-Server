@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 
+from qds import fetch as fetch_module
 from qds.fetch import cache_status
 
 
@@ -209,3 +210,32 @@ def test_an_empty_artifact_directory_never_reports_present(monkeypatch, tmp_path
 
     rows = {row["key"]: row for row in cache_status()}
     assert rows["flux2-dev"]["availability"] != av.PRESENT
+
+
+def test_fetch_accepts_an_upscaler_key(monkeypatch):
+    """One verb for "download this by name", across both catalogues."""
+    from qds.upscale import weights as weights_module
+
+    loaded: list[str] = []
+    monkeypatch.setattr(weights_module, "is_downloaded", lambda spec: False)
+    monkeypatch.setattr(
+        weights_module, "load_upscaler", lambda spec, **_: loaded.append(spec.key)
+    )
+    assert fetch_module.fetch("realesrgan-x4plus") == 0
+    assert loaded == ["realesrgan-x4plus"]
+
+
+def test_fetch_reports_a_failed_upscaler_rather_than_claiming_success(monkeypatch):
+    """A file on disk that will not load is not a successful fetch."""
+    from qds.upscale import weights as weights_module
+
+    def explode(spec, **_):
+        raise ValueError("the checkpoint's tensor names are not the ones expected")
+
+    monkeypatch.setattr(weights_module, "is_downloaded", lambda spec: False)
+    monkeypatch.setattr(weights_module, "load_upscaler", explode)
+    assert fetch_module.fetch("realesrgan-x4plus") == 1
+
+
+def test_an_unknown_key_names_the_upscalers_too():
+    assert fetch_module.fetch("no-such-thing") == 2

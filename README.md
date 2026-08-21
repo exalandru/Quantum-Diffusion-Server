@@ -85,11 +85,20 @@ There is no signed release: build the app once, from a clone.
 ```sh
 make install     # dependencies (needs Node, Swift and uv on the PATH)
 make build-app   # → dist/app/QDS.app
+make build-dmg   # → dist/app/QDS-<version>.dmg, to hand to someone else
 ```
+
+`make build` does all of it: the wheel, the app, and the image.
+
+The image holds the app beside a symlink to `/Applications`, so installing is
+the usual drag. It is compressed and read-only, and it takes its name and
+volume label from the bundle it packages rather than from the source tree —
+a stale `dist/app/QDS.app` cannot ship under a fresh version number.
 
 The bundle is ad-hoc signed and not notarized, so after moving it between
 machines macOS may need convincing: `xattr -d com.apple.quarantine "QDS.app"`
-(the quotes matter, the name contains spaces).
+(the quotes matter, the name contains spaces). The same applies to the image
+itself once it has been downloaded.
 
 QDS lives in the menu bar: it has no window and no Dock icon. The interface is
 a **web dashboard the server itself serves**, at
@@ -234,7 +243,7 @@ src/
 ├── server/       Python package, tests, and the built dashboard it ships
 ├── dashboard/    React sources for that interface
 └── menubar/      Swift menubar app (SwiftPM)
-dist/             the wheel, the source archive, and QDS.app
+dist/             the wheel, the source archive, QDS.app and its DMG
 ```
 
 `dist/` is generated and ignored by Git.

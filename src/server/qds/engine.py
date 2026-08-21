@@ -5,12 +5,32 @@ image, reloading the weights on every request. Here the model stays in memory
 between calls, which takes a generation from several minutes down to a few
 seconds once the model is loaded.
 
-Three invariants:
+Four invariants:
 
-* **one live model at a time** — on unified memory, keeping two (a 9B plus
-  anything else) saturates the machine;
-* **one generation at a time** — an `asyncio.Lock` serializes everything, and
-  inference runs on a single worker thread, never on the event loop;
+* **one live diffusion model at a time** — on unified memory, keeping two (a 9B
+  plus anything else) saturates the machine;
+* **one bounded second slot, for an upscaler** — what makes this exception safe
+  is not that Real-ESRGAN's weights are small (33 MB against 10-28 GB), it is
+  that the cost of *running* one is bounded and transient. Two bounds, and they
+  are separate:
+
+  - the MLX allocator sees one tile's activations at a time, bounded by
+    `UpscalerSpec.tile` — measured constant at 1.52 GB whatever the source
+    size, which is the tiling working;
+  - the host sees the assembled image, which is *not* bounded by the tile and
+    scales with the output. It is held at one byte per channel (`pipeline`
+    quantises each tile as it lands) and capped by `MAX_RENDER_PIXELS`,
+    which is measured on what the network renders rather than on what was
+    asked for. At that cap a run peaks around 1.11 GB resident.
+
+  Evicting a warm FLUX to enlarge an image and reloading it (a minute on
+  flux2-dev) for the next generation would cost more average memory and far
+  more time than holding those 33 MB. The slot itself is bounded by
+  construction: the catalogue holds only RRDBNets and refuses an entry over
+  `MAX_WEIGHTS_MB` at import, and `_ensure_upscaler` keeps exactly one;
+* **one MLX job at a time** — an `asyncio.Lock` serializes everything,
+  generations and upscales alike, and both run on the same single worker
+  thread, never on the event loop;
 * **one registered callback per model** — mflux's `CallbackRegistry` has no
   `unregister`, so registering per request would grow the list without bound.
 """
@@ -27,9 +47,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from qds.errors import APIError, GenerationTimeout, translate_mflux_exception
 from qds.logs import SERVER_LOGGER, capture_stdout
 from qds.registry import ModelSpec, latent_creator_for, load_model
+from qds.upscale import UpscalerSpec
 
 logger = logging.getLogger(SERVER_LOGGER)
 
@@ -61,13 +84,13 @@ class ProgressSnapshot:
 
     Written from the worker thread, read from the event loop: these are plain
     attribute assignments, hence atomic under the GIL. A single snapshot is
-    enough because `ModelEngine._lock` serializes generations — there are never
-    two jobs in flight. That is what lets `/v1/progress` poll instead of
+    enough because `ModelEngine._lock` serializes every MLX job — generations
+    and upscales alike — so there are never two in flight. That is what lets `/v1/progress` poll instead of
     building a cross-thread queue, and lets several SSE consumers coexist for
     free.
     """
 
-    state: str = "idle"  # idle | loading | generating
+    state: str = "idle"  # idle | loading | generating | upscaling
     model: str | None = None
     kind: str | None = None
     seed: int | None = None
@@ -168,6 +191,25 @@ def _render_preview(*, model: Any, creator: Any, latents: Any, config: Any, seed
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=_PREVIEW_JPEG_QUALITY)
     return buffer.getvalue()
+
+
+@dataclass
+class UpscaleJob:
+    """One image to enlarge. Carries none of `GenerationJob`'s sampling fields.
+
+    They would all be lies: an upscale has no prompt, no seed, no steps, no
+    guidance and no scheduler. `kind` is not here either — an upscale is its
+    own kind of work, not a variant of generation.
+    """
+
+    spec: UpscalerSpec
+    #: The source PNG, on disk. Never bytes in memory: the route already has a
+    #: file it owns, and Pillow reads the header without decoding the pixels.
+    image_path: Path
+    #: Exactly the size to produce. Not a factor: this is what the caller
+    #: decided and what the playground row stores, so nothing has to be
+    #: divided back out of it. See `upscale_png`.
+    target: tuple[int, int]
 
 
 class _ProgressCallback:
@@ -276,12 +318,27 @@ class ModelEngine:
         self._callback = _ProgressCallback(progress_log_every, self._snapshot)
         self._model: Any | None = None
         self._loaded: tuple[str, str] | None = None  # (model key, kind)
+        #: The second, bounded slot. Held independently of `_model` on purpose:
+        #: an upscale must never evict a warm diffusion model.
+        self._upscaler: Any | None = None
+        self._upscaler_key: str | None = None
 
     # ── State ──────────────────────────────────────────────────────────────
 
     @property
     def loaded_model(self) -> str | None:
+        """The resident *diffusion* model, `key:kind`, or None.
+
+        Deliberately still only that: `/health` and `/v1/progress` publish it,
+        and the dashboard reads it as "is a model loaded". The upscaler has its
+        own property rather than widening this one's meaning.
+        """
         return None if self._loaded is None else f"{self._loaded[0]}:{self._loaded[1]}"
+
+    @property
+    def loaded_upscaler(self) -> str | None:
+        """The resident upscaler's catalogue key, or None."""
+        return self._upscaler_key
 
     def progress(self) -> dict[str, Any]:
         """Progress snapshot. Lock-free, callable from the event loop.
@@ -292,6 +349,7 @@ class ModelEngine:
         return {
             **self._snapshot.as_dict(),
             "loaded_model": self.loaded_model,
+            "upscaler": self.loaded_upscaler,
             "memory": self.memory_stats(),
         }
 
@@ -304,12 +362,18 @@ class ModelEngine:
         return self._callback.preview_jpeg
 
     def request_cancel(self) -> bool:
-        """Request that the running generation stop. `False` if nothing is running.
+        """Request that the running job stop. `False` if nothing is running.
 
-        The flag is read by `_ProgressCallback.call_in_loop`, so the stop takes
-        effect at the next denoising step — not instantly.
+        The flag is read by `_ProgressCallback.call_in_loop` during a
+        generation, and between tiles during an upscale, so the stop takes
+        effect at the next step or the next tile — not instantly.
+
+        One flag, not two: `_ProgressCallback` already *is* the control block
+        for the running job, and only its `call_in_loop` is mflux-specific.
+        A second flag would open a window where this method reads `state` and
+        then arms the wrong one.
         """
-        if self._snapshot.state != "generating":
+        if self._snapshot.state not in ("generating", "upscaling"):
             return False
         self._callback.cancel_requested = True
         logger.info(
@@ -343,10 +407,39 @@ class ModelEngine:
             except Exception as exc:
                 raise translate_mflux_exception(exc) from exc
 
-    async def unload(self) -> None:
+    async def upscale(self, job: UpscaleJob) -> bytes:
+        """Enlarge one PNG. Serialized against generation: same lock, same worker.
+
+        Sharing them is not tidiness, it is three separate requirements:
+
+        * unified memory — a tile's activations run to hundreds of megabytes,
+          and letting those overlap a denoising step is precisely the exhaustion
+          the lock exists to prevent;
+        * one Metal stream — two threads submitting to MLX parallelize nothing
+          measurable and add their peaks;
+        * one `ProgressSnapshot` — its docstring justifies a single lock-free
+          snapshot *by* there never being two jobs in flight. An unlocked path
+          would retract that argument and cost a second progress mechanism, plus
+          the SSE surface to publish it.
+        """
         async with self._lock:
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(self._executor, self._unload_sync)
+            try:
+                return await loop.run_in_executor(self._executor, self._upscale_sync, job)
+            except (APIError, GenerationTimeout):
+                raise
+            except Exception as exc:
+                raise translate_mflux_exception(exc) from exc
+
+    async def unload(self) -> None:
+        """Release everything the engine holds — both slots.
+
+        Both, because this is what `/v1/unload` means to whoever pressed "Free
+        memory". Leaving 33 MB behind a button named that is a cheap lie.
+        """
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(self._executor, self._unload_all_sync)
 
     def shutdown(self) -> None:
         """Stop the engine, bounding the wait to a single denoising step.
@@ -366,7 +459,7 @@ class ModelEngine:
         """
         self._callback.cancel_requested = True
         self._executor.shutdown(wait=True)
-        self._unload_sync()
+        self._unload_all_sync()
         self._snapshot.reset()
 
     # ── Implementation (worker thread) ─────────────────────────────────────
@@ -565,6 +658,156 @@ class ModelEngine:
         del model
         gc.collect()
         _clear_mlx_cache()
+
+    def _ensure_upscaler(self, spec: UpscalerSpec) -> Any:
+        """The resident upscaler for `spec`, loading it if needed.
+
+        Symmetric with `_ensure_model` but for one deliberate difference:
+        loading an upscaler releases any *other* upscaler, and never touches
+        `self._model`. That is the whole point of the second slot, and the line
+        `tests/test_engine.py` pins.
+        """
+        if self._upscaler_key == spec.key and self._upscaler is not None:
+            return self._upscaler
+
+        if self._upscaler is not None:
+            logger.info(
+                "Unloading upscaler %s",
+                self._upscaler_key,
+                extra={"event": "upscaler_unload", "fields": {"upscaler": self._upscaler_key}},
+            )
+            self._unload_upscaler_sync()
+
+        # "loading", as for a diffusion model: the first use of an upscaler
+        # downloads tens of megabytes, and the UI should say so rather than sit
+        # at tile 0.
+        self._snapshot.state = "loading"
+        self._snapshot.model = spec.key
+        self._snapshot.kind = "upscale"
+        self._snapshot.started_at = time.monotonic()
+
+        from qds.upscale.weights import load_upscaler
+
+        started = time.monotonic()
+        model = load_upscaler(spec)
+        self._upscaler = model
+        self._upscaler_key = spec.key
+        logger.info(
+            "Upscaler %s ready in %.1fs - memory %s",
+            spec.key,
+            time.monotonic() - started,
+            self.memory_stats(),
+            extra={
+                "event": "upscaler_ready",
+                "fields": {"upscaler": spec.key, "elapsed_s": round(time.monotonic() - started, 1)},
+            },
+        )
+        return model
+
+    def _upscale_sync(self, job: UpscaleJob) -> bytes:
+        from qds.upscale.pipeline import tile_grid, upscale_png
+
+        try:
+            model = self._ensure_upscaler(job.spec)
+            label = f"{job.spec.key} {job.target[0]}x{job.target[1]} {job.image_path.name}"
+            deadline = time.monotonic() + self._request_timeout_s if self._request_timeout_s else None
+            # No preview plan: there are no latents to decode, so `preview_seq`
+            # stays 0 and the client shows the tile counter instead. Arming
+            # still matters — it clears the previous run's cancel flag and drops
+            # its frame, which would otherwise keep being served.
+            self._callback.arm(label, deadline, None)
+
+            with Image.open(job.image_path) as opened:
+                width, height = opened.size
+            total = len(tile_grid(width, height, job.spec.tile))
+
+            self._snapshot.state = "upscaling"
+            self._snapshot.model = job.spec.key
+            self._snapshot.kind = "upscale"
+            self._snapshot.seed = None
+            self._snapshot.step = 0
+            self._snapshot.total = total
+            self._snapshot.started_at = time.monotonic()
+
+            logger.info(
+                "▶ %s - %d tiles",
+                label,
+                total,
+                extra={
+                    "event": "upscale_start",
+                    "fields": {
+                        "upscaler": job.spec.key,
+                        "target": f"{job.target[0]}x{job.target[1]}",
+                        "width": width,
+                        "height": height,
+                        "tiles": total,
+                    },
+                },
+            )
+            started = time.monotonic()
+            png = upscale_png(
+                model, job.image_path, spec=job.spec, target=job.target, on_tile=self._on_tile
+            )
+            elapsed = time.monotonic() - started
+            logger.info(
+                "✓ %s - %.1f s",
+                label,
+                elapsed,
+                extra={
+                    "event": "upscale_done",
+                    "fields": {"upscaler": job.spec.key, "elapsed_s": round(elapsed, 1)},
+                },
+            )
+            return png
+        except Exception as exc:
+            if self._callback.timed_out:
+                raise GenerationTimeout(self._request_timeout_s) from exc
+            raise
+        finally:
+            self._snapshot.reset()
+            self._callback.disarm_preview()
+
+    def _on_tile(self, done: int, total: int) -> None:
+        """Between tiles: publish progress, and honour a stop.
+
+        This is the upscale's equivalent of `call_in_loop`'s head, and it
+        raises the same exception for the same reason: `StopImageGenerationException`
+        already means "the run was interrupted" everywhere downstream, so
+        `translate_mflux_exception` maps it to `generation_stopped` and the
+        playground runner records `cancelled` with no extra code.
+        """
+        from mflux.utils.exceptions import StopImageGenerationException
+
+        if self._callback.cancel_requested:
+            self._callback.cancelled = True
+            raise StopImageGenerationException(f"Upscale cancelled at tile {done}/{total}")
+        if self._callback.deadline is not None and time.monotonic() > self._callback.deadline:
+            self._callback.timed_out = True
+            raise StopImageGenerationException(f"Timed out at tile {done}/{total}")
+        self._snapshot.step = done
+        self._snapshot.total = total
+
+    def _unload_upscaler_sync(self) -> None:
+        """Release the second slot only. Never touches the diffusion model."""
+        model = self._upscaler
+        self._upscaler = None
+        self._upscaler_key = None
+        if model is None:
+            return
+        del model
+        gc.collect()
+        _clear_mlx_cache()
+
+    def _unload_all_sync(self) -> None:
+        """Both slots. `_unload_sync` stays strictly the diffusion model.
+
+        Kept apart because they are not the same operation: `_unload_sync`
+        resets a `CallbackRegistry`, walks `_UNLOADABLE_ATTRS` and clears a
+        prompt cache, none of which an RRDBNet has. `_ensure_model` calls that
+        one, and it must not take the upscaler with it.
+        """
+        self._unload_sync()
+        self._unload_upscaler_sync()
 
     def _trim_prompt_cache(self, model: Any) -> None:
         prompt_cache = getattr(model, "prompt_cache", None)

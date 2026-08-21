@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import * as api from "../api";
 import type { ModelCapabilities } from "../types";
 import { AdvancedSettings, DEFAULT_ADVANCED, sizeOf, type Advanced } from "./AdvancedSettings";
+import { useDismissable } from "./useDismissable";
 
 export type Draft = {
   prompt: string;
@@ -99,29 +100,14 @@ export function Composer({
 
   // The gear reads "on" only when something was actually chosen: an untouched
   // composer still generates at the model's own defaults.
+  const closeSettings = useCallback(() => setSettingsOpen(false), []);
   const advancedTouched =
     advanced.ratio !== "auto" ||
     advanced.steps !== null ||
     advanced.seed !== null ||
     (acceptsNegative && advanced.negativePrompt.trim() !== "");
 
-  // While the popover is open, a press outside it or Escape closes it. mousedown
-  // rather than click, so a selection dragged out of the panel is not a dismissal.
-  useEffect(() => {
-    if (!settingsOpen) return;
-    function onPointer(event: MouseEvent) {
-      if (!advancedWrapper.current?.contains(event.target as Node)) setSettingsOpen(false);
-    }
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") setSettingsOpen(false);
-    }
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [settingsOpen]);
+  useDismissable(settingsOpen, advancedWrapper, closeSettings);
 
   function attach(files: FileList | null) {
     const file = files?.[0];

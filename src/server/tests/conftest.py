@@ -63,7 +63,9 @@ class FakeEngine:
 
     def __init__(self) -> None:
         self.jobs: list[GenerationJob] = []
+        self.upscales: list = []
         self.loaded_model: str | None = None
+        self.loaded_upscaler: str | None = None
         self.shutdown_called = False
         self.unload_called = False
         #: Counts them, not just "did it happen": the point of the idle policy is
@@ -80,6 +82,11 @@ class FakeEngine:
         self.loaded_model = f"{job.spec.key}:{job.kind}"
         return tiny_png()
 
+    async def upscale(self, job) -> bytes:
+        self.upscales.append(job)
+        self.loaded_upscaler = job.spec.key
+        return tiny_png()
+
     def memory_stats(self) -> dict:
         return {"active_gb": 0.0, "peak_gb": 0.0, "cache_gb": 0.0}
 
@@ -94,6 +101,7 @@ class FakeEngine:
             "preview_seq": 0,
             "elapsed_s": 1.5 if self.busy else None,
             "loaded_model": self.loaded_model,
+            "upscaler": self.loaded_upscaler,
             "memory": self.memory_stats(),
         }
 
@@ -110,6 +118,7 @@ class FakeEngine:
         self.unload_called = True
         self.unload_count += 1
         self.loaded_model = None
+        self.loaded_upscaler = None
 
     def shutdown(self) -> None:
         self.shutdown_called = True

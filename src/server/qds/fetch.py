@@ -394,11 +394,47 @@ def cache_status() -> list[dict[str, Any]]:
     return rows
 
 
+def _fetch_upscaler(spec: Any) -> int:
+    """Pull one upscaler's weights, and prove they load.
+
+    "Download it and check it" rather than a bare download: `load_upscaler`
+    applies the file to the network it describes and refuses a checkpoint whose
+    names or shapes are not the ones this catalogue entry promises. A file on
+    disk that cannot be used is not a successful fetch.
+    """
+    from qds.upscale.weights import is_downloaded, load_upscaler
+
+    if is_downloaded(spec):
+        logger.info("%s is already downloaded (%s).", spec.key, spec.repo)
+        return 0
+    logger.info("Fetching %s - %.1f MB from %s", spec.key, spec.size_mb, spec.repo)
+    try:
+        load_upscaler(spec)
+    except Exception as exc:
+        logger.error(
+            "Could not fetch %s: %s",
+            spec.key,
+            exc,
+            extra={"event": "job_failed", "fields": {"reason": "fetch_failed", "model": spec.key}},
+        )
+        return 1
+    logger.info("%s ready.", spec.key)
+    return 0
+
+
 def fetch(key: str) -> int:
     from qds.registry import BASE_SPECS_BY_KEY
+    from qds.upscale import catalogue as upscale_catalogue
 
     settings = load_settings(strict=False)
     settings.apply_hf_home()
+
+    # Upscalers are a separate catalogue -- see `UpscalerSpec` for why they are
+    # not `ModelSpec`s -- but "download this by name" is the same request, and
+    # making the user learn a second verb for it would be a poor trade.
+    upscaler = upscale_catalogue.by_key(key)
+    if upscaler is not None:
+        return _fetch_upscaler(upscaler)
     # `include_disabled`: the documented workflow is to download a model *before*
     # enabling it, and the enabled-only view silently fell back to the raw
     # catalogue spec for those — dropping the very `model_path` the Models tab had
@@ -408,7 +444,7 @@ def fetch(key: str) -> int:
         logger.error(
             "Unknown model %r. Valid keys: %s",
             key,
-            sorted(BASE_SPECS_BY_KEY),
+            sorted([*BASE_SPECS_BY_KEY, *upscale_catalogue.KEYS]),
             extra={"event": "job_failed", "fields": {"reason": "unknown_model", "model": key}},
         )
         return 2

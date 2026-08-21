@@ -1910,6 +1910,20 @@ main.playground > header .pg-pause ~ .shell-link {
   gap: var(--s1);
 }
 
+/* The toolbar and the panel it opens, and the containing block for that panel.
+   The popover is `position: absolute` with `bottom: 100%`, so without a
+   positioned ancestor here it resolves against something far up the tree and
+   paints itself off the top of the page — the button toggles, the dialog
+   mounts, and nothing appears.
+
+   Anchored to the toolbar rather than to `.pg-image-cell` so the panel opens
+   over the *image*, which is the one place there is reliably room: `.pg-feed`
+   is a scroll container, and a panel hung above a 512px-tall cell is clipped
+   the moment that cell sits near the top of the view. */
+.pg-image-actions {
+  position: relative;
+}
+
 .pg-image-tools {
   display: flex;
   gap: var(--s1);
@@ -2328,4 +2342,21 @@ main.playground > header .pg-pause ~ .shell-link {
   color: var(--muted);
   font-family: var(--mono);
   font-size: var(--font-sm);
+}
+
+/* Opens upward from the image's toolbar and aligns left, where the Upscale
+   button is — the composer's popover is right-aligned because its gear is. */
+.pg-upscale-pop {
+  right: auto;
+  left: 0;
+  width: 260px;
+}
+
+/* What an image *is*, when the entry's own line cannot say it: an upscale
+   joins the lineage it came from, so the heading still reads the source's
+   model, size and step count. Without this a 4096² thumbnail sits under
+   "512x288 · 6 steps". */
+.pg-image-tag {
+  font-size: var(--font-sm);
+  color: var(--muted);
 }

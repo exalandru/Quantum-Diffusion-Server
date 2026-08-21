@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { ReactNode, Ref } from "react";
 
 /**
  * One icon-only toolbar button.
@@ -19,7 +19,9 @@ export function Tool({
   danger,
   disabled,
   native,
+  expanded,
   onClick,
+  buttonRef,
   children,
 }: {
   /** The tooltip text, and the accessible name unless `label` overrides it. */
@@ -33,17 +35,29 @@ export function Tool({
   disabled?: boolean;
   /** Use the browser's own tooltip: for a button inside a scroll container. */
   native?: boolean;
+  /** Set when the button opens a panel, so it can say whether it is open. */
+  expanded?: boolean;
+  /**
+   * The underlying button, for a caller that opens a panel.
+   *
+   * A dismiss-on-outside-press handler has to know the trigger, or pressing it
+   * while the panel is open closes on `mousedown` and reopens on `click` — a
+   * toggle that never toggles off.
+   */
+  buttonRef?: Ref<HTMLButtonElement>;
   onClick?: () => void;
   /** The icon's shape elements. */
   children: ReactNode;
 }) {
   return (
     <button
+      ref={buttonRef}
       type="button"
       className={danger ? "small danger pg-tool" : "small pg-tool"}
       data-tip={native ? undefined : tip}
       title={native ? tip : undefined}
       aria-label={label ?? tip}
+      aria-expanded={expanded}
       disabled={disabled}
       onClick={onClick}
     >

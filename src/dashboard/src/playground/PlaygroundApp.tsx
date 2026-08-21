@@ -4,7 +4,7 @@ import * as api from "../api";
 import { Locked, NotFound, Unauthorized, messageOf } from "../api";
 import { LoginPrompt } from "../LoginPrompt";
 import { Unreachable } from "../Unreachable";
-import type { PlaygroundGeneration, PlaygroundSession, Progress } from "../types";
+import type { PlaygroundGeneration, PlaygroundSession, Progress, Upscaler } from "../types";
 import { Composer, type Draft } from "./Composer";
 import { GenerationFeed } from "./GenerationFeed";
 import { PasswordDialog, RenameDialog, UnlockDialog } from "./SessionDialogs";
@@ -79,6 +79,10 @@ export function PlaygroundApp() {
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  //: The upscaler catalogue. Empty until it lands, and empty if it fails —
+  //: which leaves the toolbar's Upscale button disabled rather than
+  //: offering something the server would refuse.
+  const [upscalers, setUpscalers] = useState<Upscaler[]>([]);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -166,6 +170,15 @@ export function PlaygroundApp() {
     }
   }, [onUnauthorized]);
 
+  // Fetched once: the catalogue is a build-time fact of the server, not
+  // session state. A failure is swallowed on purpose — see `upscalers`.
+  useEffect(() => {
+    void api
+      .playgroundUpscalers()
+      .then((listed) => setUpscalers(listed.upscalers))
+      .catch(() => setUpscalers([]));
+  }, []);
+
   // The URL is the only client-side state, and it holds an id, not a history.
   useEffect(() => {
     const wanted = new URLSearchParams(window.location.search).get("session");
@@ -242,13 +255,25 @@ export function PlaygroundApp() {
    * typed prompt rather than a second, drifting copy of it.
    */
   async function post(sessionId: string | null, form: FormData) {
+    await submitting(sessionId, (id) => api.playgroundGenerate(id, form));
+  }
+
+  /**
+   * The submission path itself, parameterised by the call.
+   *
+   * Everything around a submission is the same whatever was submitted —
+   * creating the session on demand, raising `sending`, refreshing both the
+   * detail and the sidebar, and turning a 401 into a re-auth. Upscaling reuses
+   * it rather than repeating it.
+   */
+  async function submitting(sessionId: string | null, call: (id: string) => Promise<unknown>) {
     setSending(true);
     setSubmitError(null);
     try {
       // The session row is created by the first submission, so "New session"
       // cannot litter the sidebar with empty conversations.
       const id = sessionId ?? (await api.playgroundSessionCreate()).id;
-      await api.playgroundGenerate(id, form);
+      await call(id);
       if (id !== selected) setSelected(id);
       else await refreshDetail();
       await refreshSessions();
@@ -304,6 +329,27 @@ export function PlaygroundApp() {
       return;
     }
     await post(root.sessionId, form);
+  }
+
+  /**
+   * The selected image, enlarged, joining its own entry.
+   *
+   * No bytes leave the browser, unlike `refine`: the source is a file the
+   * server wrote and can attribute, so it is named rather than re-uploaded.
+   */
+  async function upscale(
+    root: PlaygroundGeneration,
+    image: { url: string; seed: number },
+    choice: { model: string; scale: number },
+  ) {
+    await submitting(root.sessionId, (id) =>
+      api.playgroundUpscale(id, {
+        image: image.url.split("/").pop() ?? "",
+        model: choice.model,
+        scale: choice.scale,
+        group: root.groupId,
+      }),
+    );
   }
 
   /**
@@ -587,6 +633,8 @@ export function PlaygroundApp() {
               busy={sending}
               onRefine={(entry, image) => void refine(entry, image)}
               onVariation={(entry) => void variation(entry)}
+              onUpscale={(entry, image, choice) => void upscale(entry, image, choice)}
+              upscalers={upscalers}
               onDeleteImage={(url) => void deleteImage(url)}
               onDeleteGroup={(groupId) => void deleteGroup(groupId)}
               paused={paused}

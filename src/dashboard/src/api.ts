@@ -30,6 +30,7 @@ import type {
   PlaygroundSession,
   PlaygroundSessionList,
   Progress,
+  Upscaler,
 } from "./types";
 
 // ── Authentication ─────────────────────────────────────────────────────────
@@ -436,6 +437,27 @@ export const playgroundGenerate = (sessionId: string, form: FormData) =>
   request<PlaygroundGeneration>(
     `/playground/api/sessions/${encodeURIComponent(sessionId)}/generations`,
     { method: "POST", body: form, sessionId },
+  );
+
+/** What the image toolbar can offer, and whether a click costs a download. */
+export const playgroundUpscalers = () =>
+  get<{ upscalers: Upscaler[] }>("/playground/api/upscalers");
+
+/**
+ * Enlarge an image the session already owns. Accepted, not finished.
+ *
+ * JSON rather than multipart, unlike `playgroundGenerate`: the source is a file
+ * the server already holds and can attribute, so there are no bytes to send.
+ */
+export const playgroundUpscale = (
+  sessionId: string,
+  body: { image: string; model: string; scale: number; group?: string | null },
+) =>
+  send<PlaygroundGeneration>(
+    `/playground/api/sessions/${encodeURIComponent(sessionId)}/upscales`,
+    "POST",
+    body,
+    { sessionId },
   );
 
 export const playgroundCancel = (sessionId: string, generationId: string) =>

@@ -97,17 +97,27 @@ What it costs is the figure in the table above, read the other way: ~16 s of rel
 |---|---|---|---|---|---|---|---|---|---|---|
 | `z-image-turbo` *(default)* | `mlx-community/Z-Image-Turbo-bf16` | Apache-2.0 | — | ✅ | 9 | forced to 0 | text | ✅ | ✅ | ❌ |
 | `ernie-image-turbo` | `baidu/ERNIE-Image-Turbo` | Apache-2.0 | — | ✅ | 8 | fixed at 1.0 | text | ❌ | ✅ | ❌ |
-| `z-image` | `mlx-community/Z-Image-bf16` | Apache-2.0 | — | ❌ | 20 | 4.0 | text | ✅ | ✅ | ❌ |
-| `ernie-image` | `baidu/ERNIE-Image` | Apache-2.0 | — | ❌ | 20 | 4.0 | text | ✅ | ✅ | ❌ |
+| `z-image` | `mlx-community/Z-Image-bf16` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
+| `ernie-image` | `baidu/ERNIE-Image` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
 | `qwen-image-flash` | `nvidia/Qwen-Image-Flash` | **NVIDIA Open Model** | — | ❌ | 4 | 1.0 *(adjustable)* | text | ✅ | ✅ | ❌ |
-| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | Apache-2.0 | — | ❌ | 20 | 4.0 | text | ✅ | ✅ | opt-in |
+| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | opt-in |
 | `flux2-klein` | `black-forest-labs/FLUX.2-klein-9B` | **FLUX Non-Commercial** | 🔒 | ❌ | 4 | fixed at 1.0 | text | ❌ | ✅ | ✅ |
-| `flux2-dev` | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | ❌ | 20 | 4.0 | text | ❌ | ✅ | ❌ |
+| `flux2-dev` | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | ❌ | 50 | 4.0 | text | ❌ | ✅ | ❌ |
 | `anima-turbo` | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | ❌ | 10 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
 | `anima` *(aesthetic)* | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | ❌ | 30 | 4.5 | text | ✅ | ✅ | ❌ |
 | `krea-2-turbo` | `krea/Krea-2-Turbo` | **Krea 2 Community** | 🔒 | ❌ | 8 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
 | `fibo-lite` | `briaai/Fibo-lite` | **CC-BY-NC-4.0** | 🔒 | ❌ | 8 | fixed at 1.0 | **json** | ❌ | ✅ | ❌ |
-| `fibo` | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | ❌ | 20 | 5.0 | **json** | ✅ | ✅ | ❌ |
+| `fibo` | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | ❌ | 50 | 5.0 | **json** | ✅ | ✅ | ❌ |
+
+The step and guidance columns are each model's own published defaults, taken
+from its card rather than from mflux — which applies blanket values (20 steps,
+guidance 3.5) that several of these authors never recommended. Where a card
+gives a range, the column shows what this server picks: `z-image` publishes
+"Inference steps: 28 - 50" and gets 50, the value its own example uses.
+
+They are defaults, not requirements. Every one is overridable per model in
+`server-config.json`, and the five 50-step rows are where that is worth doing
+if a generation costs more time than it is worth to you.
 | `ideogram-4` | `ideogram-ai/ideogram-4-fp8` | **Ideogram 4 Non-Commercial** | 🔒 | ❌ | 20 *(preset)* | preset | text + json | ❌ | ❌ | ❌ |
 
 **The two models on by default are Apache-2.0 and ungated**, which is the point: a fresh install generates with no HuggingFace token, no access request, and no licence to accept. Everything else ships off — the gated and non-commercial ones because obtaining access is your decision, the rest because a 20-step base model is not a good first impression. Turn any of them on in the config, or in the app's Configuration tab.
@@ -251,8 +261,8 @@ request still runs three images one after another:
   restart is marked `failed` with `Interrupted by server restart` at the next
   startup, rather than staying `running` forever.
 
-Cancellation has three cases, because the engine can only be interrupted while
-it is denoising:
+Cancellation has four cases, because the engine can only be interrupted at a
+boundary it controls:
 
 - **queued** → cancelled by its record; it is never handed to the engine;
 - **running, mid-denoise** → the engine's global stop, the same mechanism
@@ -260,7 +270,10 @@ it is denoising:
 - **running, but loading weights, waiting on the engine lock, or between the
   images of an `n>1` run** → the engine refuses the request there, so the runner
   holds it and applies it at the next image boundary. The image already being
-  computed is kept; the record ends `cancelled` with the images it produced.
+  computed is kept; the record ends `cancelled` with the images it produced;
+- **an upscale** → the same global stop, but read *between tiles* rather than
+  between denoising steps. The tile in flight finishes; nothing partial is
+  written.
 
 It is not per-job cancellation: the engine's stop is global, so with an external
 `/v1` client holding the engine it is that request which stops.
@@ -308,6 +321,86 @@ unchanged for several seconds. One slot is enough because the engine runs one
 generation at a time, and the bytes stay off the SSE stream, which the dashboard
 page shares. A family whose latent layout is not mapped, or a decode that fails,
 loses its previews for that run — never its generation.
+
+### Upscaling
+
+From the toolbar under any generated image: a factor, a model, and the enlarged
+image lands in the same feed entry as the one it came from.
+
+It is **Real-ESRGAN**, ported to MLX in `qds/upscale/` and checked against a
+transcription of basicsr's `RRDBNet` in torch, tensor for tensor
+(`tests/test_upscale.py`; the measured gap is around 1e-7 in fp32). Two entries:
+
+| Key | For | Blocks | Weights |
+|---|---|---|---|
+| `realesrgan-x4plus` | photographic | 23 | 33.5 MB |
+| `realesrgan-x4plus-anime` | illustration | 6 | 9 MB |
+
+Both come from `mlx-community`, fp16 and already in MLX's NHWC layout, under
+Real-ESRGAN's upstream BSD-3-Clause. The x4plus file is verified: bit-exactly
+`fp16(t.transpose(0, 2, 3, 1))` of `Comfy-Org/Real-ESRGAN_repackaged`, checked
+on five tensors spread across the network. The anime file has no independently
+licensed counterpart to check against, and that is a known gap rather than an
+oversight.
+
+Things worth knowing before using it:
+
+- **The network is always ×4.** ×2 is that ×4 resampled down with Lanczos,
+  which is upstream's `--outscale` semantics. It costs exactly the same time and
+  the same memory. The UI says so, because the shape of the control invites the
+  opposite guess.
+- **The weights download on first use**, inside the run and holding the queue,
+  the way a diffusion model's do. `qds fetch realesrgan-x4plus` pulls them
+  ahead of time.
+- **Tiling is not optional.** The diffusion model stays resident, so the
+  transient peak has to be bounded. Measured here — x4plus fp16, 1024×1024 →
+  4096×4096, warm, a fresh process per row, best of three on an idle machine:
+
+  | tile | tiles | time | MLX peak | host RSS |
+  |---|---|---|---|---|
+  | 256 | 16 | 5.2 s | 2.47 GB | 0.44 GB |
+  | **192** | **36** | **6.0 s** | **1.52 GB** | **0.37 GB** |
+  | 128 | 64 | 7.0 s | 1.14 GB | 0.35 GB |
+  | 96 | 121 | 8.7 s | 0.76 GB | 0.37 GB |
+  | 64 | 256 | 9.8 s | 0.42 GB | 0.36 GB |
+
+  192 ships: 15% slower for a 38% smaller peak, which is the right side of that
+  trade when 10–28 GB of diffusion model is sitting beside it. The same run at
+  `realesrgan-x4plus-anime` takes 2.1 s — a quarter of the blocks.
+
+  These timings are worth about as much as the machine was quiet. Measured
+  while the GPU was also generating, the same rows came out three to six times
+  higher; the memory columns did not move.
+
+- **The size limit counts what is rendered, not what you asked for.** The
+  network always works at ×4, so a ×2 request renders ×4 and throws three
+  quarters of it away — meaning a 2048×2048 source at ×2 is four times the work
+  of the same source at ×4 if you only look at the output. The limit is
+  therefore `source × 4` and stands at 8192×8192. At that limit a run costs
+  around 1.1 GB resident and about 21 s; the MLX allocator stays at 1.52 GB
+  whatever the source size, which is the tiling doing its job.
+
+  A consequence worth knowing before reaching for ×4 on a large source: an
+  8192×8192 PNG of photographic content runs to about 80 MB. It goes into the
+  playground's image directory, which is never purged, it is served over HTTP
+  as-is, and the feed draws it as a thumbnail. The ceiling bounds the server's
+  memory, not your disk.
+- **Seams are not proven absent.** `tile_pad` is upstream's 10, while the
+  23-block network's receptive radius is 347 pixels, so the tiled result is not
+  bitwise identical to an untiled one — about 3e-08 away. The tests pin the
+  tiling *geometry* exactly; whether a boundary is visible is a perceptual
+  question they do not answer.
+- **An upscale copies its source** into the entry's context file, so deleting
+  the original does not break it. The copy is unlinked when the entry, group or
+  session goes.
+- **Cancelling during the weight download does not stop the work.** The engine
+  refuses a cancellation while it is loading, so a request made in that window
+  is held by the runner and applied afterwards: the record ends `cancelled`,
+  but the tiles have already run. It is the same limitation `/v1` has had for
+  diffusion weights, on a much shorter wait.
+- **The engine keeps a second, bounded slot** for the upscaler, so enlarging an
+  image never evicts a warm diffusion model. See `engine.py`'s module docstring
+  for why that exception is safe and what bounds it.
 
 ## Configuration
 
@@ -623,7 +716,13 @@ The server refuses to start with a non-local host and no API key.
 - **`n > 1` is sequential.** The model stays warm, but the images come out one after another.
 - **The timeout does not cover weight loading.** It is only checked between denoising steps — the only interruption point mflux offers. So a first call that downloads 30 GB can exceed `request_timeout_s`.
 - **No `partial_images` on `/v1`.** OpenAI's streamed partial images are not implemented; a `/v1` client gets step progress over `/v1/progress` and nothing else. The browser playground *does* show the image being denoised — every second step, decoded server-side and fetched from `/playground/api/preview` — and that is playground-only by construction: `/v1` jobs never ask for it.
-- **No LoRA, ControlNet, inpainting or upscaling.** mflux offers them; they are not exposed here.
+- **No LoRA, ControlNet or inpainting.** mflux offers them; they are not exposed here.
+- **Upscaling is playground-only.** There is no `/v1` route for it: the OpenAI
+  Images API has no such endpoint, and inventing one is a decision nobody has
+  asked for yet.
+- **Upscalers are absent from the Models tab.** They are fetched on first use
+  and with `qds fetch`, but the dashboard's model management does not list
+  them or offer to delete them.
 
 ## Development
 
