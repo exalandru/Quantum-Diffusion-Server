@@ -76,6 +76,12 @@ class FakeEngine:
         self.cancel_requested = False
         #: Whatever `/playground/api/preview` should serve right now.
         self.preview_bytes: bytes | None = None
+        #: Rewrite jobs seen, and what `rewrite` should do with the next one.
+        #: The list is what proves a rewrite did *not* happen, which is the
+        #: assertion a passing-by-luck test would miss.
+        self.rewrites: list = []
+        self.rewrite_result: object = "an expanded prompt, rich in detail"
+        self.loaded_rewriter: str | None = None
 
     async def generate(self, job: GenerationJob) -> bytes:
         self.jobs.append(job)
@@ -86,6 +92,19 @@ class FakeEngine:
         self.upscales.append(job)
         self.loaded_upscaler = job.spec.key
         return tiny_png()
+
+    async def rewrite(self, job) -> str:
+        """Records the job and returns `rewrite_result`, or raises it.
+
+        Assigning an exception rather than patching the method keeps the two
+        outcomes a test needs -- a rewrite that works and one that does not --
+        one line apart, which matters because the interesting property is that
+        the *generation* survives the second.
+        """
+        self.rewrites.append(job)
+        if isinstance(self.rewrite_result, Exception):
+            raise self.rewrite_result
+        return self.rewrite_result
 
     def memory_stats(self) -> dict:
         return {"active_gb": 0.0, "peak_gb": 0.0, "cache_gb": 0.0}

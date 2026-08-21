@@ -62,6 +62,8 @@ function generation(patch: Partial<PlaygroundGeneration> = {}): PlaygroundGenera
     sessionId: "s1",
     groupId: id,
     prompt: "a fox",
+    rewrittenPrompt: null,
+    rewriteError: null,
     negativePrompt: null,
     model: "qwen-image-2512",
     kind: "txt2img",
@@ -149,6 +151,8 @@ it("draws one lineage as one entry, whatever it was asked in", () => {
     // The member's own record differs from the root's on every field the entry
     // shows: if the entry read the member, these are what would appear.
     prompt: "a fox refined",
+    rewrittenPrompt: null,
+    rewriteError: null,
     seeds: [7],
     contextImage: "/playground/images/ctx-joined.png",
   });
@@ -629,4 +633,62 @@ it("still closes on Escape and on a press outside", async () => {
   await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
   fireEvent.mouseDown(document.body);
   expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
+});
+
+
+// ── The enhanced prompt in the feed ────────────────────────────────────────
+
+it("titles an entry with what the user typed, not with the rewrite", () => {
+  feed(
+    [
+      generation({
+        prompt: "un chat sur un toit",
+        rewrittenPrompt: "A ginger cat on weathered terracotta tiles at dusk",
+      }),
+    ],
+    handlers(),
+  );
+  // Nobody is shown words they did not write as though they had written them.
+  expect(screen.getByText("un chat sur un toit")).toBeTruthy();
+  expect(screen.getByText(/Enhanced prompt/i)).toBeTruthy();
+  expect(screen.getByText(/A ginger cat on weathered terracotta tiles/)).toBeTruthy();
+});
+
+it("says a failed enhance still produced the image", () => {
+  feed(
+    [
+      generation({
+        prompt: "un chat sur un toit",
+        rewriteError: "the model answered the user instead of rewriting a prompt",
+      }),
+    ],
+    handlers(),
+  );
+  // Distinguishable from "no rewrite was asked for", which shows nothing.
+  expect(screen.getByText(/Enhancing failed/i)).toBeTruthy();
+  expect(screen.getByText(/generated from your prompt/i)).toBeTruthy();
+});
+
+it("shows nothing about rewriting when none was asked for", () => {
+  feed([generation({ prompt: "a cat" })], handlers());
+  expect(screen.queryByText(/Enhanced prompt/i)).toBeNull();
+  expect(screen.queryByText(/Enhancing failed/i)).toBeNull();
+});
+
+it("hands an enhanced prompt back to the composer", async () => {
+  const onUsePrompt = vi.fn();
+  render(
+    <GenerationFeed
+      {...element(
+        [generation({ prompt: "un chat", rewrittenPrompt: "A ginger cat at dusk" })],
+        handlers(),
+      ).props}
+      onUsePrompt={onUsePrompt}
+    />,
+  );
+  await userEvent.click(screen.getByText(/Enhanced prompt/i));
+  await userEvent.click(screen.getByRole("button", { name: /use this prompt/i }));
+  // Editing and pinning a rewrite need no mechanism of their own: a pinned
+  // rewrite is a typed prompt.
+  expect(onUsePrompt).toHaveBeenCalledWith("A ginger cat at dusk");
 });

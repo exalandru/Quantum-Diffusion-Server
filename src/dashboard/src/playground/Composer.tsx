@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent } from "react";
 
 import * as api from "../api";
-import type { ModelCapabilities } from "../types";
+import type { ModelCapabilities, RewriteCapabilities } from "../types";
 import { AdvancedSettings, DEFAULT_ADVANCED, sizeOf, type Advanced } from "./AdvancedSettings";
 import { useDismissable } from "./useDismissable";
 
@@ -18,6 +18,8 @@ export type Draft = {
   steps: number | null;
   /** null = a random seed. */
   seed: number | null;
+  /** Expand the prompt with the local rewriter before generating. */
+  rewrite: boolean;
 };
 
 /**
@@ -33,6 +35,8 @@ export function Composer({
   maxN,
   busy,
   error,
+  rewrite,
+  presetPrompt,
   onSubmit,
 }: {
   /** Public names, as `/v1/models` lists them: `id` is what the API accepts. */
@@ -42,6 +46,16 @@ export function Composer({
   maxN: number;
   busy: boolean;
   error: string | null;
+  /** What the server offers for prompt rewriting, or null while unknown. */
+  rewrite: RewriteCapabilities | null;
+  /**
+   * Text to drop into the box, from "Use this prompt" in the feed.
+   *
+   * Carries a `nonce` because the same text may be sent twice -- clicking the
+   * same entry again after editing the box has to work, and a bare string prop
+   * would compare equal and do nothing.
+   */
+  presetPrompt: { text: string; nonce: number } | null;
   onSubmit: (draft: Draft) => void;
 }) {
   const [prompt, setPrompt] = useState("");
@@ -52,6 +66,10 @@ export function Composer({
   const [capabilities, setCapabilities] = useState<ModelCapabilities | null>(null);
   const [advanced, setAdvanced] = useState<Advanced>(DEFAULT_ADVANCED);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Not persisted, by the same rule as every other composer setting: nothing
+  // here survives a reload, and a switch that silently outlived the session it
+  // was set in would change what a later prompt does with no sign of it.
+  const [enhance, setEnhance] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
   const advancedWrapper = useRef<HTMLDivElement>(null);
 
@@ -91,6 +109,15 @@ export function Composer({
   // no: text is cheap to keep and expensive to retype, and the field is disabled
   // anyway, so nothing can be sent by accident.
   const acceptsNegative = capabilities?.supports_negative_prompt ?? false;
+  // Offered only where the server would accept it. A model whose only prompt
+  // format is JSON is refused rewriting outright, so showing the control there
+  // would be offering a button whose only outcome is an error.
+  const acceptsRewrite =
+    (rewrite?.available ?? false) && (capabilities?.prompt_formats?.includes("text") ?? false);
+  // Said before submitting rather than after: the ceiling is the server's, and
+  // it is published precisely so this line cannot drift from what it enforces.
+  const overCeiling =
+    acceptsRewrite && rewrite !== null && prompt.trim().split(/\s+/).filter(Boolean).length >= rewrite.word_ceiling;
 
   // Switching to a model that takes no image drops the attachment rather than
   // keeping a thumbnail on screen and quietly generating without it.
@@ -108,6 +135,15 @@ export function Composer({
     (acceptsNegative && advanced.negativePrompt.trim() !== "");
 
   useDismissable(settingsOpen, advancedWrapper, closeSettings);
+
+  useEffect(() => {
+    if (!presetPrompt) return;
+    setPrompt(presetPrompt.text);
+    // Off, deliberately. The point of taking an enhanced prompt into the box is
+    // to use *those words*; enhancing them again would expand an already
+    // expanded prompt, which is the one case measured to make things worse.
+    setEnhance(false);
+  }, [presetPrompt]);
 
   function attach(files: FileList | null) {
     const file = files?.[0];
@@ -138,6 +174,7 @@ export function Composer({
       size: sizeOf(advanced),
       steps: advanced.steps,
       seed: advanced.seed,
+      rewrite: acceptsRewrite && enhance,
     });
     setPrompt("");
     clearAttachment();
@@ -247,6 +284,37 @@ export function Composer({
               +
             </button>
           </div>
+          {acceptsRewrite && (
+            <button
+              type="button"
+              className={enhance ? "small pg-enhance active" : "small pg-enhance"}
+              aria-pressed={enhance}
+              title={
+                overCeiling
+                  ? `Your prompt is already detailed, so it will be generated as you wrote it (${rewrite?.word_ceiling}+ words).`
+                  : rewrite && !rewrite.downloaded
+                    ? `Expand your prompt before generating. First use downloads ${Math.round(rewrite.sizeMb ?? 0)} MB.`
+                    : "Expand your prompt before generating"
+              }
+              onClick={() => setEnhance((on) => !on)}
+            >
+              <svg
+                viewBox="0 0 24 24"
+                width="13"
+                height="13"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M12 3l1.9 4.6L18.5 9.5 13.9 11.4 12 16l-1.9-4.6L5.5 9.5l4.6-1.9z" />
+                <path d="M18 15l.8 2 2 .8-2 .8-.8 2-.8-2-2-.8 2-.8z" />
+              </svg>
+              Enhance
+            </button>
+          )}
           <div className="pg-advanced" ref={advancedWrapper}>
             <button
               type="button"
@@ -282,6 +350,22 @@ export function Composer({
             {busy ? "Sending…" : "Generate ↵"}
           </button>
         </div>
+        {enhance && overCeiling && (
+          <div className="notice" role="status">
+            Your prompt is already detailed, so it will be generated as you wrote
+            it. Enhancing is for short prompts.
+          </div>
+        )}
+        {/*
+          Same warning `UpscalePopover` gives before a first upscale, for the
+          same reason: the first Enhance on a fresh install fetches the rewriter,
+          and a control that gives no sign of that looks like it has hung.
+        */}
+        {enhance && rewrite && !rewrite.downloaded && !overCeiling && (
+          <div className="notice" role="status">
+            First use downloads {Math.round(rewrite.sizeMb ?? 0)} MB.
+          </div>
+        )}
         {error && (
           <div className="notice notice-error" role="status">
             <strong>Not accepted.</strong> {error}

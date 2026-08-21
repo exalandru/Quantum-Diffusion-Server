@@ -23,6 +23,22 @@ dependencies = [
     "python-multipart>=0.0.20",
     "pydantic>=2.10",
     "pillow>=12.1.1",
+    # The prompt rewriter's decoder. A plain runtime dependency, and it was an
+    # optional extra first -- the argument for that was that a feature shipping
+    # switched off should not make everyone carry its dependency. Measured, that
+    # argument was wrong twice over.
+    #
+    # It costs one package: every transitive dependency mlx-lm has (transformers,
+    # numpy, huggingface-hub, jinja2, protobuf, sentencepiece) already arrives
+    # with mflux, so resolving the two together adds mlx-lm and nothing else.
+    #
+    # And an extra cannot be installed by the app at all. `uv tool install
+    # <wheel>` is the whole installation, so the dependency has to be *in* the
+    # wheel's metadata or it never arrives -- leaving a user who pressed Enhance
+    # with "run `uv sync --extra rewrite`", a command that means nothing outside
+    # a checkout they do not have. Python and mflux install themselves; this had
+    # to as well.
+    "mlx-lm>=0.31.3",
 ]
 
 [project.urls]

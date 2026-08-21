@@ -212,6 +212,19 @@ final class Supervisor {
     /// The environment handed to the server, and the only channel it is
     /// configured through.
     nonisolated static func childEnvironment(paths: Paths, config: ServerConfig) -> [String] {
+        childEnvironmentMap(paths: paths, config: config).map { "\($0.key)=\($0.value)" }
+    }
+
+    /// The same environment as a dictionary.
+    ///
+    /// `posix_spawn` wants `KEY=VALUE` strings and `Process` wants a
+    /// dictionary; both callers need the *same* variables, and
+    /// `QDS_SERVER_CONFIG` in particular. `Bootstrap` fetches the rewriter's
+    /// weights through `Process`, and without that variable `qds fetch` would
+    /// resolve its Hugging Face cache somewhere the server never looks.
+    nonisolated static func childEnvironmentMap(paths: Paths, config: ServerConfig)
+        -> [String: String]
+    {
         var environment: [String: String] = [
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "HOME": NSHomeDirectory(),
@@ -233,7 +246,7 @@ final class Supervisor {
                 environment[key] = value
             }
         }
-        return environment.map { "\($0.key)=\($0.value)" }
+        return environment
     }
 
     // ── Surviving our own death ────────────────────────────────────────────

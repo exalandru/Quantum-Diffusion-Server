@@ -101,6 +101,7 @@ export function GenerationFeed({
   upscalers,
   onDeleteImage,
   onDeleteGroup,
+  onUsePrompt,
   paused,
   nameOf,
   srcOf = (url) => url,
@@ -114,6 +115,8 @@ export function GenerationFeed({
   /** The clicked image, and the root whose settings a new image reuses. */
   onRefine: (root: PlaygroundGeneration, image: { url: string; seed: number }) => void;
   onVariation: (root: PlaygroundGeneration) => void;
+  /** Put an enhanced prompt back in the composer, as an ordinary prompt. */
+  onUsePrompt?: (prompt: string) => void;
   /** The clicked image, and the factor and model chosen for it. */
   onUpscale: (
     root: PlaygroundGeneration,
@@ -212,6 +215,34 @@ export function GenerationFeed({
             {root.negativePrompt && (
               <p className="pg-prompt-negative">
                 <span className="pg-negative-tag">Negative</span> {root.negativePrompt}
+              </p>
+            )}
+            {/*
+              Behind a disclosure, never as the title. The entry is titled with
+              what the user typed, so nobody is ever shown words they did not
+              write as though they had written them. Opening it shows the text
+              the image was actually made from -- and "Use this prompt" puts it
+              in the composer as an ordinary prompt, which is the whole of
+              "edit" and "pin" without a second mechanism: a pinned rewrite is
+              just a typed prompt.
+            */}
+            {root.rewrittenPrompt && (
+              <details className="pg-rewrite">
+                <summary>Enhanced prompt</summary>
+                <p className="pg-rewrite-text">{root.rewrittenPrompt}</p>
+                {onUsePrompt && (
+                  <button
+                    className="small"
+                    onClick={() => onUsePrompt(root.rewrittenPrompt as string)}
+                  >
+                    Use this prompt
+                  </button>
+                )}
+              </details>
+            )}
+            {root.rewriteError && (
+              <p className="pg-rewrite-failed">
+                Enhancing failed ({root.rewriteError}) — generated from your prompt.
               </p>
             )}
             <p className="pg-meta">

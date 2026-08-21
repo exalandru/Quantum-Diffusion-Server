@@ -45,6 +45,8 @@ from qds.logbuffer import LogBuffer
 from qds.logs import SERVER_LOGGER, setup_logging
 from qds.playground import PlaygroundRunner, PlaygroundStore
 from qds.registry import ModelSpec, edit_enabled, parse_size
+from qds.rewrite.catalogue import MAX_PROMPT_CHARS
+from qds.rewrite.prompt import should_rewrite
 from qds.session import SessionStore, discard_local_token, issue_local_token
 from qds.settings import (
     RESPONSE_FORMATS,
@@ -412,8 +414,36 @@ def create_app(
 
     # Constructed here rather than beside its store: the runner resolves a model
     # at execution time, not at submission time, so it needs `resolve_spec`.
+    def build_rewrite_job(prompt: str) -> Any:
+        """A `RewriteJob` for `prompt`, or None if rewriting is not configured.
+
+        Resolved at execution rather than captured at admission on purpose: the
+        settings object is the one the app was built with, so this reflects a
+        configuration reload, and a runner holding a job built minutes earlier
+        would not.
+        """
+        spec = settings.rewriter()
+        if spec is None:
+            return None
+        from qds.engine import RewriteJob
+        from qds.rewrite.prompt import DEFAULT_SYSTEM_PROMPT
+
+        return RewriteJob(
+            spec=spec,
+            prompt=prompt,
+            system_prompt=settings.rewrite.system_prompt or DEFAULT_SYSTEM_PROMPT,
+            max_new_tokens=settings.rewrite.max_new_tokens,
+            temperature=settings.rewrite.temperature,
+            timeout_s=settings.rewrite.timeout_s,
+        )
+
     runner = PlaygroundRunner(
-        playground, engine, idle_unloader, resolve_spec, upscale_catalogue.by_key
+        playground,
+        engine,
+        idle_unloader,
+        resolve_spec,
+        upscale_catalogue.by_key,
+        build_rewrite_job,
     )
 
     def resolve_size(spec: ModelSpec, size: str | None) -> tuple[int, int]:
@@ -494,6 +524,90 @@ def create_app(
                 param="guidance",
                 code="unsupported_parameter",
             )
+
+    def check_rewrite(
+        spec: ModelSpec, prompt: str, *, requested: bool, carried: str | None
+    ) -> bool:
+        """Decide whether this generation will be rewritten, refusing at the door.
+
+        Returns whether the runner should expand the prompt. Every reason it
+        might not is settled *here*, before a row exists and before any weights
+        load, so the runner's only remaining question is "was one asked for".
+
+        Fail-closed, and separately for each reason:
+
+        * a model whose only prompt format is JSON is **refused**, not silently
+          skipped. Producing a caption against Bria's schema is a different job
+          with a hard failure mode -- `check_prompt` would reject the output --
+          so the honest answer is that this model cannot be enhanced;
+        * rewriting switched off, or naming a key this build lacks, is a 409
+          carrying the reason `/v1/capabilities` publishes;
+        * a prompt over `MAX_PROMPT_CHARS` is refused rather than truncated.
+          Mutilating a long prompt silently is the one outcome nobody asked
+          for. This is triage, not the memory bound: that one is in tokens and
+          lives in `ModelEngine._rewrite_sync`, which has a tokenizer;
+        * at or over `word_ceiling`, the request is simply not a rewrite. Not an
+          error: the user asked for the best result and, measured, that is their
+          own prompt. The UI says so before submitting, from the same number.
+
+        Rewritten text -- requested or supplied -- is validated exactly once,
+        here. A *requested* rewrite needs no check on its output because it is
+        only offered where `check_prompt` is vacuous: every model that accepts
+        `"text"` accepts anything, and the ones that do not are refused above. A
+        *supplied* one is checked directly, because nothing else on that path
+        looks at the text that will actually reach the model.
+        """
+        if carried is not None and requested:
+            raise APIError(
+                "A generation cannot both request a rewrite and supply one.",
+                param="rewrite",
+                code="invalid_rewrite",
+            )
+        if carried is not None:
+            # A carried rewrite is replay, not work: it was produced under
+            # whatever configuration held at the time, and refusing it now
+            # because the feature was since switched off would make old
+            # generations unrepeatable. So the availability checks below do not
+            # apply to it -- but the *prompt format* check does, and must.
+            #
+            # Supplying text is a rewriting path too, and it is the one path on
+            # which nothing else validates: `check_prompt` above ran against
+            # `prompt`, while what actually reaches the model is this. Without
+            # the line below, `rewritten_prompt="a plain sentence"` on a
+            # JSON-only model is accepted, several GB load, and FIBO's encoder
+            # raises on a bare `json.loads` -- exactly the failure `check_prompt`
+            # exists to prevent, moved past it.
+            check_prompt(spec, carried)
+            return False
+        if not requested:
+            return False
+
+        if "text" not in spec.prompt_formats:
+            raise APIError(
+                f"Model '{spec.key}' takes only a structured JSON caption, which "
+                "the prompt rewriter does not produce.",
+                param="rewrite",
+                code="rewrite_unsupported_for_model",
+            )
+        reason = settings.rewrite_unavailable_reason()
+        if reason is not None:
+            raise APIError(reason, status_code=409, code="rewriter_unavailable")
+
+        # Characters, not words. A word count is not an approximation of a
+        # token count for a script without spaces -- a Chinese prompt of any
+        # length is one "word" -- and this runs before any tokenizer exists.
+        # The real bound is checked in `ModelEngine._rewrite_sync`, in tokens;
+        # this refuses what could never fit, while the message can still name a
+        # parameter and nothing has loaded.
+        if len(prompt) > MAX_PROMPT_CHARS:
+            raise APIError(
+                f"This prompt is {len(prompt)} characters, past the "
+                f"{MAX_PROMPT_CHARS} the rewriter accepts. Generate it as "
+                "written instead.",
+                param="prompt",
+                code="prompt_too_long_to_rewrite",
+            )
+        return should_rewrite(prompt, word_ceiling=settings.rewrite.word_ceiling)
 
     def check_n(n: int) -> None:
         if n > settings.server.max_n:
@@ -642,6 +756,7 @@ def create_app(
             "max_n": settings.server.max_n,
             "response_formats": sorted(RESPONSE_FORMATS),
             "models": {key: _capabilities(spec) for key, spec in sorted(registry.items())},
+            "rewrite": _rewrite_capabilities(settings),
         }
 
     @app.get("/v1/progress")
@@ -961,6 +1076,8 @@ def create_app(
         steps: Annotated[int | None, Form()] = None,
         seed: Annotated[int | None, Form()] = None,
         group: Annotated[str | None, Form()] = None,
+        rewrite: Annotated[bool, Form()] = False,
+        rewritten_prompt: Annotated[str | None, Form()] = None,
         image: Annotated[UploadFile | None, File()] = None,
     ) -> dict:
         spec = resolve_spec(model)
@@ -974,6 +1091,8 @@ def create_app(
         # model that cannot take one.
         negative = (negative_prompt or "").strip() or None
         check_capabilities(spec, negative_prompt=negative, guidance=None)
+        carried = (rewritten_prompt or "").strip() or None
+        rewrite = check_rewrite(spec, prompt, requested=rewrite, carried=carried)
         width, height = resolve_size(spec, size)
         if steps is not None and steps < 1:
             raise APIError("steps must be at least 1.", param="steps", code="invalid_steps")
@@ -1011,6 +1130,8 @@ def create_app(
                 session_id,
                 prompt=prompt,
                 negative_prompt=negative,
+                rewrite=rewrite,
+                rewritten_prompt=carried,
                 model=spec.public_name,
                 kind=kind,
                 n=n,
@@ -1320,6 +1441,46 @@ def create_app(
     app.include_router(playground_admin)
 
     return app
+
+
+def _rewrite_capabilities(settings) -> dict:
+    """What the client needs to decide whether to offer an "Enhance" control.
+
+    `available` decides whether the control exists at all; `reason` is why it
+    does not, so "where is the button" is answerable without reading a log;
+    `word_ceiling` lets the composer say "generated as typed" *before*
+    submitting rather than after -- the same number the route enforces,
+    published rather than duplicated as a constant on both sides. `downloaded`
+    and `sizeMb` are the pair `playground_upscalers` publishes, asked the same
+    way: of the *files*, not the repository.
+
+    Deliberately **not** published: which model does the rewriting, or its
+    licence. Someone using the playground needs to know their prompt will be
+    improved and what a first use costs; which LLM does it is an operator fact.
+    Removed rather than merely left unrendered -- a field that is published and
+    unused is an invitation to render it again. The identity is not lost, it is
+    re-addressed: `rewrite.model` in the configuration, the `rewriter_ready` and
+    `rewrite_done` log events, the README, and the catalogue itself.
+    """
+    spec = settings.rewriter()
+    if spec is None:
+        return {
+            "available": False,
+            "reason": settings.rewrite_unavailable_reason(),
+            "downloaded": False,
+            "sizeMb": None,
+            "word_ceiling": settings.rewrite.word_ceiling,
+        }
+
+    from qds.rewrite.weights import is_downloaded
+
+    return {
+        "available": True,
+        "reason": None,
+        "downloaded": is_downloaded(spec),
+        "sizeMb": spec.size_mb,
+        "word_ceiling": settings.rewrite.word_ceiling,
+    }
 
 
 def _capabilities(spec: ModelSpec) -> dict:

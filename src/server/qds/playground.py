@@ -77,6 +77,37 @@ CREATE TABLE IF NOT EXISTS generations (
   -- every model whose pipeline has no unconditional branch to apply it to --
   -- the engine drops it on those, and the route refuses it outright.
   negative_prompt TEXT,
+  -- What the rewriter made of `prompt`, or NULL if nothing rewrote it. This is
+  -- what `_run` sends to the engine; `prompt` above is never overwritten, so
+  -- the feed can always show what the user actually typed and a variation can
+  -- replay the exact text its ancestor was generated from.
+  rewritten_prompt TEXT,
+  -- Why a requested rewrite did not happen, or NULL. Not redundant with
+  -- `rewritten_prompt IS NULL`: without it, "the rewriter failed and we
+  -- generated from your prompt" and "no rewrite was asked for" are the same
+  -- row, and the first one is something the user is owed an explanation for.
+  --
+  -- Only ever written by `record_rewrite`, i.e. only after a rewrite has been
+  -- attempted. It is published to the client and rendered as a failure, so a
+  -- value here means one happened.
+  rewrite_error TEXT,
+  -- 1 while a requested rewrite has not run yet, 0 otherwise.
+  --
+  -- A column of its own rather than a third status. `ACTIVE_STATUSES` is
+  -- replicated as a literal `IN ('queued','running')` across seven queries --
+  -- `mark_interrupted` among them -- and a `rewriting` status that one of them
+  -- missed would strand a row outside every terminal path, breaking the
+  -- "everything reaches a terminal state, even after a crash" invariant this
+  -- module opens with. What is tracked here is not a lifecycle stage; it is one
+  -- boolean about work still owed.
+  --
+  -- And a column of its own rather than a sentinel in `rewrite_error`, which is
+  -- what this was first: that column is published as `rewriteError` and the feed
+  -- renders any value in it as "Enhancing failed (…) — generated from your
+  -- prompt". A queued generation would have said so about work that had not
+  -- been attempted, and a run cancelled before its rewrite would have said so
+  -- forever.
+  rewrite_pending INTEGER NOT NULL DEFAULT 0,
   model TEXT NOT NULL,
   kind TEXT NOT NULL,
   n INTEGER NOT NULL,
@@ -126,6 +157,11 @@ def _generation_json(row: sqlite3.Row, images: list[dict[str, Any]]) -> dict[str
         "groupId": row["group_id"] or row["id"],
         "prompt": row["prompt"],
         "negativePrompt": row["negative_prompt"],
+        # Two separate facts, deliberately both published. The feed shows the
+        # typed prompt as the title and the rewrite behind a disclosure, so a
+        # user is never shown words they did not write as if they had.
+        "rewrittenPrompt": row["rewritten_prompt"],
+        "rewriteError": row["rewrite_error"],
         "model": row["model"],
         "kind": row["kind"],
         "n": row["n"],
@@ -181,6 +217,28 @@ class PlaygroundStore:
         if "negative_prompt" not in columns:
             self._db.execute("ALTER TABLE generations ADD COLUMN negative_prompt TEXT")
             logger.info("playground store migrated: generations.negative_prompt added")
+        # Both NULL on every existing row, which reads exactly right: nothing
+        # rewrote them, and nothing failed to.
+        if "rewritten_prompt" not in columns:
+            self._db.execute("ALTER TABLE generations ADD COLUMN rewritten_prompt TEXT")
+            logger.info("playground store migrated: generations.rewritten_prompt added")
+        if "rewrite_error" not in columns:
+            self._db.execute("ALTER TABLE generations ADD COLUMN rewrite_error TEXT")
+            logger.info("playground store migrated: generations.rewrite_error added")
+        if "rewrite_pending" not in columns:
+            self._db.execute(
+                "ALTER TABLE generations ADD COLUMN rewrite_pending INTEGER NOT NULL DEFAULT 0"
+            )
+            # An unreleased build tracked this as the literal 'pending' in
+            # `rewrite_error`, which is published and rendered as "Enhancing
+            # failed (pending)". Those rows would carry that claim forever, so
+            # they are cleared here rather than left to be read as failures.
+            # Narrow by construction: `record_rewrite` writes a sentence, never
+            # this word, so nothing legitimate matches.
+            self._db.execute(
+                "UPDATE generations SET rewrite_error = NULL WHERE rewrite_error = 'pending'"
+            )
+            logger.info("playground store migrated: generations.rewrite_pending added")
         columns = {row["name"] for row in self._db.execute("PRAGMA table_info(sessions)")}
         if "password" not in columns:
             self._db.execute("ALTER TABLE sessions ADD COLUMN password TEXT")
@@ -428,6 +486,8 @@ class PlaygroundStore:
         *,
         prompt: str,
         negative_prompt: str | None = None,
+        rewrite: bool = False,
+        rewritten_prompt: str | None = None,
         model: str,
         kind: str,
         n: int,
@@ -447,7 +507,16 @@ class PlaygroundStore:
         insert: a group id is client-supplied, and a session must not be able to
         graft its generations onto another one's group. Raises `KeyError` for an
         unknown session and `ValueError` for a group that is not this session's.
+
+        `rewrite` and `rewritten_prompt` are two different requests and only one
+        may be made at a time. `rewrite=True` asks the runner to expand the
+        prompt before generating; `rewritten_prompt` supplies text a previous
+        generation already produced, which is how a variation reproduces its
+        ancestor rather than re-sampling a *different* rewrite and calling the
+        result a variation.
         """
+        if rewrite and rewritten_prompt is not None:
+            raise ValueError("a generation cannot both request a rewrite and supply one")
         now = time.time()
         generation_id = uuid.uuid4().hex
         with self._lock:
@@ -464,10 +533,11 @@ class PlaygroundStore:
             self._db.execute(
                 """
                 INSERT INTO generations (
-                  id, session_id, group_id, prompt, negative_prompt, model, kind, n,
+                  id, session_id, group_id, prompt, negative_prompt,
+                  rewritten_prompt, rewrite_pending, model, kind, n,
                   width, height, steps, steps_from_preset, seeds, image_strength,
                   context_image, status, error, created_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, NULL)
                 """,
                 (
                     generation_id,
@@ -475,6 +545,9 @@ class PlaygroundStore:
                     group or generation_id,
                     prompt,
                     negative_prompt,
+                    rewritten_prompt,
+                    # `_run` reads this to decide whether a rewrite is still owed.
+                    int(rewrite),
                     model,
                     kind,
                     n,
@@ -530,6 +603,32 @@ class PlaygroundStore:
             return self._db.execute(
                 "SELECT * FROM generations WHERE id = ?", (generation_id,)
             ).fetchone()
+
+    def record_rewrite(
+        self, generation_id: str, *, prompt: str | None, error: str | None
+    ) -> None:
+        """Record what the rewriter produced, or why it produced nothing.
+
+        Writes all three columns every time, two of them to NULL as needed.
+
+        Clearing `rewrite_pending` has no observable effect today -- `_run`
+        tracks the flag in a local and `claim()` moves a row out of `queued`
+        exactly once, so no row is ever re-read for it. It is written anyway so
+        that the row's state matches what happened: a reader that trusts the
+        column, including a future one that re-runs a generation, must not see
+        work still owed that was already done.
+
+        Deliberately unconditional on status. A generation cancelled between the
+        rewrite and the first image still gets its rewrite recorded: the work
+        happened, and hiding it would make the cancellation look like the reason
+        no rewrite is shown.
+        """
+        with self._lock:
+            self._db.execute(
+                "UPDATE generations SET rewritten_prompt = ?, rewrite_error = ?, "
+                "rewrite_pending = 0 WHERE id = ?",
+                (prompt, error, generation_id),
+            )
 
     def status_of(self, generation_id: str) -> str | None:
         with self._lock:
@@ -779,6 +878,7 @@ class PlaygroundRunner:
         idle_unloader: Any,
         resolve_spec: Callable[[str | None], ModelSpec],
         resolve_upscaler: Callable[[str], Any] | None = None,
+        build_rewrite_job: Callable[[str], Any] | None = None,
     ):
         self._store = store
         self._engine = engine
@@ -788,6 +888,11 @@ class PlaygroundRunner:
         #: dependency direction: it is handed how to look things up, it does not
         #: reach into a catalogue itself.
         self._resolve_upscaler = resolve_upscaler
+        #: Turns a prompt into a `RewriteJob`, or returns None when rewriting is
+        #: not configured. Injected for the same reason as the two above, and
+        #: with one extra consequence: the runner never reads `Settings`, so it
+        #: cannot drift from the answer the route gave at admission.
+        self._build_rewrite_job = build_rewrite_job
         #: Created by `start()`, not here: an `asyncio.Queue` binds to the loop
         #: that first uses it, and one app may be run by several loops in turn
         #: (every `TestClient` context is a fresh one). Binding it at startup
@@ -1065,6 +1170,62 @@ class PlaygroundRunner:
             return
         self._store.finish(generation_id, "completed")
 
+    async def _rewrite_step(self, generation_id: str, typed: str) -> str:
+        """Expand `typed`, or fall back to it and record why.
+
+        Three outcomes, and they are deliberately not the same one.
+
+        A **cancellation** propagates. The user asked for the run to stop, not
+        for it to continue from the prompt they were trying to improve, and
+        `_run`'s handler already turns `generation_stopped` into `cancelled`.
+
+        Any **other failure** -- the weights are not downloaded, the decode
+        timed out, `sanitise` refused the output -- keeps the generation and
+        records the reason. Throwing away a generation the user asked for,
+        because an optional step that improves it did not work, would be
+        replacing detection with punishment. It is not silent: `rewrite_error`
+        is a column the feed reads, so the row says "generated from your prompt,
+        because ...".
+
+        Success records the rewrite before generating, so a crash between the
+        two leaves the work visible rather than lost.
+        """
+        typed = typed.strip()
+        job = None if self._build_rewrite_job is None else self._build_rewrite_job(typed)
+        if job is None:
+            # Configuration changed between admission and execution. Nothing was
+            # promised to the user here, so this is a fact, not a failure.
+            self._store.record_rewrite(
+                generation_id, prompt=None, error="Prompt rewriting is no longer configured."
+            )
+            return typed
+
+        try:
+            rewritten = await self._engine.rewrite(job)
+        except APIError as exc:
+            if exc.code == "generation_stopped":
+                raise
+            self._store.record_rewrite(generation_id, prompt=None, error=exc.message)
+            logger.info(
+                "Rewrite unavailable for %s: %s",
+                generation_id,
+                exc.message,
+                extra={"event": "rewrite_failed", "fields": {"reason": exc.code}},
+            )
+            return typed
+        except Exception as exc:
+            self._store.record_rewrite(generation_id, prompt=None, error=str(exc))
+            logger.info(
+                "Rewrite failed for %s: %s",
+                generation_id,
+                exc,
+                extra={"event": "rewrite_failed", "fields": {"reason": type(exc).__name__}},
+            )
+            return typed
+
+        self._store.record_rewrite(generation_id, prompt=rewritten, error=None)
+        return rewritten
+
     async def _run(self, generation_id: str) -> None:
         row = self._store.claim(generation_id)
         if row is None:
@@ -1088,6 +1249,11 @@ class PlaygroundRunner:
         image_path = self._store.images_dir / context if context else None
         seeds: list[int] = json.loads(row["seeds"])
         position = 0
+        # What actually reaches the engine. A row that carries a rewrite from an
+        # earlier generation -- a variation replaying its ancestor's -- uses it
+        # as-is and asks for nothing.
+        prompt = row["rewritten_prompt"] or row["prompt"]
+        rewrite_pending = bool(row["rewrite_pending"])
         try:
             # One contiguous run of images per `with self._idle:` block, not one
             # per image. Unpaused there is exactly one block per generation,
@@ -1107,6 +1273,20 @@ class PlaygroundRunner:
                     self._store.finish(generation_id, "cancelled")
                     return
                 with self._idle:
+                    if rewrite_pending:
+                        # Inside this block, not before it, and that is not a
+                        # matter of taste. `IdleUnloader.__enter__` destroys the
+                        # pending countdown and only `__exit__` recreates it, on
+                        # the way down to zero in-flight -- so a rewrite in a
+                        # block of its own would arm a release *between* the
+                        # rewrite and the first image, and at `idle_unload_s: 0`
+                        # would unload the diffusion model there.
+                        #
+                        # Once, too: the outer loop re-enters this block after a
+                        # pause, and the flag is what keeps a paused generation
+                        # from being rewritten twice into two different prompts.
+                        prompt = await self._rewrite_step(generation_id, row["prompt"])
+                        rewrite_pending = False
                     while position < len(seeds) and not self._paused:
                         if self._cancel_requested == generation_id:
                             self._store.finish(generation_id, "cancelled")
@@ -1119,7 +1299,7 @@ class PlaygroundRunner:
                             GenerationJob(
                                 spec=spec,
                                 kind=row["kind"],
-                                prompt=row["prompt"],
+                                prompt=prompt,
                                 negative_prompt=row["negative_prompt"],
                                 width=row["width"],
                                 height=row["height"],

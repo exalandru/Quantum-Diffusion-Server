@@ -133,7 +133,7 @@ curl http://127.0.0.1:8765/v1/images/generations \
   -d '{"model": "fibo-lite", "prompt": "{\"high_level_description\": \"a red fox in the snow\"}"}'
 ```
 
-  The full schemas live with the models: [FIBO's prompting guide](https://huggingface.co/briaai/FIBO) and [Ideogram's](https://github.com/ideogram-oss/ideogram-4/blob/main/docs/prompting.md). mflux ships `mflux-inspire-fibo` and `mflux-refine-fibo` to build those captions with Bria's VLM; the server does not call them — that would mean a second model resident alongside the first.
+  The full schemas live with the models: [FIBO's prompting guide](https://huggingface.co/briaai/FIBO) and [Ideogram's](https://github.com/ideogram-oss/ideogram-4/blob/main/docs/prompting.md). mflux ships `mflux-inspire-fibo` and `mflux-refine-fibo` to build those captions with Bria's VLM; the server still does not call them. Two reasons, and the first one used to be the whole answer: it would mean a second model resident alongside the first, and producing a caption against Bria's schema is a different job with a hard failure mode — the JSON check above rejects the output, after the weights have loaded. See [Enhancing a prompt](#enhancing-a-prompt) for the rewriting the server *does* do, on what terms, and why those terms do not extend to these two models.
 - **`ideogram-4` takes its step count from a sampler preset**, not from a number: `V4_DEFAULT_20` (20 steps), `V4_QUALITY_48`, `V4_TURBO_12`. Each preset carries a per-step guidance schedule and a noise schedule, so `guidance` is refused and `steps` is best left alone — passing it replaces the schedule with a constant. Pick one with `models.ideogram-4.preset`. Its dimensions are also capped at 2048, checked before loading.
 - **`flux2-dev` requires a conversion step** and is not usable as-is: 32 billion parameters, a gated repo, and code mflux 0.19.0 does not provide. See [FLUX.2-dev](#flux2-dev--32b-in-8-bit). Expect ~113 GB of one-time download, a ~58 GB local artifact, and ~58 GB resident during generation.
 - **The guidance defaults come from each model's own card**, not from mflux's blanket defaults — 4.0 for `qwen-image-2512` where mflux would say 3.5, 5.0 for base FIBO where its signature says 4.0. The step counts are this server's own: 20 wherever a card asks for 50, because area and step count are what a base model actually costs, and 8 for the ERNIE and FIBO turbos, which is what their cards say.
@@ -322,6 +322,99 @@ generation at a time, and the bytes stay off the SSE stream, which the dashboard
 page shares. A family whose latent layout is not mapped, or a decode that fails,
 loses its previews for that run — never its generation.
 
+### Enhancing a prompt
+
+Off by default. Switched on, an **Enhance** button appears beside the model
+picker in the composer: the prompt is expanded by a small local LLM before it
+reaches the diffusion model, and both texts are kept.
+
+```jsonc
+// server-config.json
+"rewrite": { "enabled": true }
+```
+
+Installed through the menubar app, the weights (2263 MB) arrive with the
+server: `Bootstrap` runs `qds fetch --rewriter` after the wheel, so the first
+Enhance costs nothing. Installed any other way, they are fetched on first use —
+the composer says `First use downloads 2263 MB` before you press Generate — or
+ahead of time with `qds fetch --rewriter`. Nothing else to install: `mlx-lm` is
+an ordinary runtime dependency and arrives with the server, exactly as mflux
+does. `qds rewrite "un chat sur un toit"` exercises the whole thing from the
+terminal, with no browser.
+
+**What it is for.** Local models reward a long, specific prompt and give little
+back for three words. This closes that gap the way DALL·E 3 and Ideogram do; it
+is not what makes Midjourney's images look the way they do, which is an
+aesthetic fine-tune rather than any rewriting. A 20-word prompt comes back at
+about 130 words of art direction — named rock, a light direction, a camera
+angle. Measured at a fixed seed: a clear win on prompts of two or three words,
+roughly a draw on ones the model already handles, and a decisive win on anything
+not in English — `un chat sur un toit` as typed produces a *man* on a roof, no
+cat anywhere, because the text encoder does not read French.
+
+A **negative prompt is deliberately not generated**, and the reason is worth
+knowing before writing one by hand: on the distilled models — `krea-2-turbo`,
+`anima-turbo`, `z-image-turbo` — the unconditional branch is only built above
+guidance 1.0, and those default to 1.0 or below. At the shipped settings a
+negative prompt is never encoded at all. See the `negative` column above.
+
+**Which model does it** is a configuration fact, not something the playground
+shows: someone writing a prompt needs to know it will be improved and what a
+first use costs, not which LLM does it. `rewrite.model` names it, the logs
+record it, and the catalogue explains why it is that one — including why a
+1.7B was not enough (a 46-word median, and a degenerate loop on a simple
+subject) and why Ministral-3-3B was measured and rejected (it ignores the length
+instruction, truncating eleven outputs in eighteen, and replaces the subject).
+
+**What it will not touch.** At or over `rewrite.word_ceiling` words (40 by
+default) the prompt is generated exactly as written, and the composer says so
+before you press Generate. That ceiling is enforced in Python rather than asked
+of the model, because asking did not work: told to leave long prompts alone, the
+rewriter obeyed 8 times in 18 *and* got worse at everything else, the rule
+having competed for a small model's attention. Models whose only prompt format
+is JSON — `fibo`, `fibo-lite` — are refused rewriting outright rather than
+silently skipped.
+
+**What it records.** Your prompt is never overwritten. The feed titles the entry
+with what you typed and folds the expansion away behind *Enhanced prompt*, with
+a **Use this prompt** button that drops it into the composer as an ordinary
+prompt — which is all that editing or pinning a rewrite needs. A refine or a
+variation replays the recorded rewrite instead of asking for a new one: a
+rewrite is sampled, so re-running it would produce different words and the
+result would not be a variation of anything. If the rewriter fails, the image is
+still generated from your prompt and the entry says why; throwing away a
+generation you asked for, because an optional step that improves it did not
+work, would be replacing detection with punishment.
+
+**`/v1` never rewrites.** The surface is OpenAI-compatible and its Images API
+has no rewrite parameter, so expanding a prompt there would quietly break the
+contract every script relies on.
+
+**Memory.** The rewriter is a *third* slot in the engine, and unlike the
+upscaler's it is transient: loaded, decoded, and released in a `finally`, so
+between two rewrites there is nothing in it. Bounded twice over —
+`MAX_PROMPT_TOKENS` + `MAX_NEW_TOKENS` cap the KV cache, the only part of a
+decode that grows with the input, and `MAX_REWRITER_FOOTPRINT_MB` refuses at
+import any entry whose weights *plus that cache* exceed what an upscale already
+costs transiently. A bound on weights alone was what shipped first, and it left
+a loophole: a deep model with few parameters passes it and blows the KV budget. The prompt half is counted in **tokens**,
+inside the engine, against the fully templated text — not at admission, which
+has no tokenizer and where an earlier version counted words instead. That was
+wrong in a way worth recording: a Chinese or Japanese prompt has no spaces, so
+one of any length counted as a single word and cleared the bound entirely.
+Admission keeps a character limit as triage, so an impossible prompt is refused
+where the message can still name a parameter. Measured: 968 MB resident, 1289 MB peak,
+against the 2630 MB this engine already accepts for an upscale and the 19281 MB
+peak of a single 512×512 z-image generation. Over twenty consecutive
+rewrite-then-generate cycles beside a warm diffusion model, each measured after
+resetting MLX's peak counter, the per-cycle peak was identical from first to
+last and the diffusion weights were never reloaded. End to end a rewrite costs about a
+second, load and unload included.
+
+The system prompt is overridable through `rewrite.system_prompt` — it is a
+quality knob. The bounds around it are not: raising them is a decision about the
+engine's memory invariant, not a setting.
+
 ### Upscaling
 
 From the toolbar under any generated image: a factor, a model, and the enlarged
@@ -435,6 +528,22 @@ Two keys sit outside `server`, because they are generation defaults rather than 
 | `default_size` | `null` | config-wide resolution, `"WxH"`. Applies to every model; `null` leaves each on its catalogue size |
 
 These are the *code* defaults, used when no config file is found. The shipped `server-config.json` is more opinionated: `1280x720`, and only the two fast ungated models enabled.
+
+#### The `rewrite` section
+
+Prompt rewriting, described in [Enhancing a prompt](#enhancing-a-prompt). **On** by default. It shipped off, because the first Enhance fetched a gigabyte and nobody had asked for it; both halves of that reason are gone — the app fetches the weights at install, and the composer says what a first use costs before anything is pressed. The decoder itself ships with the server, like mflux.
+
+| key | default | role |
+|---|---|---|
+| `enabled` | `true` | offer prompt rewriting at all. Off: the route refuses with 409, `/v1/capabilities` says why, the dashboard hides the control |
+| `model` | `qwen3-4b-2507-4bit` | rewriter catalogue key. A separate catalogue from the image models; `qds fetch` accepts keys from either, or `--rewriter` for whichever this names |
+| `word_ceiling` | `40` | prompts of this many words or more are generated as typed, without calling the rewriter. Must stay below `MAX_PROMPT_TOKENS` |
+| `max_new_tokens` | `320` | longest rewrite to decode. Can only be lowered: it is what the engine's KV-cache bound is computed from |
+| `temperature` | `0.7` | sampling temperature. Measured; 0.3 gave the same structures with less variety |
+| `timeout_s` | `30` | wall-clock bound on one decode, checked between tokens. Generous against a measured p95 of 1.1 s |
+| `system_prompt` | `null` | replaces the shipped instructions. A quality knob — the bounds above are not |
+
+`MAX_REWRITER_WEIGHTS_MB`, `MAX_PROMPT_TOKENS` and the ceiling on `max_new_tokens` are deliberately **not** configurable: they are what make the engine's third slot safe, and raising one is a decision about that invariant rather than a preference.
 
 There is deliberately **no config-wide quantization**. There was one, `default_quantize`, and it overwrote each catalogue row rather than standing behind it — so a single number decided the precision of every model, including the rows that had picked one on purpose. What a bit depth costs depends entirely on the model it is applied to: `anima` at 2B is visibly broken at 4 bits, where the same depth is unremarkable on a 20B. A config that still carries the key starts normally and logs that it was ignored.
 

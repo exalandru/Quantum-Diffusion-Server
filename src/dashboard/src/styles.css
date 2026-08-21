@@ -1827,6 +1827,38 @@ main.playground > header {
   line-height: 1.5;
 }
 
+/* The rewrite, folded away. The entry is titled with what the user typed, so
+   this is the only place words they did not write appear -- and only once
+   opened. */
+.pg-rewrite {
+  margin: 0 0 var(--s1);
+  font-size: var(--font-sm);
+}
+
+.pg-rewrite > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--font-xs, 11px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.pg-rewrite-text {
+  margin: var(--s1) 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+/* A failed enhance is not a failed generation: the image is there, made from
+   the prompt as typed, and this says so rather than looking like nothing was
+   asked for. */
+.pg-rewrite-failed {
+  margin: 0 0 var(--s1);
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
 .pg-negative-tag {
   display: inline-block;
   margin-right: 6px;
@@ -2215,6 +2247,21 @@ main.playground > header .pg-pause ~ .shell-link {
 }
 
 .pg-gear.active {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+/* Enhance: same icon-and-label shape as the gear, next to it in the control
+   row. Shown only where the server would accept a rewrite, so its absence is
+   information rather than a missing feature. */
+.pg-enhance {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 9px;
+}
+
+.pg-enhance.active {
   border-color: var(--accent-line);
   color: var(--accent);
 }

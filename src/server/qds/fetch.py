@@ -7,6 +7,9 @@ behind it.
 
 Two modes, both aimed at the desktop app but usable on their own:
 
+* `--rewriter` downloads whichever prompt rewriter the configuration names. An
+  intent rather than a key, because the menubar app calls it and must not carry
+  a copy of the catalogue in Swift.
 * `--status` prints one JSON line per catalogue entry, saying whether its repo is
   in the HuggingFace cache and how much room it takes. Imports nothing heavier
   than `huggingface_hub`, so it answers instantly.
@@ -40,6 +43,7 @@ from pathlib import Path
 from typing import Any
 
 from qds import env
+from qds.errors import APIError
 from qds.logs import SERVER_LOGGER, setup_logging
 from qds.settings import load_settings
 
@@ -422,8 +426,45 @@ def _fetch_upscaler(spec: Any) -> int:
     return 0
 
 
+def _fetch_rewriter(spec: Any) -> int:
+    """Pull the rewriter's weights, and prove they load.
+
+    Same rule as `_fetch_upscaler`: "download it and check it", because a file
+    on disk that cannot be used is not a successful fetch. What `load_rewriter`
+    adds here is the catalogue cross-check -- layers, key/value heads, head
+    dimension -- and those three are exactly what the engine's KV-cache bound
+    is computed from, so this is also where a catalogue that has drifted from
+    the published model is caught, rather than at the first user's first prompt.
+    """
+    from qds.rewrite.weights import is_downloaded, load_rewriter, require_mlx_lm
+
+    try:
+        require_mlx_lm()
+    except APIError as exc:
+        logger.error("%s", exc.message)
+        return 1
+
+    if is_downloaded(spec):
+        logger.info("%s is already downloaded (%s).", spec.key, spec.repo)
+        return 0
+    logger.info("Fetching %s - %.0f MB from %s", spec.key, spec.size_mb, spec.repo)
+    try:
+        load_rewriter(spec)
+    except Exception as exc:
+        logger.error(
+            "Could not fetch %s: %s",
+            spec.key,
+            exc,
+            extra={"event": "job_failed", "fields": {"reason": "fetch_failed", "model": spec.key}},
+        )
+        return 1
+    logger.info("%s ready.", spec.key)
+    return 0
+
+
 def fetch(key: str) -> int:
     from qds.registry import BASE_SPECS_BY_KEY
+    from qds.rewrite import catalogue as rewrite_catalogue
     from qds.upscale import catalogue as upscale_catalogue
 
     settings = load_settings(strict=False)
@@ -435,6 +476,12 @@ def fetch(key: str) -> int:
     upscaler = upscale_catalogue.by_key(key)
     if upscaler is not None:
         return _fetch_upscaler(upscaler)
+    # And so are rewriters. The three key namespaces are asserted disjoint in
+    # `tests/test_rewrite.py`, which is what makes this ordering safe rather
+    # than merely conventional.
+    rewriter = rewrite_catalogue.by_key(key)
+    if rewriter is not None:
+        return _fetch_rewriter(rewriter)
     # `include_disabled`: the documented workflow is to download a model *before*
     # enabling it, and the enabled-only view silently fell back to the raw
     # catalogue spec for those — dropping the very `model_path` the Models tab had
@@ -444,7 +491,7 @@ def fetch(key: str) -> int:
         logger.error(
             "Unknown model %r. Valid keys: %s",
             key,
-            sorted([*BASE_SPECS_BY_KEY, *upscale_catalogue.KEYS]),
+            sorted([*BASE_SPECS_BY_KEY, *upscale_catalogue.KEYS, *rewrite_catalogue.KEYS]),
             extra={"event": "job_failed", "fields": {"reason": "unknown_model", "model": key}},
         )
         return 2
@@ -532,6 +579,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="print the catalogue with cache state as JSON, and exit",
     )
     parser.add_argument(
+        "--rewriter",
+        action="store_true",
+        help="download the configured prompt rewriter, whichever it is",
+    )
+    parser.add_argument(
         "--json-logs",
         action="store_true",
         default=env.flag("LOG_JSON"),
@@ -581,8 +633,25 @@ def main(argv: list[str] | None = None) -> int:
     # model's own entry, and nothing about the configured default model.
     load_settings(strict=False).apply_hf_home()
 
+    if args.rewriter:
+        # An *intent*, not a catalogue key, and the distinction is the whole
+        # reason this flag exists. The menubar app calls this at install time,
+        # and a key hardcoded in Swift would be catalogue data duplicated into a
+        # second language that no test can keep in step. Naming the intent keeps
+        # the catalogue the only place that knows which model this is.
+        #
+        # Falls back to the catalogue default when rewriting is switched off:
+        # the app fetches the weights so that turning it on later costs nothing,
+        # which is the point of doing this at install.
+        setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
+        from qds.rewrite.catalogue import KEYS, by_key
+
+        settings = load_settings(strict=False)
+        key = settings.rewrite.model if by_key(settings.rewrite.model) else KEYS[0]
+        return run_guarded(lambda: fetch(key), what="download")
+
     if not args.model:
-        parser.error("give a model key, or --status")
+        parser.error("give a model key, --rewriter, or --status")
 
     setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
     return run_guarded(lambda: fetch(args.model), what="download")

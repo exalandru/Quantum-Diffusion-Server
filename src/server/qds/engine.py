@@ -9,10 +9,11 @@ Four invariants:
 
 * **one live diffusion model at a time** — on unified memory, keeping two (a 9B
   plus anything else) saturates the machine;
-* **one bounded second slot, for an upscaler** — what makes this exception safe
-  is not that Real-ESRGAN's weights are small (33 MB against 10-28 GB), it is
-  that the cost of *running* one is bounded and transient. Two bounds, and they
-  are separate:
+* **bounded auxiliary slots** — two of them now, an upscaler and a prompt
+  rewriter. What makes these exceptions safe is not that their weights are
+  small, it is that the cost of *running* one is bounded and transient. For
+  Real-ESRGAN (33 MB against 10-28 GB) there are two bounds, and they are
+  separate:
 
   - the MLX allocator sees one tile's activations at a time, bounded by
     `UpscalerSpec.tile` — measured constant at 1.52 GB whatever the source
@@ -27,10 +28,28 @@ Four invariants:
   flux2-dev) for the next generation would cost more average memory and far
   more time than holding those 33 MB. The slot itself is bounded by
   construction: the catalogue holds only RRDBNets and refuses an entry over
-  `MAX_WEIGHTS_MB` at import, and `_ensure_upscaler` keeps exactly one;
+  `MAX_WEIGHTS_MB` at import, and `_ensure_upscaler` keeps exactly one.
+
+  The rewriter slot is bounded the same way and *held* differently: it is
+  transient rather than resident. `rewrite` loads it, decodes, and releases it
+  in a `finally`, so between two rewrites the slot is empty and there is
+  nothing to evict. Its weights are bounded by `MAX_REWRITER_WEIGHTS_MB` at
+  import; its execution is bounded by `MAX_PROMPT_TOKENS` and
+  `MAX_NEW_TOKENS`, which cap the KV cache — the only part of a decode that
+  grows with the input. The first of those is checked in `_rewrite_sync`, in
+  tokens, against the templated text: it cannot be checked at admission, where
+  there is no tokenizer, and a word count is not a stand-in for it — a Chinese
+  prompt of any length counts as one word. Measured: 968 MB resident, 1289 MB peak, against the
+  2630 MB this engine already accepts for an upscale and the 19281 MB a single
+  512x512 z-image generation reaches. Over twenty consecutive
+  rewrite-then-generate cycles beside a warm diffusion model, with
+  `mx.reset_peak_memory()` before each measurement — without that reset the
+  figure is a monotonic high-water mark and would show nothing — the per-cycle
+  peak was identical from the first cycle to the twentieth, and the diffusion
+  weights were never reloaded;
 * **one MLX job at a time** — an `asyncio.Lock` serializes everything,
-  generations and upscales alike, and both run on the same single worker
-  thread, never on the event loop;
+  generations, upscales and rewrites alike, and all three run on the same
+  single worker thread, never on the event loop;
 * **one registered callback per model** — mflux's `CallbackRegistry` has no
   `unregister`, so registering per request would grow the list without bound.
 """
@@ -52,6 +71,9 @@ from PIL import Image
 from qds.errors import APIError, GenerationTimeout, translate_mflux_exception
 from qds.logs import SERVER_LOGGER, capture_stdout
 from qds.registry import ModelSpec, latent_creator_for, load_model
+from qds.rewrite import RewriterSpec
+from qds.rewrite.catalogue import MAX_PROMPT_TOKENS
+from qds.rewrite.prompt import RewriteRejected
 from qds.upscale import UpscalerSpec
 
 logger = logging.getLogger(SERVER_LOGGER)
@@ -84,13 +106,13 @@ class ProgressSnapshot:
 
     Written from the worker thread, read from the event loop: these are plain
     attribute assignments, hence atomic under the GIL. A single snapshot is
-    enough because `ModelEngine._lock` serializes every MLX job — generations
-    and upscales alike — so there are never two in flight. That is what lets `/v1/progress` poll instead of
-    building a cross-thread queue, and lets several SSE consumers coexist for
-    free.
+    enough because `ModelEngine._lock` serializes every MLX job — generations,
+    upscales and rewrites alike — so there are never two in flight. That is what
+    lets `/v1/progress` poll instead of building a cross-thread queue, and lets
+    several SSE consumers coexist for free.
     """
 
-    state: str = "idle"  # idle | loading | generating | upscaling
+    state: str = "idle"  # idle | loading | generating | upscaling | rewriting
     model: str | None = None
     kind: str | None = None
     seed: int | None = None
@@ -191,6 +213,33 @@ def _render_preview(*, model: Any, creator: Any, latents: Any, config: Any, seed
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=_PREVIEW_JPEG_QUALITY)
     return buffer.getvalue()
+
+
+@dataclass
+class RewriteJob:
+    """One prompt to expand. Carries none of `GenerationJob`'s sampling fields.
+
+    They would all be lies: a rewrite has no seed, no size, no steps and no
+    scheduler. It does not even carry the diffusion `ModelSpec` -- deliberately.
+    The rewriter is not told which image model the prompt is for, because no
+    per-family instruction has been measured to help, and a table asserting
+    that FLUX likes long prompts and z-image short ones would be an invention
+    dressed as configuration. When that is measured, it belongs here.
+    """
+
+    spec: RewriterSpec
+    prompt: str
+    system_prompt: str
+    max_new_tokens: int
+    temperature: float
+    #: Wall-clock bound, checked *between tokens*. A decode is the only MLX
+    #: work in this server that can be stopped without a callback from mflux,
+    #: which is why the deadline here is real rather than advisory.
+    timeout_s: float
+    #: Seeds the sampler. The same prompt and seed give the same rewrite --
+    #: useful, but not what makes a generation reproducible: that comes from
+    #: `generations.rewritten_prompt` being recorded and replayed.
+    seed: int = 0
 
 
 @dataclass
@@ -322,6 +371,15 @@ class ModelEngine:
         #: an upscale must never evict a warm diffusion model.
         self._upscaler: Any | None = None
         self._upscaler_key: str | None = None
+        #: The third slot, and the only one that is *transient*: it holds a
+        #: value only for the duration of a single `rewrite`, and
+        #: `_rewrite_sync`'s `finally` empties it on every path out. Held as
+        #: attributes rather than locals so that the emptiness is observable --
+        #: `tests/test_engine.py` asserts it after a rewrite raises, which is
+        #: where a `finally` that only covered the happy path would strand a
+        #: gigabyte with nothing to show for it.
+        self._rewriter: Any | None = None
+        self._rewriter_key: str | None = None
 
     # ── State ──────────────────────────────────────────────────────────────
 
@@ -340,6 +398,15 @@ class ModelEngine:
         """The resident upscaler's catalogue key, or None."""
         return self._upscaler_key
 
+    @property
+    def loaded_rewriter(self) -> str | None:
+        """The rewriter's catalogue key while one is decoding, else None.
+
+        Outside a rewrite this is always None, and that is an invariant rather
+        than an accident of timing -- see `_rewrite_sync`.
+        """
+        return self._rewriter_key
+
     def progress(self) -> dict[str, Any]:
         """Progress snapshot. Lock-free, callable from the event loop.
 
@@ -350,6 +417,7 @@ class ModelEngine:
             **self._snapshot.as_dict(),
             "loaded_model": self.loaded_model,
             "upscaler": self.loaded_upscaler,
+            "rewriter": self.loaded_rewriter,
             "memory": self.memory_stats(),
         }
 
@@ -373,7 +441,7 @@ class ModelEngine:
         A second flag would open a window where this method reads `state` and
         then arms the wrong one.
         """
-        if self._snapshot.state not in ("generating", "upscaling"):
+        if self._snapshot.state not in ("generating", "upscaling", "rewriting"):
             return False
         self._callback.cancel_requested = True
         logger.info(
@@ -431,11 +499,49 @@ class ModelEngine:
             except Exception as exc:
                 raise translate_mflux_exception(exc) from exc
 
-    async def unload(self) -> None:
-        """Release everything the engine holds — both slots.
+    async def rewrite(self, job: RewriteJob) -> str:
+        """Expand one prompt. Serialized against generation: same lock, same worker.
 
-        Both, because this is what `/v1/unload` means to whoever pressed "Free
-        memory". Leaving 33 MB behind a button named that is a cheap lie.
+        Sharing them is the same three requirements `upscale` spells out, with
+        one addition specific to this job. A rewrite runs *while a diffusion
+        model is resident* — that is the normal case, not the exception, since
+        the prompt is expanded on the way to generating with it. Letting a
+        decode overlap a denoising step would put two allocators' peaks on top
+        of each other for no gain: the decode takes half a second and the
+        generation takes thirty, so nothing is waiting on the parallelism.
+
+        Which of the two actually serializes, stated plainly because a test was
+        written to find out: the single-worker executor does. The lock has no
+        observable consequence while the pool holds one thread — the ordering
+        witness in `tests/test_engine.py` passes without it. It is kept because
+        `generate` and `upscale` take it, and a path that did not would quietly
+        become the exception if the pool ever grew.
+
+        Returns the rewritten prompt. Raises rather than falling back: whether a
+        failed rewrite should lose the generation is the caller's decision, not
+        the engine's, and the playground and `/v1` answer it differently.
+
+        `RewriteRejected` passes through undisguised, and that is load-bearing.
+        It means the weights loaded, the decode completed, and the *output* was
+        unusable -- which the caller answers by keeping the typed prompt and
+        recording why. Wrapping it in the generic `APIError` that
+        `translate_mflux_exception` produces would make that indistinguishable
+        from a Metal fault, and the two deserve different answers.
+        """
+        async with self._lock:
+            loop = asyncio.get_running_loop()
+            try:
+                return await loop.run_in_executor(self._executor, self._rewrite_sync, job)
+            except (APIError, GenerationTimeout, RewriteRejected):
+                raise
+            except Exception as exc:
+                raise translate_mflux_exception(exc) from exc
+
+    async def unload(self) -> None:
+        """Release everything the engine holds — every slot.
+
+        Every one, because this is what `/v1/unload` means to whoever pressed
+        "Free memory". Leaving 33 MB behind a button named that is a cheap lie.
         """
         async with self._lock:
             loop = asyncio.get_running_loop()
@@ -787,6 +893,191 @@ class ModelEngine:
         self._snapshot.step = done
         self._snapshot.total = total
 
+    def _rewrite_sync(self, job: RewriteJob) -> str:
+        """Load, decode, unload. In that order, and the last one unconditionally.
+
+        The `finally` is the whole design. Everything else here — the deadline,
+        the cancellation check, the token bound — limits how *long* the slot is
+        occupied; only the `finally` guarantees that it is emptied at all, on
+        the success path, the timeout path, the cancellation path and the
+        `sanitise` rejection path alike. A version that unloaded after a
+        successful decode would look identical in every passing test and leak a
+        gigabyte on every rejected rewrite.
+
+        Note what is deliberately *not* here: a warm-keeping fast path. Reloading
+        costs 0.48-1.93s measured against a decode of about half a second, which
+        is real; keeping 968 MB resident between two prompts a user types
+        minutes apart is worse, and would put a third thing into the idle
+        unloader's condition for the engine's whole lifetime.
+        """
+        from qds.rewrite.prompt import build_messages, sanitise, trim_to_last_clause
+        from qds.rewrite.weights import load_rewriter, require_mlx_lm  # noqa: F401
+
+        mlx_lm = require_mlx_lm()
+        label = f"{job.spec.key} {len(job.prompt.split())}w"
+        try:
+            self._snapshot.state = "loading"
+            self._snapshot.model = job.spec.key
+            self._snapshot.kind = "rewrite"
+            self._snapshot.started_at = time.monotonic()
+            # Arming clears the previous run's cancel flag and drops its preview
+            # frame, which would otherwise keep being served under a new job.
+            self._callback.arm(label, None, None)
+
+            started = time.monotonic()
+            with capture_stdout():
+                model, tokenizer = load_rewriter(job.spec)
+            self._rewriter = model
+            self._rewriter_key = job.spec.key
+            logger.info(
+                "Rewriter %s ready in %.1fs",
+                job.spec.key,
+                time.monotonic() - started,
+                extra={
+                    "event": "rewriter_ready",
+                    "fields": {
+                        "rewriter": job.spec.key,
+                        "elapsed_s": round(time.monotonic() - started, 1),
+                    },
+                },
+            )
+
+            messages = build_messages(job.system_prompt, job.prompt)
+            # `enable_thinking=False` is the first of the two barriers against
+            # reasoning reaching a diffusion model; `sanitise` is the second.
+            # One is a request to a template, the other is a mechanism.
+            text = tokenizer.apply_chat_template(
+                messages,
+                add_generation_prompt=True,
+                tokenize=False,
+                **({"enable_thinking": False} if job.spec.hybrid_thinking else {}),
+            )
+
+            # The bound that makes the third slot's KV-cache argument true, and
+            # the only place it can be checked: a tokenizer exists here and does
+            # not at admission. Measured against the *templated* text because
+            # that is what the cache holds -- the system prompt is in it too.
+            #
+            # Admission's character limit is triage ahead of this, not a
+            # substitute: it cannot be tight enough to bound tokens for every
+            # script without refusing ordinary English.
+            tokens = len(tokenizer.encode(text))
+            if tokens > MAX_PROMPT_TOKENS:
+                raise RewriteRejected(
+                    f"the prompt tokenises to {tokens} tokens, over the "
+                    f"{MAX_PROMPT_TOKENS} the rewriter's memory bound is computed from"
+                )
+
+            self._snapshot.state = "rewriting"
+            self._snapshot.step = 0
+            self._snapshot.total = job.max_new_tokens
+            deadline = time.monotonic() + job.timeout_s if job.timeout_s else None
+
+            started = time.monotonic()
+            raw, finish = self._decode(mlx_lm, model, tokenizer, text, job, deadline)
+            if finish == "length":
+                # Cut mid-clause. Trim back to the last complete one rather than
+                # hand a diffusion model a half word -- which would not fail, it
+                # would render. If nothing complete survives, `sanitise`'s
+                # `MIN_WORDS` refuses below and the caller keeps the typed
+                # prompt, which is the honest outcome.
+                raw = trim_to_last_clause(raw)
+                logger.info(
+                    "Rewrite hit its token bound and was trimmed to its last clause",
+                    extra={"event": "rewrite_truncated", "fields": {"rewriter": job.spec.key}},
+                )
+            rewritten = sanitise(raw)
+            logger.info(
+                "✎ %s - %.1f s, %d words",
+                label,
+                time.monotonic() - started,
+                len(rewritten.split()),
+                extra={
+                    "event": "rewrite_done",
+                    "fields": {
+                        "rewriter": job.spec.key,
+                        "elapsed_s": round(time.monotonic() - started, 1),
+                        "words_in": len(job.prompt.split()),
+                        "words_out": len(rewritten.split()),
+                    },
+                },
+            )
+            return rewritten
+        finally:
+            # Not `except`: see the docstring. Every path out empties the slot.
+            self._unload_rewriter_sync()
+            self._snapshot.reset()
+            self._callback.disarm_preview()
+
+    def _decode(
+        self,
+        mlx_lm: Any,
+        model: Any,
+        tokenizer: Any,
+        text: str,
+        job: RewriteJob,
+        deadline: float | None,
+    ) -> tuple[str, str | None]:
+        """Stream tokens, honouring the deadline and a stop between each one.
+
+        Returns the text and `mlx_lm`'s reason for stopping, because the caller
+        answers "length" differently from "stop".
+
+        Between tokens rather than around the whole decode, for the same reason
+        `_on_tile` checks between tiles: a bound that can only be observed after
+        the work finishes is not a bound. This is also the finest cancellation
+        granularity anywhere in the engine — a generation can only stop between
+        denoising steps, and an upscale between tiles.
+        """
+        import mlx.core as mx
+        from mflux.utils.exceptions import StopImageGenerationException
+
+        mx.random.seed(job.seed)
+        sampler = mlx_lm.sample_utils.make_sampler(temp=job.temperature)
+        pieces: list[str] = []
+        produced = 0
+        finish: str | None = None
+        for response in mlx_lm.stream_generate(
+            model, tokenizer, prompt=text, max_tokens=job.max_new_tokens, sampler=sampler
+        ):
+            if self._callback.cancel_requested:
+                self._callback.cancelled = True
+                # The same exception the other two paths raise, so
+                # `translate_mflux_exception` maps it to `generation_stopped`
+                # and the playground runner records `cancelled` with no extra
+                # code. That it comes from mflux for a job mflux knows nothing
+                # about is a naming accident, not a dependency.
+                raise StopImageGenerationException(f"Rewrite cancelled after {produced} tokens")
+            if deadline is not None and time.monotonic() > deadline:
+                self._callback.timed_out = True
+                raise GenerationTimeout(job.timeout_s)
+            pieces.append(response.text)
+            produced += 1
+            self._snapshot.step = produced
+            # `mlx_lm` reports *why* a decode ended. "length" means the token
+            # bound cut it off, which at this output length is a real failure
+            # mode rather than a curiosity -- see `trim_to_last_clause`.
+            finish = getattr(response, "finish_reason", None) or finish
+        return "".join(pieces), finish
+
+    def _unload_rewriter_sync(self) -> None:
+        """Release the third slot only. Never touches the other two.
+
+        Simpler than `_unload_sync` because there is nothing structural to take
+        apart: an `mlx_lm` model has no `CallbackRegistry`, none of
+        `_UNLOADABLE_ATTRS`, and no prompt cache. Dropping the reference and
+        clearing the allocator's cache is the whole teardown, and it is measured
+        to return the memory: active goes back to 0 MB after every cycle.
+        """
+        model = self._rewriter
+        self._rewriter = None
+        self._rewriter_key = None
+        if model is None:
+            return
+        del model
+        gc.collect()
+        _clear_mlx_cache()
+
     def _unload_upscaler_sync(self) -> None:
         """Release the second slot only. Never touches the diffusion model."""
         model = self._upscaler
@@ -806,8 +1097,20 @@ class ModelEngine:
         prompt cache, none of which an RRDBNet has. `_ensure_model` calls that
         one, and it must not take the upscaler with it.
         """
-        self._unload_sync()
-        self._unload_upscaler_sync()
+        try:
+            self._unload_sync()
+        finally:
+            try:
+                self._unload_upscaler_sync()
+            finally:
+                # Normally already empty -- `_rewrite_sync` empties it on every
+                # path -- but `shutdown` also calls this after killing the worker
+                # mid-decode, which is exactly the case where "normally" is not a
+                # guarantee. Nested `finally` rather than three plain calls so
+                # that a raise in one slot's teardown cannot strand the others:
+                # "every path out empties the slot" has to hold here too, and it
+                # did not while these ran in sequence.
+                self._unload_rewriter_sync()
 
     def _trim_prompt_cache(self, model: Any) -> None:
         prompt_cache = getattr(model, "prompt_cache", None)

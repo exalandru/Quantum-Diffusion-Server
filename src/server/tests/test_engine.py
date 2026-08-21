@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import time
 
 import pytest
 from PIL import Image
@@ -48,7 +49,6 @@ class FakeModel:
         self.step_hook = None
 
     def generate_image(self, **kwargs):
-        import time
 
         self.calls.append(kwargs)
         if self.delay:
@@ -651,7 +651,6 @@ class FakeUpscaler:
         self.tile_hook = None
 
     def __call__(self, x):
-        import time
 
         import mlx.core as mx
 
@@ -889,3 +888,467 @@ def test_upscale_returns_a_png_at_the_requested_scale(upscalers, tmp_path, outsc
     )
     with Image.open(io.BytesIO(data)) as out:
         assert out.size == (8 * outscale, 12 * outscale)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# The third slot: transient, bounded, and never in the diffusion model's way.
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class FakeRewriter:
+    """Stands in for an `mlx_lm` model. Records nothing; its identity is the point."""
+
+    def __init__(self, key: str):
+        self.key = key
+
+
+class FakeTokenizer:
+    """Stands in for a tokenizer, and checks the one flag that matters.
+
+    `enable_thinking=False` is the first of the two barriers against reasoning
+    reaching a diffusion model -- but it is only passed to models that *have* a
+    hybrid thinking mode. On an Instruct checkpoint the chat template takes no
+    such argument and raises in Jinja rather than ignoring it, which is why
+    `RewriterSpec.hybrid_thinking` is a field. So the double asserts the flag is
+    present exactly when it should be, and absent when it should be.
+    """
+
+    def __init__(self, *, hybrid_thinking: bool = False):
+        self.hybrid_thinking = hybrid_thinking
+
+    chat_template = "{{ messages }}"
+
+    def encode(self, text):
+        """One token per whitespace-separated run, which is enough here.
+
+        The property under test is that `_rewrite_sync` measures the *templated*
+        text and refuses past the bound -- not how a real BPE splits it. A
+        double that reported a constant would make the check untestable.
+        """
+        return text.split()
+
+    def apply_chat_template(self, messages, **kwargs):
+        if self.hybrid_thinking:
+            assert kwargs.get("enable_thinking") is False, "thinking was not turned off"
+        else:
+            assert "enable_thinking" not in kwargs, (
+                "an Instruct checkpoint was handed `enable_thinking`, which its "
+                "chat template raises on rather than ignores"
+            )
+        return "\n".join(m["content"] for m in messages)
+
+
+@pytest.fixture
+def rewriters(monkeypatch):
+    """Replace weight loading and decoding; record every instance built.
+
+    `built` is what proves the slot is being filled at all; the engine's own
+    `loaded_rewriter` is what proves it gets emptied.
+    """
+    from qds.rewrite import weights as rewrite_weights
+
+    class Built(list):
+        """A list of built rewriters that also carries the double's script."""
+
+        state: dict
+
+    built = Built()
+    state = {"output": None, "chunks": None, "on_token": None, "finish_reason": None}
+
+    def fake_load_rewriter(spec, **_kwargs):
+        model = FakeRewriter(spec.key)
+        built.append(model)
+        return model, FakeTokenizer(hybrid_thinking=spec.hybrid_thinking)
+
+    class FakeResponse:
+        def __init__(self, text, finish_reason=None):
+            self.text = text
+            self.finish_reason = finish_reason
+
+    class FakeMlxLm:
+        class sample_utils:
+            @staticmethod
+            def make_sampler(**_kwargs):
+                return object()
+
+        @staticmethod
+        def stream_generate(model, tokenizer, prompt, max_tokens, sampler):
+            chunks = state["chunks"] or [state["output"]]
+            capped = chunks[:max_tokens]
+            for index, chunk in enumerate(capped):
+                if state["on_token"] is not None:
+                    state["on_token"](index)
+                last = index == len(capped) - 1
+                yield FakeResponse(chunk, state["finish_reason"] if last else None)
+
+    monkeypatch.setattr(rewrite_weights, "load_rewriter", fake_load_rewriter)
+    monkeypatch.setattr(rewrite_weights, "require_mlx_lm", lambda: FakeMlxLm)
+    import mlx.core as mx
+
+    monkeypatch.setattr(mx.random, "seed", lambda _seed: None)
+    built.state = state
+    return built
+
+
+GOOD_REWRITE = (
+    "A ginger cat sitting on weathered terracotta tiles at dusk, gazing over a "
+    "quiet town, warm low light rimming its fur, shot on an 85mm lens, calm "
+    "mood, palette of burnt orange and deep indigo."
+)
+
+
+def rewrite_job(*, prompt="un chat sur un toit", timeout_s=30.0, max_new_tokens=320):
+    from qds.engine import RewriteJob
+    from qds.rewrite import SPECS
+    from qds.rewrite.prompt import DEFAULT_SYSTEM_PROMPT
+
+    return RewriteJob(
+        spec=SPECS[0],
+        prompt=prompt,
+        system_prompt=DEFAULT_SYSTEM_PROMPT,
+        max_new_tokens=max_new_tokens,
+        temperature=0.7,
+        timeout_s=timeout_s,
+    )
+
+
+def test_a_rewrite_does_not_disturb_the_diffusion_model(loaded, rewriters):
+    """I-R2, the reason the third slot exists at all.
+
+    The exact analogue of `test_an_upscale_does_not_disturb_the_diffusion_model`,
+    and for a sharper reason: a rewrite happens on the way to generating with
+    the very model it must not evict, so getting this wrong would make every
+    enhanced generation pay a reload.
+    """
+    rewriters.state["output"] = GOOD_REWRITE
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        warm = eng.loaded_model
+        out = await eng.rewrite(rewrite_job())
+        assert eng.loaded_model == warm, "the rewrite evicted the diffusion model"
+        await eng.generate(job(seed=43))
+        return eng, out
+
+    eng, out = asyncio.run(scenario())
+    assert out == GOOD_REWRITE
+    assert len(loaded) == 1, "the diffusion weights were reloaded around the rewrite"
+    assert len(rewriters) == 1
+    eng.shutdown()
+
+
+def test_the_rewriter_slot_is_empty_after_a_successful_rewrite(rewriters):
+    """I-R1 on the happy path."""
+    rewriters.state["output"] = GOOD_REWRITE
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.rewrite(rewrite_job())
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_rewriter is None
+    eng.shutdown()
+
+
+def test_the_rewriter_slot_is_empty_after_a_rejected_rewrite(rewriters):
+    """I-R1 on the path that a happy-path-only `finally` would leak on.
+
+    This is the test that distinguishes a `finally` from an `else`: a rewrite
+    the model completed but `sanitise` refused is a *successful decode*, so
+    nothing about the failure is exceptional to `mlx_lm`. Without the `finally`,
+    968 MB would stay resident and every passing test above would still pass.
+    """
+    from qds.rewrite.prompt import RewriteRejected
+
+    rewriters.state["output"] = "I don't have a system prompt to share."
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        with pytest.raises(RewriteRejected):
+            await eng.rewrite(rewrite_job())
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_rewriter is None, "a rejected rewrite stranded the weights"
+    assert len(rewriters) == 1, "the slot was filled, so emptiness is a real observation"
+    eng.shutdown()
+
+
+def test_the_rewriter_slot_is_empty_after_the_decode_raises(rewriters):
+    """I-R1 when the failure comes from below rather than from `sanitise`."""
+    rewriters.state["output"] = GOOD_REWRITE
+
+    def explode(_index):
+        raise RuntimeError("metal fault")
+
+    rewriters.state["on_token"] = explode
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        # Surfaces as an `APIError`: a Metal fault is not a `RewriteRejected`,
+        # and `translate_mflux_exception` is what draws that line.
+        with pytest.raises(APIError):
+            await eng.rewrite(rewrite_job())
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_rewriter is None
+    eng.shutdown()
+
+
+def test_a_rewrite_leaves_no_rewriter_visible_to_progress(rewriters):
+    """The observable the dashboard and `/v1/progress` read.
+
+    `loaded_rewriter` being None is the invariant; `progress()["rewriter"]`
+    being None is what anyone outside the engine can actually see, and the two
+    are only the same while the property stays wired to the field.
+    """
+    rewriters.state["output"] = GOOD_REWRITE
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.rewrite(rewrite_job())
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.progress()["rewriter"] is None
+    assert eng.progress()["state"] == "idle"
+    eng.shutdown()
+
+
+def test_rewrites_and_generations_are_serialized(loaded, rewriters, monkeypatch):
+    """I-R4, by observed order rather than by absence of a crash.
+
+    Note precisely what this proves and what it does not. It proves the
+    property -- no interleaving -- and not the mechanism: `max_workers=1`
+    already forbids two `_*_sync` bodies from overlapping, and this test passes
+    with `_lock` replaced by a no-op (verified). An attempt to write a witness
+    that separates the two was deleted rather than kept, because it did not:
+    with one worker thread, the lock has no *observable* consequence here.
+
+    So I-R4 is established by the single-threaded executor. The lock is a second
+    barrier, kept because `generate` and `upscale` take it and a path that did
+    not would quietly become the exception if the pool ever grew.
+    """
+    rewriters.state["output"] = GOOD_REWRITE
+    order: list[str] = []
+
+    real_generate = ModelEngine._generate_sync
+    real_rewrite = ModelEngine._rewrite_sync
+
+    def traced_generate(self, job_):
+        order.append("gen-start")
+        try:
+            return real_generate(self, job_)
+        finally:
+            order.append("gen-end")
+
+    def traced_rewrite(self, job_):
+        order.append("rw-start")
+        try:
+            return real_rewrite(self, job_)
+        finally:
+            order.append("rw-end")
+
+    monkeypatch.setattr(ModelEngine, "_generate_sync", traced_generate)
+    monkeypatch.setattr(ModelEngine, "_rewrite_sync", traced_rewrite)
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await asyncio.gather(
+            eng.rewrite(rewrite_job()),
+            eng.generate(job()),
+            eng.rewrite(rewrite_job(prompt="un renard")),
+        )
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert len(order) == 6
+    for index in range(0, 6, 2):
+        assert order[index].split("-")[0] == order[index + 1].split("-")[0], order
+        assert order[index].endswith("start") and order[index + 1].endswith("end"), order
+    eng.shutdown()
+
+
+def test_a_rewrite_stops_between_tokens_when_cancelled(rewriters):
+    """The finest cancellation granularity in the engine, and the reason the
+    deadline here is a real bound rather than an advisory one."""
+    from qds.errors import APIError
+
+    rewriters.state["chunks"] = ["word "] * 100
+    produced: list[int] = []
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+
+        def stop_after_three(index):
+            produced.append(index)
+            if index == 3:
+                eng.request_cancel()
+
+        rewriters.state["on_token"] = stop_after_three
+        with pytest.raises(APIError) as excinfo:
+            await eng.rewrite(rewrite_job())
+        return eng, excinfo.value
+
+    eng, error = asyncio.run(scenario())
+    assert error.code == "generation_stopped"
+    # *Between* tokens, and this is the assertion that says so: an
+    # implementation checking only after the loop would have run all 100.
+    assert len(produced) <= 6, f"{len(produced)} tokens ran after the stop was asked for"
+    assert eng.loaded_rewriter is None
+    eng.shutdown()
+
+
+def test_a_rewrite_that_overruns_its_deadline_times_out(rewriters, monkeypatch):
+    """The wall-clock bound, checked between tokens rather than around the whole
+    decode -- a bound only observable after the work finishes is not a bound."""
+    from qds.errors import GenerationTimeout
+
+    rewriters.state["chunks"] = ["word "] * 100
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(engine_module.time, "monotonic", lambda: clock["now"])
+
+    produced: list[int] = []
+
+    def advance(index):
+        produced.append(index)
+        if index == 2:
+            clock["now"] += 999.0
+
+    rewriters.state["on_token"] = advance
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        with pytest.raises(GenerationTimeout):
+            await eng.rewrite(rewrite_job(timeout_s=30.0))
+        return eng
+
+    eng = asyncio.run(scenario())
+    # Checked between tokens: the deadline lands on the token after the clock
+    # jumps, not at the end of a 100-token decode.
+    assert len(produced) <= 5, f"{len(produced)} tokens ran past the deadline"
+    assert eng.loaded_rewriter is None
+    eng.shutdown()
+
+
+def test_the_decode_never_exceeds_its_token_bound(rewriters):
+    """That `max_new_tokens` reaches `stream_generate`, which is where the bound
+    is applied.
+
+    Deliberately not claiming more: the double honours the limit, so what is
+    witnessed is the *plumbing* -- that the job's bound is what gets passed --
+    and not that real `mlx_lm` stops there. That property belongs to the
+    dependency and is not observable against a test double."""
+    rewriters.state["chunks"] = ["word "] * 500
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        out = await eng.rewrite(rewrite_job(max_new_tokens=20))
+        return eng, out
+
+    eng, out = asyncio.run(scenario())
+    assert len(out.split()) == 20
+    eng.shutdown()
+
+
+def test_unload_empties_every_slot(loaded, upscalers, rewriters, tmp_path):
+    """"Free memory" must not leave a slot behind, whichever slot it is."""
+    rewriters.state["output"] = GOOD_REWRITE
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        await eng.generate(job())
+        await eng.upscale(upscale_job(tmp_path))
+        await eng.rewrite(rewrite_job())
+        await eng.unload()
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_model is None
+    assert eng.loaded_upscaler is None
+    assert eng.loaded_rewriter is None
+    eng.shutdown()
+
+
+def test_the_decode_refuses_a_prompt_over_the_token_bound(rewriters):
+    """The bound itself, where the tokenizer is -- admission is only triage.
+
+    A prompt can clear `MAX_PROMPT_CHARS` and still tokenise past
+    `MAX_PROMPT_TOKENS`, because characters per token vary by script by a factor
+    of four. If this check were not here, nothing anywhere would enforce the
+    number `kv_cache_bytes` is computed from.
+    """
+    from qds.rewrite.catalogue import MAX_PROMPT_TOKENS
+    from qds.rewrite.prompt import RewriteRejected
+
+    rewriters.state["output"] = "a rewrite that will never be produced"
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        with pytest.raises(RewriteRejected, match="tokenises to"):
+            # The double's tokenizer joins the messages, so a prompt of this
+            # many characters templates past the bound.
+            await eng.rewrite(rewrite_job(prompt="x " * (MAX_PROMPT_TOKENS + 50)))
+        return eng
+
+    eng = asyncio.run(scenario())
+    assert eng.loaded_rewriter is None, "the refused prompt stranded the weights"
+    eng.shutdown()
+
+
+def test_a_prompt_within_the_bound_still_decodes(rewriters):
+    """The counter-test: the check above must not refuse ordinary prompts, and
+    the shipped system prompt has to leave room inside the bound."""
+    from qds.rewrite.catalogue import MAX_PROMPT_TOKENS
+    from qds.rewrite.prompt import DEFAULT_SYSTEM_PROMPT
+
+    rewriters.state["output"] = GOOD_REWRITE
+    # The templated text is system prompt + prompt, and the bound is measured on
+    # all of it -- so the system prompt cannot itself be most of the budget.
+    assert len(DEFAULT_SYSTEM_PROMPT.split()) < MAX_PROMPT_TOKENS // 2
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        out = await eng.rewrite(rewrite_job(prompt="un chat sur un toit"))
+        eng.shutdown()
+        return out
+
+    assert asyncio.run(scenario()) == GOOD_REWRITE
+
+
+def test_the_engine_trims_only_when_the_decoder_says_it_hit_the_bound(rewriters):
+    """`finish_reason` distinguishes the two, and the distinction is
+    load-bearing: a prompt that legitimately ends without punctuation must not
+    be shortened."""
+    natural = ("a ginger cat on weathered terracotta tiles at dusk, warm low light "
+               "rimming its fur, shot on an 85mm lens, calm mood, deep indigo shadows")
+    rewriters.state["output"] = natural
+    rewriters.state["finish_reason"] = "stop"
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        out = await eng.rewrite(rewrite_job())
+        eng.shutdown()
+        return out
+
+    assert asyncio.run(scenario()) == natural, "a natural stop was trimmed"
+
+
+def test_the_engine_trims_when_the_decoder_hit_the_bound(rewriters):
+    rewriters.state["output"] = (
+        "a ginger cat on weathered terracotta tiles at dusk, warm low light "
+        "rimming its fur, shot on an 85mm lens, calm mood, deep indigo sh")
+    rewriters.state["finish_reason"] = "length"
+
+    async def scenario():
+        eng = ModelEngine(progress_log_every=0)
+        out = await eng.rewrite(rewrite_job())
+        eng.shutdown()
+        return out
+
+    out = asyncio.run(scenario())
+    assert out.endswith("calm mood")
+    assert "deep indigo sh" not in out

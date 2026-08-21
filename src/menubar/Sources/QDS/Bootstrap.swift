@@ -30,6 +30,11 @@ final class Bootstrap {
 
     private(set) var state: State = .absent
 
+    /// Set when the install finished but the rewriter's weights did not arrive.
+    /// Informational: the server is ready, and Enhance still works — it just
+    /// pays for the download the first time it is pressed.
+    private(set) var rewriterNote: String?
+
     private let paths: Paths
     private let onChange: () -> Void
 
@@ -182,11 +187,56 @@ final class Bootstrap {
                 "version": version, "digest": digest, "complete": true,
             ]
             try JSONSerialization.data(withJSONObject: record).write(to: paths.installRecord)
+
+            // The install is complete at this point, and stays complete
+            // whatever happens next. The prompt rewriter's weights are fetched
+            // *after* the record is written, deliberately: the server is fully
+            // functional without them, so an interrupted download must not
+            // leave the install looking broken.
+            await fetchRewriter()
+
             state = .ready(version: version)
         } catch {
             state = .failed(error.localizedDescription)
         }
         onChange()
+    }
+
+    /// Pull the prompt rewriter's weights, best effort.
+    ///
+    /// Python and mflux install themselves; this had to as well. Leaving it to
+    /// the first Enhance meant a gigabyte downloading behind a button press,
+    /// with no way to know it was coming.
+    ///
+    /// Three things here are load-bearing rather than incidental:
+    ///
+    /// * **`--rewriter`, never a catalogue key.** Which model this is belongs
+    ///   to the server's catalogue. A key spelled out here would be catalogue
+    ///   data duplicated into a second language, with no test able to keep the
+    ///   two in step.
+    /// * **`Supervisor.childEnvironment`, not this file's minimal one.**
+    ///   `qds fetch` resolves its cache through `load_settings().apply_hf_home()`,
+    ///   which reads `QDS_SERVER_CONFIG`. Without it the weights land in a
+    ///   Hugging Face cache the server never looks at — a silent, expensive,
+    ///   invisible failure. The config has to exist first, hence `seedIfMissing`.
+    /// * **Best effort.** A failure here is an informational line, never
+    ///   `.failed`. No network at install time is ordinary, and the feature
+    ///   still works later: it downloads on first use and says so first.
+    private func fetchRewriter() async {
+        state = .installing("Downloading the prompt enhancer…")
+        onChange()
+        do {
+            try ServerConfig.seedIfMissing(at: paths.config)
+            let config = ServerConfig.read(at: paths.config)
+            let result = try await run(
+                paths.qds, ["fetch", "--rewriter"],
+                environment: Supervisor.childEnvironmentMap(paths: paths, config: config))
+            if result.status != 0 {
+                rewriterNote = "The prompt enhancer will download the first time you use it."
+            }
+        } catch {
+            rewriterNote = "The prompt enhancer will download the first time you use it."
+        }
     }
 
     /// Turn uv's output into something worth showing.

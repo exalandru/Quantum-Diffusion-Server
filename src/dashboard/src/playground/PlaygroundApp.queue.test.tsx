@@ -26,6 +26,8 @@ const GENERATION: PlaygroundGeneration = {
   sessionId: "s1",
   groupId: "lineage-1",
   prompt: "a fox",
+  rewrittenPrompt: null,
+  rewriteError: null,
   negativePrompt: null,
   model: "qwen-image-2512",
   kind: "txt2img",

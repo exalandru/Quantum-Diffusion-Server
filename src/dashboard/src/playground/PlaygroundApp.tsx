@@ -4,7 +4,13 @@ import * as api from "../api";
 import { Locked, NotFound, Unauthorized, messageOf } from "../api";
 import { LoginPrompt } from "../LoginPrompt";
 import { Unreachable } from "../Unreachable";
-import type { PlaygroundGeneration, PlaygroundSession, Progress, Upscaler } from "../types";
+import type {
+  PlaygroundGeneration,
+  PlaygroundSession,
+  Progress,
+  RewriteCapabilities,
+  Upscaler,
+} from "../types";
 import { Composer, type Draft } from "./Composer";
 import { GenerationFeed } from "./GenerationFeed";
 import { PasswordDialog, RenameDialog, UnlockDialog } from "./SessionDialogs";
@@ -47,6 +53,11 @@ function settingsOf(root: PlaygroundGeneration) {
   // different request, and a refine that quietly changed it would be lying about
   // what the entry is a variation *of*.
   if (root.negativePrompt) form.set("negative_prompt", root.negativePrompt);
+  // The exact text the ancestor was generated from, replayed rather than
+  // regenerated. A rewrite is sampled: asking for a fresh one would produce
+  // different words, and a "variation" of a different prompt is not a variation.
+  // Note what is *not* set: `rewrite`. The two are refused together.
+  if (root.rewrittenPrompt) form.set("rewritten_prompt", root.rewrittenPrompt);
   form.set("model", root.model);
   form.set("n", "1");
   form.set("size", root.size);
@@ -74,6 +85,8 @@ export function PlaygroundApp() {
   const [progress, setProgress] = useState<Progress>(IDLE);
   const [models, setModels] = useState<{ id: string; name: string }[]>([]);
   const [maxN, setMaxN] = useState(1);
+  const [rewrite, setRewrite] = useState<RewriteCapabilities | null>(null);
+  const [presetPrompt, setPresetPrompt] = useState<{ text: string; nonce: number } | null>(null);
   const [defaultModel, setDefaultModel] = useState("");
   const [session, setSession] = useState<api.SessionStatus | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -206,6 +219,10 @@ export function PlaygroundApp() {
       if (caps) {
         setMaxN(caps.max_n);
         setDefaultModel(caps.default_model);
+        // Null until this lands, which is why the composer takes null rather
+        // than a default: showing an Enhance control and then withdrawing it
+        // is worse than showing it a moment late.
+        setRewrite(caps.rewrite ?? null);
       }
     });
   }, [guarded]);
@@ -295,6 +312,10 @@ export function PlaygroundApp() {
     if (draft.steps !== null) form.set("steps", String(draft.steps));
     if (draft.seed !== null) form.set("seed", String(draft.seed));
     if (draft.image) form.set("image", draft.image);
+    // Only when asked. The server decides the rest -- whether it is configured,
+    // whether the model can take it, and whether the prompt is already long
+    // enough to be left alone -- and answers all of that at admission.
+    if (draft.rewrite) form.set("rewrite", "true");
     await post(selected, form);
   }
 
@@ -637,6 +658,9 @@ export function PlaygroundApp() {
               upscalers={upscalers}
               onDeleteImage={(url) => void deleteImage(url)}
               onDeleteGroup={(groupId) => void deleteGroup(groupId)}
+              onUsePrompt={(text) =>
+                setPresetPrompt((current) => ({ text, nonce: (current?.nonce ?? 0) + 1 }))
+              }
               paused={paused}
               nameOf={nameOf}
               srcOf={srcOf}
@@ -648,6 +672,8 @@ export function PlaygroundApp() {
             maxN={maxN}
             busy={sending}
             error={submitError}
+            rewrite={rewrite}
+            presetPrompt={presetPrompt}
             onSubmit={(draft) => void submit(draft)}
           />
         </section>

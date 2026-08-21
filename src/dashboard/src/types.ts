@@ -122,16 +122,43 @@ export type ModelEntry = {
 
 export type ModelList = { object: string; data: { id: string; display_name: string }[] };
 
+/**
+ * Whether this server offers prompt rewriting, and on what terms.
+ *
+ * Deliberately carries no model name: the person writing a prompt needs to know
+ * it will be improved and what a first use costs, not which LLM does it.
+ */
+export type RewriteCapabilities = {
+  available: boolean;
+  /** Why it is off, when it is. Null when available. */
+  reason: string | null;
+  /**
+   * Whether a first Enhance avoids a download. Asked of the files, not the
+   * repo, exactly as `Upscaler.downloaded` is.
+   */
+  downloaded: boolean;
+  /** Download size in megabytes, or null when unavailable. */
+  sizeMb: number | null;
+  /**
+   * At or above this many words, the server generates the prompt as typed.
+   *
+   * Published rather than duplicated as a constant here, so the composer can
+   * say so *before* submitting and cannot drift from what the route enforces.
+   */
+  word_ceiling: number;
+};
+
 export type Capabilities = {
   default_model: string;
   max_n: number;
   response_formats: string[];
   models: Record<string, ModelCapabilities>;
+  rewrite: RewriteCapabilities;
 };
 
 /** Snapshot streamed by `/v1/progress`. */
 export type Progress = {
-  state: "idle" | "loading" | "generating" | "upscaling";
+  state: "idle" | "loading" | "generating" | "upscaling" | "rewriting";
   model: string | null;
   kind: string | null;
   seed: number | null;
@@ -213,6 +240,24 @@ export type PlaygroundGeneration = {
    * to: the composer greys the field out for those, and the server refuses it.
    */
   negativePrompt: string | null;
+  /**
+   * What the rewriter made of `prompt`, or null if nothing rewrote it.
+   *
+   * `prompt` above is never overwritten, so the feed can title an entry with
+   * what the user actually typed and show this behind a disclosure. A variation
+   * carries this forward rather than asking for a fresh rewrite: a rewrite is
+   * sampled, so re-running it would produce different words and the result
+   * would not be a variation of anything.
+   */
+  rewrittenPrompt: string | null;
+  /**
+   * Why a requested rewrite did not happen, or null.
+   *
+   * Not redundant with `rewrittenPrompt === null`: without it, "the rewriter
+   * failed and we generated from your prompt" and "no rewrite was asked for"
+   * look identical, and the first is something the user is owed a line about.
+   */
+  rewriteError: string | null;
   /** Public model name, as `/v1/models` lists it. */
   model: string;
   kind: "txt2img" | "edit" | "upscale";

@@ -51,6 +51,13 @@ def _fetch() -> Entry:
     return main
 
 
+@_command("rewrite", "expand a prompt with the local rewriter, and print it")
+def _rewrite() -> Entry:
+    from qds.rewrite_cli import main
+
+    return main
+
+
 @_command("prequantize", "convert a model into a saved, already-quantized artifact")
 def _prequantize() -> Entry:
     from qds.prequantize import main
