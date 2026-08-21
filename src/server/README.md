@@ -165,6 +165,8 @@ The download works by loading the model and exiting. That is deliberate: the dow
 | `/images/{name}.png` | GET | images served for `response_format="url"` |
 | `/playground` | GET | the browser playground page (see below) |
 | `/playground/api/…` | GET/POST/PATCH/DELETE | its sessions (create, rename, delete), generations and cancellation |
+| `/playground/api/queue` | POST | hold or release the queue: `{"paused": true\|false}`. Global, and reported back on `GET /playground/api/sessions` |
+| `/playground/api/groups/{id}` | DELETE | delete a whole feed entry — every generation of the lineage, its images, and the reference image its root was made with |
 | `/playground/api/sessions/{id}/password` | POST/DELETE | set or change a session password (returns an unlock token) / remove it |
 | `/playground/api/sessions/{id}/unlock`, `…/lock` | POST | redeem the password for an unlock token (sent as `X-QDS-Session-Token`; in-memory, 30 min idle, gone on restart) / give it back |
 | `/playground/api/preview` | GET | the running playground generation's latest partially-denoised frame (JPEG); 404 when there is none |
@@ -220,6 +222,14 @@ Two genuinely different mechanics, and the server picks based on what you send:
 
 OpenAI's `mask` parameter is rejected with a 400: no model in the catalogue does inpainting.
 
+A **negative prompt** is accepted wherever the model has an unconditional
+prediction to steer away from, and refused with a 400 where it does not —
+guidance-distilled models embed their guidance in the transformer and make no
+such prediction, so a negative prompt there would be silently inert. Which is
+which is a catalogue fact (`supports_negative_prompt`, published per model on
+`/v1/models/{id}` and `/v1/capabilities`); the playground reads it to grey the
+field out, and the server refuses one regardless of what any client believes.
+
 ### The playground — `/playground`
 
 A prompt-driven studio the server serves itself, in the dashboard's design and
@@ -255,11 +265,44 @@ it is denoising:
 It is not per-job cancellation: the engine's stop is global, so with an external
 `/v1` client holding the engine it is that request which stops.
 
+**Pausing** holds the queue rather than stopping anything. It is deliberately
+not a fourth kind of cancellation: the image already being denoised runs to
+completion and is kept, because the engine can only be interrupted by raising at
+a step and the alternative is throwing away work already paid for. The hold
+takes effect at the two boundaries the runner owns — before a queued generation
+is claimed, and between the images of an `n>1` run — so a paused `n=4` request
+sits at `running` with the images it has finished, and produces the rest on
+resume. Four consequences worth stating:
+
+- it is **global**, one control for every session, because there is one FIFO
+  worker behind all of them. It sits at this router's own auth level rather than
+  admin's: it is reversible by anyone who can reach it, and that credential
+  already permits `/v1/cancel` and unbounded submission. What it *is* that those
+  are not is unbounded in time, which is why the state is published on the
+  session list every open tab already polls;
+- it does **not** pause `/v1`, which never touches the runner. A paused
+  playground is not a paused server;
+- a long pause lets the idle unloader release the model as usual — the worker
+  parks outside `idle_unload_s`'s in-flight window on purpose, so holding the
+  queue gives the machine back instead of pinning the weights;
+- it is **runtime state**. A restart clears it, and anything still waiting in the
+  queue is failed by the same `mark_interrupted()` that fails a generation caught
+  mid-flight: the queue lives in memory and does not survive the process.
+
+A 200 from `POST /playground/api/queue` therefore does not mean nothing is being
+denoised — only that nothing more will start.
+
 While a generation runs, the page shows the image being denoised: every second
 step the engine decodes the current latents into a small JPEG, keeps it in one
 in-memory slot, and bumps `preview_seq` in the `/v1/progress` snapshot; the page
 fetches the new frame from `GET /playground/api/preview` and fades it in over the
-previous one. A slow accent-tinted sheen crosses the box the whole time — that,
+previous one. Each frame is blurred in proportion to how far the run has got:
+early on the latents are mostly noise, and a blur is what turns that into a
+readable composition rather than a snowstorm, while by the end the denoiser has
+done that job itself and any blur left is only hiding the picture. How much is
+left at the end depends on the step count as well as the progress — an 8-step
+schedule takes enormous jumps and its late previews are still coarse, where a
+50-step one is nearly finished well before its last step. A slow accent-tinted sheen crosses the box the whole time — that,
 not the frames, is what says "still working" while a partial image sits
 unchanged for several seconds. One slot is enough because the engine runs one
 generation at a time, and the bytes stay off the SSE stream, which the dashboard

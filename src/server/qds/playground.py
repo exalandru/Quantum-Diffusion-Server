@@ -73,6 +73,10 @@ CREATE TABLE IF NOT EXISTS generations (
   -- — several images of the same idea, as if they had been asked for at once.
   group_id TEXT,
   prompt TEXT NOT NULL,
+  -- What the image should avoid. NULL for a request that sent none, and for
+  -- every model whose pipeline has no unconditional branch to apply it to --
+  -- the engine drops it on those, and the route refuses it outright.
+  negative_prompt TEXT,
   model TEXT NOT NULL,
   kind TEXT NOT NULL,
   n INTEGER NOT NULL,
@@ -121,6 +125,7 @@ def _generation_json(row: sqlite3.Row, images: list[dict[str, Any]]) -> dict[str
         "sessionId": row["session_id"],
         "groupId": row["group_id"] or row["id"],
         "prompt": row["prompt"],
+        "negativePrompt": row["negative_prompt"],
         "model": row["model"],
         "kind": row["kind"],
         "n": row["n"],
@@ -173,6 +178,9 @@ class PlaygroundStore:
             self._db.execute("ALTER TABLE generations ADD COLUMN group_id TEXT")
             self._db.execute("UPDATE generations SET group_id = id WHERE group_id IS NULL")
             logger.info("playground store migrated: generations.group_id added")
+        if "negative_prompt" not in columns:
+            self._db.execute("ALTER TABLE generations ADD COLUMN negative_prompt TEXT")
+            logger.info("playground store migrated: generations.negative_prompt added")
         columns = {row["name"] for row in self._db.execute("PRAGMA table_info(sessions)")}
         if "password" not in columns:
             self._db.execute("ALTER TABLE sessions ADD COLUMN password TEXT")
@@ -291,6 +299,19 @@ class PlaygroundStore:
             ).fetchone()
         return None if row is None else row["session_id"]
 
+    def session_of_group(self, group_id: str) -> str | None:
+        """Which session a lineage belongs to. `None` when no such group exists.
+
+        A group is not a row of its own -- it is a column several generations
+        share -- so this is the only way to name the session that must be
+        unlocked before the group may be touched.
+        """
+        with self._lock:
+            row = self._db.execute(
+                "SELECT session_id FROM generations WHERE group_id = ? LIMIT 1", (group_id,)
+            ).fetchone()
+        return None if row is None else row["session_id"]
+
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._db.execute(
@@ -371,6 +392,7 @@ class PlaygroundStore:
         session_id: str,
         *,
         prompt: str,
+        negative_prompt: str | None = None,
         model: str,
         kind: str,
         n: int,
@@ -407,16 +429,17 @@ class PlaygroundStore:
             self._db.execute(
                 """
                 INSERT INTO generations (
-                  id, session_id, group_id, prompt, model, kind, n, width, height,
-                  steps, steps_from_preset, seeds, image_strength, context_image,
-                  status, error, created_at, started_at, finished_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, NULL)
+                  id, session_id, group_id, prompt, negative_prompt, model, kind, n,
+                  width, height, steps, steps_from_preset, seeds, image_strength,
+                  context_image, status, error, created_at, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', NULL, ?, NULL, NULL)
                 """,
                 (
                     generation_id,
                     session_id,
                     group or generation_id,
                     prompt,
+                    negative_prompt,
                     model,
                     kind,
                     n,
@@ -597,6 +620,56 @@ class PlaygroundStore:
             )
         return [row["context_image"] for row in rows if row["context_image"]]
 
+    def delete_group(self, group_id: str) -> list[str] | None:
+        """Delete a whole lineage and report the files the caller must unlink.
+
+        The deliberate difference from `dissolve_empty_group`: this one does not
+        refuse a group with a `queued` or `running` member, it *cancels* it. The
+        two are answers to different questions. Dissolving happens because the
+        last image of a group was deleted, and a member still to come means the
+        group is not empty after all; this happens because the user asked for the
+        entry to go, and a member still to come is one more thing to stop.
+
+        `delete_session` is the model, down to the ordering: the active rows are
+        made terminal *before* the cascade removes them, so a worker holding one
+        of these ids sees a status that tells it to stop rather than a missing
+        row. Files are unlinked by the caller, never here -- an `unlink` failure
+        must not leave the rows half-deleted, and the rows are the record of
+        truth about what exists.
+
+        `None` when no such group exists, which the route turns into a 404.
+        """
+        now = time.time()
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT session_id, context_image FROM generations WHERE group_id = ?",
+                (group_id,),
+            ).fetchall()
+            if not rows:
+                return None
+            session_id = rows[0]["session_id"]
+            filenames = [
+                row["filename"]
+                for row in self._db.execute(
+                    """
+                    SELECT filename FROM generation_images
+                    WHERE generation_id IN (SELECT id FROM generations WHERE group_id = ?)
+                    """,
+                    (group_id,),
+                )
+            ]
+            filenames += [row["context_image"] for row in rows if row["context_image"]]
+            self._db.execute(
+                "UPDATE generations SET status = 'cancelled', finished_at = ? "
+                "WHERE group_id = ? AND status IN ('queued', 'running')",
+                (now, group_id),
+            )
+            self._db.execute("DELETE FROM generations WHERE group_id = ?", (group_id,))
+            self._db.execute(
+                "UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id)
+            )
+        return filenames
+
     def mark_interrupted(self) -> int:
         """Fail every generation left mid-flight by a previous process."""
         with self._lock:
@@ -653,6 +726,15 @@ class PlaygroundRunner:
     It does not own the engine, and does not touch its lock: `engine.generate()`
     serializes against `/v1` requests exactly as it always did. What this adds is
     the *record* of the run, which is what makes a closed browser tab survivable.
+
+    **Pausing** holds this queue and nothing else. `/v1` bypasses the runner
+    entirely, so a paused playground does not stop the server generating -- it
+    stops *this* queue starting anything more. It takes effect at the two
+    boundaries the runner owns, before a claim and between the images of an
+    `n>1` run; the image already being denoised always finishes, because the
+    engine can only be interrupted by raising at a step and the alternative is
+    throwing away work already paid for. Pause is runtime state: a restart
+    clears it, and whatever it was holding is failed by `mark_interrupted()`.
     """
 
     def __init__(
@@ -672,6 +754,20 @@ class PlaygroundRunner:
         #: keeps the queue and the worker on the same loop by construction.
         self._queue: asyncio.Queue[str] | None = None
         self._task: asyncio.Task[None] | None = None
+        #: Held work: True stops the runner starting anything more. Global, and
+        #: runtime-only -- a restart clears it, and `mark_interrupted()` fails
+        #: whatever was still held. Never persisted, because the queue it holds
+        #: is not persisted either: `submit()` is a `put_nowait` on an in-memory
+        #: queue, so a paused backlog does not survive a restart in any case.
+        self._paused = False
+        #: Wakes a parked worker. Created by `start()` for the same reason the
+        #: queue is: it binds to the loop that first uses it.
+        #:
+        #: A `Condition` rather than an `Event` because the wake predicate has
+        #: two arms -- "resumed" *or* "this generation was cancelled" -- and an
+        #: `Event` can express only the first. Nothing takes this while holding
+        #: `PlaygroundStore._lock`; the reverse order would deadlock.
+        self._gate: asyncio.Condition | None = None
         #: The generation the worker is on, if any. Read by `cancel`, which must
         #: distinguish "still queued" (a row update suffices) from "running now".
         self.current_id: str | None = None
@@ -687,6 +783,13 @@ class PlaygroundRunner:
     def start(self) -> None:
         if self._task is None:
             self._queue = asyncio.Queue()
+            self._gate = asyncio.Condition()
+            # Reset with the queue, not left over from a previous run: `shutdown`
+            # drops the task without clearing them, and a stale `current_id` or a
+            # stale pause would apply to a queue that no longer exists.
+            self._paused = False
+            self.current_id = None
+            self._cancel_requested = None
             self._task = asyncio.create_task(self._work(), name="playground-runner")
 
     async def shutdown(self) -> None:
@@ -703,12 +806,58 @@ class PlaygroundRunner:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    async def set_paused(self, paused: bool) -> None:
+        """Hold or release the queue.
+
+        Holding takes effect at the next boundary the runner owns -- before a
+        queued generation is claimed, and between the images of an `n>1` run.
+        The image already being denoised always finishes: the engine can only be
+        interrupted by raising at a denoising step, so there is no third option
+        that does not throw away the work already paid for.
+
+        A 200 from here therefore does **not** mean nothing is generating.
+        """
+        gate = self._gate
+        if gate is None:  # pragma: no cover - the routes exist only once started
+            raise RuntimeError("The playground runner is not running.")
+        async with gate:
+            self._paused = paused
+            gate.notify_all()
+        logger.info("playground queue %s", "paused" if paused else "resumed")
+
+    async def _await_resume(self, generation_id: str) -> bool:
+        """Park until the queue is released. False when the caller must stop.
+
+        `wait_for` under the lock, never a bare `if paused: await wait()`: a
+        release landing between the flag read and the lock acquisition would be
+        lost, and the worker would park for good.
+
+        The cancellation arm is what makes a Cancel pressed on a *parked* run
+        land at once instead of on resume. It only ever fires at the per-image
+        gate: at the pre-claim gate the row is still `queued`, so `cancel()`
+        settles it through `cancel_queued()` and this worker simply finds
+        nothing to claim.
+        """
+        gate = self._gate
+        assert gate is not None  # set by `start()`, which creates this task
+        if not self._paused:
+            return self._cancel_requested != generation_id
+        async with gate:
+            await gate.wait_for(
+                lambda: not self._paused or self._cancel_requested == generation_id
+            )
+        return self._cancel_requested != generation_id
+
     def submit(self, generation_id: str) -> None:
         if self._queue is None:  # pragma: no cover - the routes exist only once started
             raise RuntimeError("The playground runner is not running.")
         self._queue.put_nowait(generation_id)
 
-    def cancel(self, generation_id: str) -> dict[str, Any] | None:
+    async def cancel(self, generation_id: str) -> dict[str, Any] | None:
         """Cancel by id, as far as this server can.
 
         Three cases, in order of how much has already happened:
@@ -722,6 +871,10 @@ class PlaygroundRunner:
           the request lands is kept: it is paid for, and the record says
           `cancelled` with the images it did produce.
 
+        A fourth case rides on the third: while the queue is **paused** the
+        runner is parked at a boundary, so the engine refuses the request there
+        too. The gate is woken so the record settles now rather than on resume.
+
         `engine.request_cancel()` is global. With one generation at a time that
         is nearly always this one; when an external `/v1` request holds the
         engine, it is that request which stops — the same semantics `/v1/cancel`
@@ -730,16 +883,51 @@ class PlaygroundRunner:
         if not self._store.cancel_queued(generation_id) and generation_id == self.current_id:
             self._cancel_requested = generation_id
             self._engine.request_cancel()
+            # A parked generation is not denoising, so `request_cancel` did
+            # nothing: the worker is the only thing that can settle it, and it is
+            # waiting on the gate. Waking it here is what keeps the record this
+            # call returns from being read before the cancellation applies.
+            await self._wake()
         return self._store.get_generation(generation_id)
 
-    def cancel_running_in(self, session_ids: set[str]) -> None:
+    async def _wake(self) -> None:
+        """Re-evaluate the gate's predicate on a parked worker, if there is one."""
+        gate = self._gate
+        if gate is None:  # pragma: no cover - the routes exist only once started
+            return
+        async with gate:
+            gate.notify_all()
+        # Let a woken worker settle its record before the caller reads it back.
+        await asyncio.sleep(0)
+
+    async def cancel_running_in(self, session_ids: set[str]) -> None:
         """Stop the current generation if it belongs to one of these sessions."""
+        await self._stop_current(lambda row: row["sessionId"] in session_ids)
+
+    async def cancel_running_in_group(self, group_id: str) -> None:
+        """Stop the current generation if it belongs to this lineage."""
+        await self._stop_current(lambda row: row["groupId"] == group_id)
+
+    async def _stop_current(self, matches: Callable[[dict[str, Any]], bool]) -> None:
+        """Stop the running generation when it matches, as far as this can.
+
+        The recorded request is not a belt-and-braces copy of what the engine was
+        told. `engine.request_cancel()` returns False and does nothing unless MLX
+        is actually denoising (`engine.py`), so while the weights load, while the
+        runner waits on the engine lock, between the images of an `n>1` run, and
+        while the queue is paused, asking the engine alone loses the request
+        entirely. Recording it here is what makes the runner honour it at the
+        next boundary it owns -- the same mechanism `cancel` already relies on.
+        """
         current = self.current_id
         if current is None:
             return
         row = self._store.get_generation(current)
-        if row is not None and row["sessionId"] in session_ids:
-            self._engine.request_cancel()
+        if row is None or not matches(row):
+            return
+        self._cancel_requested = current
+        self._engine.request_cancel()
+        await self._wake()
 
     async def _work(self) -> None:
         queue = self._queue
@@ -747,7 +935,10 @@ class PlaygroundRunner:
         while True:
             generation_id = await queue.get()
             try:
-                await self._run(generation_id)
+                # Held before the claim, not after: the row stays `queued`, which
+                # is what the feed should show, and nothing is half-started.
+                if await self._await_resume(generation_id):
+                    await self._run(generation_id)
             except asyncio.CancelledError:
                 raise
             except Exception:  # pragma: no cover - defensive
@@ -776,40 +967,61 @@ class PlaygroundRunner:
         context = row["context_image"]
         image_path = self._store.images_dir / context if context else None
         seeds: list[int] = json.loads(row["seeds"])
+        position = 0
         try:
-            with self._idle:
-                for position, seed in enumerate(seeds):
-                    if self._cancel_requested == generation_id:
-                        self._store.finish(generation_id, "cancelled")
-                        return
-                    if position and self._store.status_of(generation_id) != "running":
-                        # Deleted between images.
-                        return
-                    png = await self._engine.generate(
-                        GenerationJob(
-                            spec=spec,
-                            kind=row["kind"],
-                            prompt=row["prompt"],
-                            width=row["width"],
-                            height=row["height"],
-                            steps=row["steps"],
-                            seed=seed,
-                            image_path=image_path,
-                            image_strength=row["image_strength"],
-                            steps_from_preset=bool(row["steps_from_preset"]),
-                            preview_every=PREVIEW_EVERY,
+            # One contiguous run of images per `with self._idle:` block, not one
+            # per image. Unpaused there is exactly one block per generation,
+            # which is the "armed per request, not per image" rule `idle.py`
+            # spells out -- arming per image would release the weights *between*
+            # the images of an `n=3` request at a delay of 0.
+            #
+            # The park is outside the block on purpose, and it is not a detail:
+            # `IdleUnloader.__enter__` destroys the pending countdown and only
+            # `__exit__` recreates it, on the way down to zero in-flight. The
+            # unloader is one instance shared with the `/v1` plane, so parking
+            # inside would suspend automatic release for the *whole server* --
+            # tens of GB of unified memory held for an unbounded pause, which is
+            # the exact failure the idle policy exists to prevent.
+            while position < len(seeds):
+                if not await self._await_resume(generation_id):
+                    self._store.finish(generation_id, "cancelled")
+                    return
+                with self._idle:
+                    while position < len(seeds) and not self._paused:
+                        if self._cancel_requested == generation_id:
+                            self._store.finish(generation_id, "cancelled")
+                            return
+                        if position and self._store.status_of(generation_id) != "running":
+                            # Deleted between images.
+                            return
+                        seed = seeds[position]
+                        png = await self._engine.generate(
+                            GenerationJob(
+                                spec=spec,
+                                kind=row["kind"],
+                                prompt=row["prompt"],
+                                negative_prompt=row["negative_prompt"],
+                                width=row["width"],
+                                height=row["height"],
+                                steps=row["steps"],
+                                seed=seed,
+                                image_path=image_path,
+                                image_strength=row["image_strength"],
+                                steps_from_preset=bool(row["steps_from_preset"]),
+                                preview_every=PREVIEW_EVERY,
+                            )
                         )
-                    )
-                    filename = self._store.save_image(png)
-                    if not self._store.add_image(generation_id, position, filename, seed):
-                        self._store.unlink([filename])
-                        return
-                    if self._cancel_requested == generation_id:
-                        # Asked to stop while the engine was not in a position to
-                        # be interrupted. The image above is recorded, and this
-                        # is where the request finally takes effect.
-                        self._store.finish(generation_id, "cancelled")
-                        return
+                        filename = self._store.save_image(png)
+                        if not self._store.add_image(generation_id, position, filename, seed):
+                            self._store.unlink([filename])
+                            return
+                        position += 1
+                        if self._cancel_requested == generation_id:
+                            # Asked to stop while the engine was not in a position
+                            # to be interrupted. The image above is recorded, and
+                            # this is where the request finally takes effect.
+                            self._store.finish(generation_id, "cancelled")
+                            return
         except Exception as exc:
             # `CancelledError` is a `BaseException`: shutdown passes straight
             # through, leaving the row `running` for `mark_interrupted()`.

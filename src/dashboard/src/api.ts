@@ -28,6 +28,7 @@ import type {
   Overview,
   PlaygroundGeneration,
   PlaygroundSession,
+  PlaygroundSessionList,
   Progress,
 } from "./types";
 
@@ -338,7 +339,16 @@ export const docsUrl = () => "/docs";
 // tab and a fresh one see the same thing.
 
 export const playgroundSessions = () =>
-  get<{ sessions: PlaygroundSession[] }>("/playground/api/sessions");
+  get<PlaygroundSessionList>("/playground/api/sessions");
+
+/**
+ * Hold or release the playground queue, for every session at once.
+ *
+ * Deliberately not a claim about the engine: the hold takes effect at the
+ * runner's next boundary, so the image already being denoised still finishes.
+ */
+export const playgroundSetPaused = (paused: boolean) =>
+  send<{ paused: boolean }>("/playground/api/queue", "POST", { paused });
 
 export const playgroundSessionCreate = () =>
   send<PlaygroundSession>("/playground/api/sessions", "POST");
@@ -435,6 +445,12 @@ export const playgroundCancel = (sessionId: string, generationId: string) =>
     undefined,
     { sessionId },
   );
+
+/** A whole feed entry: every generation of the lineage, and the files only it owned. */
+export const playgroundGroupDelete = (sessionId: string, groupId: string) =>
+  send<void>(`/playground/api/groups/${encodeURIComponent(groupId)}`, "DELETE", undefined, {
+    sessionId,
+  });
 
 export const playgroundImageDelete = (sessionId: string, filename: string) =>
   send<void>(`/playground/api/images/${encodeURIComponent(filename)}`, "DELETE", undefined, {

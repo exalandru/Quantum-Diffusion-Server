@@ -160,6 +160,19 @@ export type PlaygroundSession = {
   locked: boolean;
 };
 
+/**
+ * What `/playground/api/sessions` answers.
+ *
+ * `paused` rides along with the list rather than on `/v1/progress`: holding the
+ * queue is a playground control, and that stream is the engine's state, shared
+ * with `/v1` clients who have no queue to hold.
+ */
+export type PlaygroundSessionList = {
+  sessions: PlaygroundSession[];
+  /** The playground's FIFO worker is holding: nothing new starts. Global. */
+  paused: boolean;
+};
+
 export type PlaygroundStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
 
 /**
@@ -177,6 +190,13 @@ export type PlaygroundGeneration = {
    */
   groupId: string;
   prompt: string;
+  /**
+   * What the image was told to avoid, or null when none was sent.
+   *
+   * Null for every model whose pipeline has no unconditional branch to apply one
+   * to: the composer greys the field out for those, and the server refuses it.
+   */
+  negativePrompt: string | null;
   /** Public model name, as `/v1/models` lists it. */
   model: string;
   kind: "txt2img" | "edit";

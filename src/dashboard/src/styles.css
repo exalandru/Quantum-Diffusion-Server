@@ -1627,6 +1627,7 @@ main.playground > header {
 }
 
 .pg-session-row {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--s1);
@@ -1704,22 +1705,54 @@ main.playground > header {
   font-size: var(--font-sm);
 }
 
-/* Revealed on hover or keyboard focus, not on hover alone: a control a keyboard
-   user cannot reach is not a control. */
+/* Drawn over the row's right edge, not laid out beside it.
+
+   In flow, these took their full intrinsic width out of a 280px sidebar and
+   never gave it back — `flex-shrink: 0` on this, `min-width: 0` on the name — so
+   the name collapsed to a few letters on *every* row, hidden buttons included:
+   `visibility: hidden` hides an element without freeing the space it occupies.
+   Out of flow it costs the name nothing, and the row is a name again. */
 .pg-session-actions {
+  position: absolute;
+  top: 50%;
+  right: var(--s1);
+  transform: translateY(-50%);
   display: flex;
+  align-items: center;
   gap: 2px;
-  flex-shrink: 0;
+  padding-left: var(--s5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+  /* The name runs under these, so they need something to sit on. The gradient
+     is on the padding above: the title fades out into the buttons rather than
+     colliding with them at a hard edge. */
+  background: linear-gradient(to right, transparent, var(--panel) var(--s5));
 }
 
-.pg-session-actions > button {
-  visibility: hidden;
+/* The selected row is `--accent-tint` *over* `--panel`, and the tint is
+   translucent — so matching it takes the same two layers in the same order, not
+   a flat colour that happens to look close. One layer would show as a patch. */
+.pg-session-row[aria-selected="true"] .pg-session-actions {
+  background:
+    linear-gradient(to right, transparent, var(--accent-tint) var(--s5)),
+    linear-gradient(to right, transparent, var(--panel) var(--s5));
 }
 
-.pg-session-row:hover .pg-session-actions > button,
-.pg-session-actions > button:focus-visible,
-.pg-session-actions:focus-within > button {
-  visibility: visible;
+/* Hover *or* keyboard focus, and `opacity` rather than `visibility` is what
+   makes the second half true: a `visibility: hidden` button is removed from the
+   tab order, so it can never take the focus that was supposed to reveal it. */
+.pg-session-row:hover .pg-session-actions,
+.pg-session-actions:focus-within {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+/* In the feed's toolbar this separates the destructive action from the rest of
+   a full-width row. Here the group is four icons wide and `auto` would stretch
+   it across the row, so it is a plain gap. */
+.pg-session-actions .pg-tool.danger {
+  margin-left: var(--s2);
 }
 
 /* A locked session's studio: the same hero, saying why it is empty. */
@@ -1755,6 +1788,68 @@ main.playground > header {
 .pg-prompt {
   margin: 0 0 var(--s1);
   line-height: 1.5;
+}
+
+/* The prompt and the entry's own destructive action on one line, the action
+   pushed to the far edge: a misfire there costs the whole entry, images and
+   all. */
+.pg-entry-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: var(--s3);
+}
+
+.pg-entry-head .pg-prompt {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Revealed on hover or keyboard focus, not on hover alone -- the same rule the
+   session rows follow, for the same reason: a control a keyboard user cannot
+   reach is not a control. */
+.pg-entry-actions > button {
+  visibility: hidden;
+  flex-shrink: 0;
+}
+
+.pg-entry:hover .pg-entry-actions > button,
+.pg-entry-actions > button:focus-visible {
+  visibility: visible;
+}
+
+/* Set apart from the prompt rather than run together with it: the two are
+   different instructions, and reading them as one sentence inverts the second. */
+.pg-prompt-negative {
+  margin: 0 0 var(--s1);
+  color: var(--muted);
+  font-size: var(--font-sm);
+  line-height: 1.5;
+}
+
+.pg-negative-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: var(--font-xs, 11px);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* In the header, where a control that acts on the whole queue belongs -- not in
+   the composer, which is about one request.
+
+   The `auto` margin pushes it to the far edge; `.shell-link` carries one too, so
+   its own is dropped here or the free space would be split between the two and
+   leave this button stranded mid-header. */
+.pg-pause {
+  margin-left: auto;
+}
+
+main.playground > header .pg-pause ~ .shell-link {
+  margin-left: 0;
 }
 
 .pg-meta {
@@ -1863,6 +1958,12 @@ main.playground > header {
   transform: none;
 }
 
+/* A tool using the browser's own tooltip has no `data-tip`, and `attr()` would
+   resolve to an empty string — an empty bordered box on hover. */
+.pg-tool:not([data-tip])::after {
+  content: none;
+}
+
 .pg-tool:hover::after,
 .pg-tool:focus-visible::after {
   opacity: 1;
@@ -1889,6 +1990,19 @@ main.playground > header {
 
 /* Stacked, so a new frame fades in over the previous one instead of replacing
    it; the one underneath is removed once the fade is done. */
+/* Blurred in proportion to how far the run has got -- `preview-blur.ts` owns
+   the curve and sets both custom properties on the box, so the two frames of a
+   crossfade always agree. The fallbacks are the start-of-run values, for the
+   moment before the first snapshot arrives.
+
+   The scale is not decoration: this box clips, and a CSS blur samples past the
+   element's edge, so an un-inflated blurred frame would show the container's
+   background bleeding in on all four sides. It shrinks with the blur, so a
+   nearly-sharp late frame is cropped by about a percent.
+
+   The filter transitions over the same 500ms as the fade: the blur steps down
+   once per preview frame, and stepping it visibly would draw the eye to the
+   blur rather than to the picture emerging under it. */
 .pg-preview img {
   position: absolute;
   inset: 0;
@@ -1896,7 +2010,11 @@ main.playground > header {
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 500ms ease;
+  filter: blur(var(--pg-preview-blur, 20px));
+  transform: scale(var(--pg-preview-scale, 1.1));
+  transition:
+    opacity 500ms ease,
+    filter 500ms ease;
 }
 
 .pg-preview img.on {
@@ -1934,9 +2052,11 @@ main.playground > header {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  /* The blur itself stays -- it is what makes an emerging composition readable
+     through the noise, which is information, not animation. Only its easing
+     goes. */
   .pg-preview img {
     transition: none;
-    filter: blur(20px);
   }
 
   .pg-preview-glow {

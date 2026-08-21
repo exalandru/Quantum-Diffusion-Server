@@ -79,6 +79,13 @@ class RenameRequest(BaseModel):
     title: str | None = Field(default=None, max_length=1000)
 
 
+class QueueStateRequest(BaseModel):
+    """Hold or release the playground queue."""
+
+    model_config = ConfigDict(extra="forbid")
+    paused: bool
+
+
 class SessionPasswordRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     password: str
@@ -812,7 +819,30 @@ def create_app(
 
     @playground_api.get("/sessions")
     async def playground_list_sessions() -> dict:
-        return {"sessions": playground.list_sessions()}
+        # The pause rides on the list every tab already polls rather than on
+        # `/v1/progress`: that stream is the *engine's* state and is shared with
+        # `/v1` clients, and holding this queue is a playground control that has
+        # no meaning there.
+        return {"sessions": playground.list_sessions(), "paused": runner.paused}
+
+    @playground_api.post("/queue")
+    async def playground_set_queue_state(body: QueueStateRequest) -> dict:
+        """Hold or release the playground queue, for every session at once.
+
+        Not gated on a session, because it is not about one: there is a single
+        FIFO worker behind every session's generations. It sits at the router's
+        own auth level rather than admin's because it is reversible by anyone who
+        can reach it, and that same credential already permits `/v1/cancel` and
+        unbounded submission -- holding a queue is not more authority than
+        emptying one. What it *is* that those are not is unbounded in time, which
+        is why the state is published to every tab above.
+
+        Idempotent, and deliberately not a claim about the engine: pausing takes
+        effect at the runner's next boundary, so a 200 here does not mean nothing
+        is being denoised.
+        """
+        await runner.set_paused(body.paused)
+        return {"paused": runner.paused}
 
     @playground_api.get("/sessions/{session_id}", dependencies=[unlocked])
     async def playground_get_session(session_id: str) -> dict:
@@ -833,7 +863,7 @@ def create_app(
         # Stop the engine first: the worker is inside a generation whose record
         # is about to disappear, and it would otherwise keep the machine busy
         # producing images for a session nobody can see.
-        runner.cancel_running_in({session_id})
+        await runner.cancel_running_in({session_id})
         playground.unlink(playground.delete_session(session_id))
         unlocks.revoke_session(session_id)
         unlock_throttles.forget(session_id)
@@ -903,6 +933,7 @@ def create_app(
         session_id: str,
         prompt: Annotated[str, Form()],
         model: Annotated[str | None, Form()] = None,
+        negative_prompt: Annotated[str | None, Form()] = None,
         n: Annotated[int, Form()] = 1,
         size: Annotated[str | None, Form()] = None,
         steps: Annotated[int | None, Form()] = None,
@@ -915,7 +946,12 @@ def create_app(
             raise APIError("n must be at least 1.", param="n", code="invalid_n")
         check_n(n)
         check_prompt(spec, prompt)
-        check_capabilities(spec, negative_prompt=None, guidance=None)
+        # Blank is "none sent", not "an empty negative prompt": a browser form
+        # posts the field whether or not it was typed in, and storing `""` would
+        # both misreport the request and trip the capability check below on a
+        # model that cannot take one.
+        negative = (negative_prompt or "").strip() or None
+        check_capabilities(spec, negative_prompt=negative, guidance=None)
         width, height = resolve_size(spec, size)
         if steps is not None and steps < 1:
             raise APIError("steps must be at least 1.", param="steps", code="invalid_steps")
@@ -952,6 +988,7 @@ def create_app(
             record = playground.add_generation(
                 session_id,
                 prompt=prompt,
+                negative_prompt=negative,
                 model=spec.public_name,
                 kind=kind,
                 n=n,
@@ -1000,10 +1037,34 @@ def create_app(
         if session_id is None:
             raise no_generation(generation_id)
         assert_unlocked(session_id, x_qds_session_token)
-        record = runner.cancel(generation_id)
+        record = await runner.cancel(generation_id)
         if record is None:
             raise no_generation(generation_id)
         return record
+
+    @playground_api.delete("/groups/{group_id}", status_code=204)
+    async def playground_delete_group(group_id: str, x_qds_session_token: SessionToken = None) -> None:
+        """Delete a whole feed entry: every generation of the lineage, and every
+        file only it owned.
+
+        The ordering is `playground_delete_session`'s, for the same reason: stop
+        the engine first, because the worker may be inside a generation whose
+        record is about to disappear and would otherwise keep the machine busy
+        producing an image for an entry nobody can see.
+        """
+        session_id = playground.session_of_group(group_id)
+        if session_id is None:
+            raise APIError(
+                f"No playground group {group_id!r}.", status_code=404, code="not_found"
+            )
+        assert_unlocked(session_id, x_qds_session_token)
+        await runner.cancel_running_in_group(group_id)
+        removed = playground.delete_group(group_id)
+        if removed is None:  # pragma: no cover - deleted between the two calls
+            raise APIError(
+                f"No playground group {group_id!r}.", status_code=404, code="not_found"
+            )
+        playground.unlink(removed)
 
     @playground_api.get("/preview")
     async def playground_preview() -> Response:

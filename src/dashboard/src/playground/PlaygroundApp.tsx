@@ -43,6 +43,10 @@ type Dialog =
 function settingsOf(root: PlaygroundGeneration) {
   const form = new FormData();
   form.set("prompt", root.prompt);
+  // Carried, not dropped: "make it not blurry" without the negative prompt is a
+  // different request, and a refine that quietly changed it would be lying about
+  // what the entry is a variation *of*.
+  if (root.negativePrompt) form.set("negative_prompt", root.negativePrompt);
   form.set("model", root.model);
   form.set("n", "1");
   form.set("size", root.size);
@@ -61,6 +65,10 @@ function settingsOf(root: PlaygroundGeneration) {
  */
 export function PlaygroundApp() {
   const [sessions, setSessions] = useState<PlaygroundSession[]>([]);
+  // The queue is held. Server-owned like everything else here, and read from the
+  // same session-list payload the sidebar already polls.
+  const [paused, setPaused] = useState(false);
+  const [pausing, setPausing] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const [generations, setGenerations] = useState<PlaygroundGeneration[]>([]);
   const [progress, setProgress] = useState<Progress>(IDLE);
@@ -107,7 +115,10 @@ export function PlaygroundApp() {
 
   const refreshSessions = useCallback(async () => {
     const payload = await guarded(api.playgroundSessions);
-    if (payload) setSessions(payload.sessions);
+    if (payload) {
+      setSessions(payload.sessions);
+      setPaused(payload.paused);
+    }
     setLoaded(true);
     return payload?.sessions;
   }, [guarded]);
@@ -193,7 +204,11 @@ export function PlaygroundApp() {
 
   // Polling, and only while it buys something: a session with nothing in flight
   // changes only when this page changes it, and every mutation refetches.
+  // `paused` is part of it: with the queue held and nothing in it, there is
+  // nothing "in flight" to poll for, and a tab that stopped polling would never
+  // learn that another tab had released the queue.
   const active =
+    paused ||
     generations.some((entry) => entry.status === "queued" || entry.status === "running") ||
     sessions.some((entry) => entry.generating);
 
@@ -248,6 +263,7 @@ export function PlaygroundApp() {
   async function submit(draft: Draft) {
     const form = new FormData();
     form.set("prompt", draft.prompt);
+    if (draft.negativePrompt) form.set("negative_prompt", draft.negativePrompt);
     form.set("model", draft.model);
     form.set("n", String(draft.n));
     if (draft.size) form.set("size", draft.size);
@@ -331,6 +347,33 @@ export function PlaygroundApp() {
     // sort key and its timestamp: an idle session polls nothing, so without this
     // the list would keep showing the pre-deletion order for ever.
     await refreshSessions();
+  }
+
+  async function deleteGroup(groupId: string) {
+    const sessionId = selected;
+    if (!sessionId) return;
+    await guarded(() => api.playgroundGroupDelete(sessionId, groupId));
+    await refreshDetail();
+    // The server bumps the session's `updated_at`, which is the sidebar's sort
+    // key: without this an idle session would keep its pre-deletion place.
+    await refreshSessions();
+  }
+
+  /**
+   * Hold or release the queue, for every session at once.
+   *
+   * Set here before the server answers, because the button must not sit inert
+   * for a round trip on the one control whose whole point is to take effect now;
+   * `refreshSessions` immediately after replaces the guess with the server's
+   * answer, and a failure puts it back.
+   */
+  async function togglePause(next: boolean) {
+    setPausing(true);
+    setPaused(next);
+    const result = await guarded(() => api.playgroundSetPaused(next));
+    if (result === undefined) setPaused(!next);
+    await refreshSessions();
+    setPausing(false);
   }
 
   async function cancel(id: string) {
@@ -428,8 +471,21 @@ export function PlaygroundApp() {
       <header>
         <div className="identity">
           <h1>Quantum Diffusion Server</h1>
-          <span className="pill pill-live">Running</span>
+          {paused ? (
+            <span className="pill pill-warn">Queue paused</span>
+          ) : (
+            <span className="pill pill-live">Running</span>
+          )}
         </div>
+        <button
+          type="button"
+          className="small pg-pause"
+          disabled={pausing}
+          aria-pressed={paused}
+          onClick={() => void togglePause(!paused)}
+        >
+          {paused ? "Resume queue" : "Pause queue"}
+        </button>
         {/* No tab strip here: this page has one view and one way out. The arrow
             says the button leaves rather than switches, and `?view=config` lands
             on the screen the label names. */}
@@ -454,6 +510,18 @@ export function PlaygroundApp() {
       {connectionError && (
         <div className="notice notice-error" role="status">
           <strong>Could not reach the server.</strong> {connectionError}
+        </div>
+      )}
+
+      {/* Every fact a held queue needs to state, and no more: what still
+          happens, what does not, and the one way it can lose work. The last
+          sentence is not a caveat — the queue lives in memory, so a restart
+          fails what is waiting in it. */}
+      {paused && (
+        <div className="notice notice-warn" role="status">
+          <strong>Queue paused.</strong> The image being generated will finish, then nothing
+          more starts. Anything you send waits here. Direct API requests are unaffected, and a
+          server restart discards what is waiting.
         </div>
       )}
 
@@ -520,6 +588,8 @@ export function PlaygroundApp() {
               onRefine={(entry, image) => void refine(entry, image)}
               onVariation={(entry) => void variation(entry)}
               onDeleteImage={(url) => void deleteImage(url)}
+              onDeleteGroup={(groupId) => void deleteGroup(groupId)}
+              paused={paused}
               nameOf={nameOf}
               srcOf={srcOf}
             />

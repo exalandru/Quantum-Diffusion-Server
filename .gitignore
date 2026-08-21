@@ -12,6 +12,7 @@ images/
 # swallow it.
 /playground/
 /src/server/playground/
+admin-token
 
 # Project outputs
 dist/

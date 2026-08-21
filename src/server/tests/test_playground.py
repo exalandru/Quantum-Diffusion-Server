@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -755,3 +756,400 @@ def test_deleting_a_session_stops_its_running_generation(settings):
 
 def test_deleting_an_unknown_session_is_a_404(client):
     assert client.delete("/playground/api/sessions/nope").status_code == 404
+
+
+# ── Negative prompts ───────────────────────────────────────────────────────
+
+
+def test_a_negative_prompt_reaches_the_engine(client, engine):
+    session_id = new_session(client)
+    submit(client, session_id, model="qwen-image-2512", negative_prompt="blurry, watermark")
+    assert wait_until(lambda: engine.jobs)
+    assert engine.jobs[-1].negative_prompt == "blurry, watermark"
+    assert generations(client, session_id)[0]["negativePrompt"] == "blurry, watermark"
+
+
+def test_a_negative_prompt_is_refused_by_a_model_without_one(client, engine):
+    """The UI greys the field out; this is what makes that advice rather than
+    the enforcement. `flux2-klein` is guidance-distilled — it has no
+    unconditional branch to apply a negative prompt to."""
+    session_id = new_session(client)
+    response = submit(client, session_id, model="flux2-klein", negative_prompt="blurry")
+
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["param"] == "negative_prompt"
+    assert error["code"] == "unsupported_parameter"
+    assert generations(client, session_id) == []
+
+
+def test_a_blank_negative_prompt_is_no_negative_prompt(client, engine):
+    """A browser posts the field whether or not it was typed in. Storing `""`
+    would both misreport the request and refuse a model that cannot take one."""
+    session_id = new_session(client)
+    assert submit(client, session_id, model="flux2-klein", negative_prompt="   ").status_code == 202
+
+    assert wait_until(lambda: engine.jobs)
+    assert engine.jobs[-1].negative_prompt is None
+    assert generations(client, session_id)[0]["negativePrompt"] is None
+
+
+def test_a_store_written_before_negative_prompts_existed_is_migrated(tmp_path):
+    """The column is added to a database an older build created, and the rows it
+    already holds keep working — a negative prompt nobody sent is `NULL`."""
+    directory = tmp_path / "playground"
+    directory.mkdir()
+    (directory / "images").mkdir()
+    database = sqlite3.connect(directory / "playground.db", isolation_level=None)
+    database.executescript(
+        """
+        CREATE TABLE sessions (
+          id TEXT PRIMARY KEY, title TEXT, created_at REAL NOT NULL,
+          updated_at REAL NOT NULL, password TEXT
+        );
+        CREATE TABLE generations (
+          id TEXT PRIMARY KEY, session_id TEXT NOT NULL, group_id TEXT,
+          prompt TEXT NOT NULL, model TEXT NOT NULL, kind TEXT NOT NULL,
+          n INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL,
+          steps INTEGER NOT NULL, steps_from_preset INTEGER NOT NULL,
+          seeds TEXT NOT NULL, image_strength REAL, context_image TEXT,
+          status TEXT NOT NULL, error TEXT, created_at REAL NOT NULL,
+          started_at REAL, finished_at REAL
+        );
+        CREATE TABLE generation_images (
+          generation_id TEXT NOT NULL, position INTEGER NOT NULL,
+          filename TEXT NOT NULL, seed INTEGER NOT NULL,
+          PRIMARY KEY (generation_id, position)
+        );
+        INSERT INTO sessions VALUES ('s1', 'old', 1.0, 1.0, NULL);
+        INSERT INTO generations VALUES (
+          'g1', 's1', 'g1', 'a fox', 'z-image-turbo', 'txt2img', 1, 64, 64, 4, 0,
+          '[7]', NULL, NULL, 'completed', NULL, 1.0, 1.0, 1.0
+        );
+        """
+    )
+    database.close()
+
+    store = PlaygroundStore(directory)
+    try:
+        entry = store.get_session("s1")["generations"][0]
+        assert entry["prompt"] == "a fox"
+        assert entry["negativePrompt"] is None
+    finally:
+        store.close()
+
+
+# ── Deleting a group ───────────────────────────────────────────────────────
+
+
+def test_deleting_a_group_removes_its_generations_and_files(client, settings):
+    session_id = new_session(client)
+    first = submit(client, session_id, prompt="a fox").json()
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    submit(client, session_id, prompt="a fox", group=first["groupId"])
+    assert wait_until(lambda: len(generations(client, session_id)) == 2)
+    assert wait_until(lambda: status_of(client, session_id, 1) == "completed")
+
+    entries = generations(client, session_id)
+    names = [image["url"].rsplit("/", 1)[-1] for entry in entries for image in entry["images"]]
+    assert len(names) == 2
+
+    assert client.delete(f"/playground/api/groups/{first['groupId']}").status_code == 204
+
+    # The session is the transcript and survives; the entry does not.
+    assert client.get(f"/playground/api/sessions/{session_id}").status_code == 200
+    assert generations(client, session_id) == []
+    assert [name for name in names if images_dir(settings).joinpath(name).exists()] == []
+
+
+def test_deleting_a_group_removes_the_reference_image_its_root_was_made_with(client, settings):
+    session_id = new_session(client)
+    accepted = submit(
+        client,
+        session_id,
+        model="qwen-image-2512",
+        files={"image": ("ctx.png", tiny_png(), "image/png")},
+    )
+    assert accepted.status_code == 202
+    reference = images_dir(settings) / accepted.json()["contextImage"].rsplit("/", 1)[-1]
+    assert reference.is_file()
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+
+    assert client.delete(f"/playground/api/groups/{accepted.json()['groupId']}").status_code == 204
+
+    # A column, not a row: nothing else would ever unlink it.
+    assert not reference.exists()
+
+
+def test_deleting_a_group_cancels_the_members_it_had_not_run_yet(settings):
+    """Unlike `dissolve_empty_group`, which refuses a group with work still to
+    come: there the user deleted one image, here they deleted the entry."""
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        first = submit(blocked, session_id, prompt="a fox").json()
+        assert wait_until(lambda: status_of(blocked, session_id) == "running")
+        submit(blocked, session_id, prompt="a fox", group=first["groupId"])
+        assert wait_until(lambda: len(generations(blocked, session_id)) == 2)
+
+        assert blocked.delete(f"/playground/api/groups/{first['groupId']}").status_code == 204
+
+        assert engine.cancel_requested is True
+        assert generations(blocked, session_id) == []
+        # And the worker does not go on producing images for an entry that is gone.
+        engine.release = True
+        assert not wait_until(lambda: generations(blocked, session_id), timeout=0.3)
+
+
+def test_deleting_an_unknown_group_is_a_404(client):
+    assert client.delete("/playground/api/groups/nope").status_code == 404
+
+
+def test_deleting_a_group_of_a_locked_session_needs_its_token(client, settings):
+    session_id = new_session(client)
+    accepted = submit(client, session_id).json()
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    name = generations(client, session_id)[0]["images"][0]["url"].rsplit("/", 1)[-1]
+    assert client.post(
+        f"/playground/api/sessions/{session_id}/password", json={"password": "hunter2hunter2"}
+    ).status_code == 200
+
+    refused = client.delete(f"/playground/api/groups/{accepted['groupId']}")
+    assert refused.status_code == 403
+    assert refused.json()["error"]["code"] == "session_locked"
+    # Refused, not merely unreported: the entry's image is still on disk.
+    assert images_dir(settings).joinpath(name).is_file()
+
+
+# ── Pausing the queue ──────────────────────────────────────────────────────
+
+
+def pause(client: TestClient, paused: bool) -> None:
+    response = client.post("/playground/api/queue", json={"paused": paused})
+    assert response.status_code == 200
+    assert response.json()["paused"] is paused
+
+
+def test_pausing_holds_the_queue(client, engine):
+    """The witness that fails if the gate is a no-op.
+
+    `FakeEngine` completes within a turn of the loop, so an unheld submission
+    reaches `engine.jobs` immediately — the negative assertion is the whole test.
+    """
+    session_id = new_session(client)
+    pause(client, True)
+    assert submit(client, session_id).status_code == 202
+
+    assert not wait_until(lambda: engine.jobs, timeout=0.3)
+    assert status_of(client, session_id) == "queued"
+    assert client.get("/playground/api/sessions").json()["paused"] is True
+
+    pause(client, False)
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    assert len(engine.jobs) == 1
+
+
+def test_resuming_runs_what_was_held_in_order(client, engine):
+    """A held id has been taken off the queue already: this proves it comes back,
+    and comes back in the order it was submitted."""
+    session_id = new_session(client)
+    pause(client, True)
+    submit(client, session_id, prompt="first", seed=11)
+    submit(client, session_id, prompt="second", seed=22)
+    assert not wait_until(lambda: engine.jobs, timeout=0.3)
+
+    pause(client, False)
+    assert wait_until(lambda: len(engine.jobs) == 2)
+    assert [job.prompt for job in engine.jobs] == ["first", "second"]
+
+
+def test_pausing_does_not_stop_the_image_already_being_denoised(settings):
+    """The decision the whole design rests on: the engine can only be
+    interrupted by raising at a step, so a pause that stopped the current image
+    would throw away work already paid for."""
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        submit(blocked, session_id)
+        assert wait_until(lambda: status_of(blocked, session_id) == "running")
+
+        pause(blocked, True)
+        engine.release = True
+
+        assert wait_until(lambda: status_of(blocked, session_id) == "completed")
+        assert engine.cancel_requested is False
+        assert len(generations(blocked, session_id)[0]["images"]) == 1
+
+
+def test_pausing_stops_an_n_greater_than_one_run_between_its_images(settings):
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        submit(blocked, session_id, n=3)
+        assert wait_until(lambda: status_of(blocked, session_id) == "running")
+
+        pause(blocked, True)
+        engine.release = True
+
+        # The image in flight lands; the other two are held.
+        assert wait_until(lambda: len(generations(blocked, session_id)[0]["images"]) == 1)
+        assert not wait_until(
+            lambda: len(generations(blocked, session_id)[0]["images"]) > 1, timeout=0.3
+        )
+        assert status_of(blocked, session_id) == "running"
+
+        pause(blocked, False)
+        assert wait_until(lambda: len(generations(blocked, session_id)[0]["images"]) == 3)
+        assert status_of(blocked, session_id) == "completed"
+
+
+def test_a_held_generation_can_still_be_cancelled(client, engine):
+    session_id = new_session(client)
+    pause(client, True)
+    accepted = submit(client, session_id).json()
+
+    cancelled = client.post(f"/playground/api/generations/{accepted['id']}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    pause(client, False)
+    assert not wait_until(lambda: engine.jobs, timeout=0.3)
+
+
+def test_cancelling_a_generation_held_between_images_settles_it_at_once(settings):
+    """Not on resume: the parked worker is the only thing that can settle the
+    record, so the gate is woken and the response the caller reads is terminal."""
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        accepted = submit(blocked, session_id, n=3).json()
+        assert wait_until(lambda: status_of(blocked, session_id) == "running")
+        pause(blocked, True)
+        engine.release = True
+        assert wait_until(lambda: len(generations(blocked, session_id)[0]["images"]) == 1)
+
+        cancelled = blocked.post(f"/playground/api/generations/{accepted['id']}/cancel")
+        assert cancelled.status_code == 200
+        assert cancelled.json()["status"] == "cancelled"
+
+        # And the images it did produce are kept.
+        assert len(generations(blocked, session_id)[0]["images"]) == 1
+
+
+def test_deleting_a_session_while_paused_settles_its_generation(settings):
+    """A session can be deleted out from under a held run, and nothing is left
+    behind: no further images, no orphaned files.
+
+    Note what this does *not* prove. `_stop_current` records the cancellation
+    rather than only asking the engine — which is the honest expression of "the
+    runner honours what the engine cannot" — but with the park sitting outside
+    the idle context there is no observable difference here either way: the
+    worker that is not woken simply lets go on the next resume, holding nothing
+    in the meantime. The record is kept because it is correct and because it is
+    what stops that from being true only by accident, not because this test
+    catches its absence.
+    """
+    engine = BlockingEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        submit(blocked, session_id, n=3)
+        assert wait_until(lambda: status_of(blocked, session_id) == "running")
+        pause(blocked, True)
+        engine.release = True
+        assert wait_until(lambda: len(generations(blocked, session_id)[0]["images"]) == 1)
+
+        assert blocked.delete(f"/playground/api/sessions/{session_id}").status_code == 204
+        assert blocked.get(f"/playground/api/sessions/{session_id}").status_code == 404
+
+        # The worker lets go rather than generating the rest for a dead session.
+        before = len(engine.jobs)
+        assert not wait_until(lambda: len(engine.jobs) > before, timeout=0.3)
+        assert list(images_dir(settings).iterdir()) == []
+
+
+def test_the_pause_does_not_survive_a_restart(settings):
+    """Stated, not assumed: the queue is in memory, so a held backlog is failed
+    by `mark_interrupted()` like anything else caught mid-flight."""
+    engine = FakeEngine()
+    with make_client(create_app(settings, engine)) as first:
+        session_id = new_session(first)
+        pause(first, True)
+        submit(first, session_id)
+        assert not wait_until(lambda: engine.jobs, timeout=0.3)
+
+    with make_client(create_app(settings, FakeEngine())) as second:
+        assert second.get("/playground/api/sessions").json()["paused"] is False
+        entry = generations(second, session_id)[0]
+        assert entry["status"] == "failed"
+        assert entry["error"] == "Interrupted by server restart"
+
+
+def test_shutting_down_while_paused_does_not_hang(settings):
+    """The witness is termination. A lost wakeup would hang the suite rather
+    than fail an assertion, so the bound is the assertion."""
+    started = time.monotonic()
+    engine = FakeEngine()
+    with make_client(create_app(settings, engine)) as blocked:
+        session_id = new_session(blocked)
+        pause(blocked, True)
+        submit(blocked, session_id)
+        assert not wait_until(lambda: engine.jobs, timeout=0.2)
+    assert time.monotonic() - started < 5
+
+
+def _paused_client(settings, engine, **overrides):
+    """An app whose settings differ from the shared fixture's."""
+    raw = settings.model_dump(mode="json")
+    raw["server"].update(overrides)
+    return make_client(create_app(Settings.model_validate(raw), engine))
+
+
+def test_a_held_queue_lets_the_model_be_released(settings):
+    """The reason the park sits *outside* `with self._idle:`.
+
+    `IdleUnloader.__enter__` destroys the pending countdown and only `__exit__`
+    recreates it, so parking inside the context would hold the weights resident
+    for the whole pause — the exact failure the idle policy exists to prevent.
+
+    The run has to be genuinely *held between images* for this to mean anything,
+    which is why it takes the blocking double: with an engine that completes
+    within a turn of the loop the run is over before the pause lands, the context
+    is left for the ordinary reason, and the test would pass either way.
+    """
+    engine = BlockingEngine()
+    with _paused_client(settings, engine, idle_unload_s=0) as client:
+        session_id = new_session(client)
+        submit(client, session_id, n=3)
+        assert wait_until(lambda: status_of(client, session_id) == "running")
+        pause(client, True)
+        engine.release = True
+
+        # One image lands, then the worker parks with two seeds still to run.
+        assert wait_until(lambda: len(generations(client, session_id)[0]["images"]) == 1)
+        assert status_of(client, session_id) == "running"
+
+        # Held, and the machine gets its memory back anyway.
+        assert wait_until(lambda: engine.unload_count >= 1)
+
+
+def test_a_v1_request_still_releases_the_model_while_the_queue_is_paused(settings):
+    """The unloader is one instance shared with the `/v1` plane, and it re-arms
+    only on the way down to zero in flight. A playground worker parked inside it
+    would disable automatic release for the whole server, `/v1` included — so
+    this asks `/v1` the question while a playground run is held mid-flight."""
+    engine = BlockingEngine()
+    with _paused_client(settings, engine, idle_unload_s=0) as client:
+        session_id = new_session(client)
+        submit(client, session_id, n=3)
+        assert wait_until(lambda: status_of(client, session_id) == "running")
+        pause(client, True)
+        engine.release = True
+        assert wait_until(lambda: len(generations(client, session_id)[0]["images"]) == 1)
+        assert status_of(client, session_id) == "running"
+
+        before = engine.unload_count
+        assert client.post(
+            "/v1/images/generations",
+            json={"prompt": "a fox", "model": "z-image-turbo", "response_format": "b64_json"},
+        ).status_code == 200
+        assert wait_until(lambda: engine.unload_count > before)

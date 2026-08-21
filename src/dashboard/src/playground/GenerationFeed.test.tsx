@@ -43,6 +43,7 @@ function generation(patch: Partial<PlaygroundGeneration> = {}): PlaygroundGenera
     sessionId: "s1",
     groupId: id,
     prompt: "a fox",
+    negativePrompt: null,
     model: "qwen-image-2512",
     kind: "txt2img",
     n: 1,
@@ -60,12 +61,13 @@ function generation(patch: Partial<PlaygroundGeneration> = {}): PlaygroundGenera
   };
 }
 
-/** The four callbacks the feed reports interaction through. */
+/** The callbacks the feed reports interaction through. */
 type Spies = {
   onCancel: Mock;
   onRefine: Mock;
   onVariation: Mock;
   onDeleteImage: Mock;
+  onDeleteGroup: Mock;
 };
 
 function element(
@@ -76,6 +78,8 @@ function element(
   nameOf: (id: string) => string = (id) => id,
   // Only the preview test cares: everything else observes a feed at rest.
   progress: Progress = IDLE,
+  // Only the paused tests care.
+  paused = false,
 ) {
   return (
     <GenerationFeed
@@ -87,6 +91,8 @@ function element(
       onRefine={spies.onRefine}
       onVariation={spies.onVariation}
       onDeleteImage={spies.onDeleteImage}
+      onDeleteGroup={spies.onDeleteGroup}
+      paused={paused}
       nameOf={nameOf}
     />
   );
@@ -106,6 +112,7 @@ function handlers(): Spies {
     onRefine: vi.fn(),
     onVariation: vi.fn(),
     onDeleteImage: vi.fn(),
+    onDeleteGroup: vi.fn(),
   };
 }
 
@@ -335,4 +342,154 @@ it("gives the preview the grid cell the running image will land in", () => {
   expect(cells.map((cell) => cell.className)).toEqual(["pg-image-cell", "pg-preview"]);
   // And nowhere else: the running block below keeps the bar and the status only.
   expect(container.querySelector(".pg-running .pg-preview")).toBeNull();
+});
+
+// ── Negative prompts ───────────────────────────────────────────────────────
+
+it("shows the negative prompt of the request the entry is made of", () => {
+  // The entry shows the *root's* request, so a member disagreeing must not be
+  // what is read: it is the root's settings a refine of this group reuses.
+  feed(
+    [
+      generation({ id: "g1", negativePrompt: "blurry, watermark" }),
+      generation({ id: "g2", groupId: "g1", negativePrompt: "something else" }),
+    ],
+    handlers(),
+  );
+
+  expect(screen.getByText(/blurry, watermark/)).toBeTruthy();
+  expect(screen.queryByText(/something else/)).toBeNull();
+});
+
+it("says nothing about a negative prompt when none was sent", () => {
+  const { container } = feed([generation()], handlers());
+  expect(container.querySelector(".pg-prompt-negative")).toBeNull();
+});
+
+// ── Deleting a whole entry ─────────────────────────────────────────────────
+
+it("deletes the group, not the generation that happens to be the root", () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+  const spies = handlers();
+  // A lineage whose root's own id differs from the group's, so passing the
+  // wrong one is visible rather than accidentally right.
+  feed([generation({ id: "g7", groupId: "lineage-1" })], spies);
+
+  screen.getByRole("button", { name: "Delete entry: a fox" }).click();
+
+  expect(spies.onDeleteGroup).toHaveBeenCalledWith("lineage-1");
+  confirm.mockRestore();
+});
+
+it("asks first, and does nothing when the answer is no", () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  const spies = handlers();
+  feed([generation()], spies);
+
+  screen.getByRole("button", { name: "Delete entry: a fox" }).click();
+
+  expect(confirm).toHaveBeenCalled();
+  expect(spies.onDeleteGroup).not.toHaveBeenCalled();
+  confirm.mockRestore();
+});
+
+it("counts the whole lineage's images in what it asks", () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  feed(
+    [
+      generation({ id: "g1" }),
+      generation({ id: "g2", groupId: "g1", images: [{ url: "/b.png", seed: 2 }] }),
+    ],
+    handlers(),
+  );
+
+  screen.getByRole("button", { name: "Delete entry: a fox" }).click();
+
+  expect(confirm).toHaveBeenCalledWith("Delete this entry and its 2 images?");
+  confirm.mockRestore();
+});
+
+// ── A held queue ───────────────────────────────────────────────────────────
+
+it("says a queued generation is held rather than waiting its turn", () => {
+  const spies = handlers();
+  const queued = [generation({ status: "queued", images: [] })];
+
+  const { rerender } = render(element(queued, spies, undefined, IDLE, false));
+  expect(screen.getByText("Queued…")).toBeTruthy();
+
+  rerender(element(queued, spies, undefined, IDLE, true));
+  expect(screen.queryByText("Queued…")).toBeNull();
+  expect(screen.getByText(/the queue is paused/i)).toBeTruthy();
+});
+
+// ── The preview blur ───────────────────────────────────────────────────────
+
+it("eases the preview blur off as the run progresses", () => {
+  const running = [generation({ status: "running", images: [] })];
+  const at = (step: number): Progress => ({
+    ...IDLE,
+    state: "generating",
+    step,
+    total: 30,
+    preview_seq: 1,
+  });
+
+  const spies = handlers();
+  const { container, rerender } = render(element(running, spies, undefined, at(1)));
+  const box = () => container.querySelector(".pg-preview") as HTMLElement;
+  const blurAt = () => Number.parseFloat(box().style.getPropertyValue("--pg-preview-blur"));
+
+  const early = blurAt();
+  rerender(element(running, spies, undefined, at(15)));
+  const middle = blurAt();
+  rerender(element(running, spies, undefined, at(30)));
+  const late = blurAt();
+
+  expect(early).toBeGreaterThan(middle);
+  expect(middle).toBeGreaterThan(late);
+  // Nearly sharp by the end of a 30-step run — the denoiser has done the job
+  // the blur was standing in for.
+  expect(late).toBeLessThan(3);
+});
+
+it("keeps a short run blurrier at its last step than a long one", () => {
+  const running = [generation({ status: "running", images: [] })];
+  const done = (total: number): Progress => ({
+    ...IDLE,
+    state: "generating",
+    step: total,
+    total,
+    preview_seq: 1,
+  });
+  const spies = handlers();
+
+  const { container, rerender } = render(element(running, spies, undefined, done(8)));
+  const blurAt = () =>
+    Number.parseFloat(
+      (container.querySelector(".pg-preview") as HTMLElement).style.getPropertyValue(
+        "--pg-preview-blur",
+      ),
+    );
+
+  const short = blurAt();
+  rerender(element(running, spies, undefined, done(50)));
+  expect(short).toBeGreaterThan(blurAt());
+});
+
+it("holds the full blur while the step count is somebody else's", () => {
+  // Weights loading, or an external `/v1` client holding the engine: the same
+  // guard that blanks `seq` must blank the blur's denominator.
+  const spies = handlers();
+  const { container } = render(
+    element([generation({ status: "running", images: [] })], spies, undefined, {
+      ...IDLE,
+      state: "loading",
+      step: 20,
+      total: 30,
+    }),
+  );
+
+  const box = container.querySelector(".pg-preview") as HTMLElement;
+  expect(Number.parseFloat(box.style.getPropertyValue("--pg-preview-blur"))).toBe(20);
 });

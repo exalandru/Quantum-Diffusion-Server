@@ -6,6 +6,8 @@ import { AdvancedSettings, DEFAULT_ADVANCED, sizeOf, type Advanced } from "./Adv
 
 export type Draft = {
   prompt: string;
+  /** What to steer away from, or null when the model cannot take one. */
+  negativePrompt: string | null;
   model: string;
   n: number;
   image: File | null;
@@ -83,6 +85,12 @@ export function Composer({
     ? capabilities.supports_edit || capabilities.supports_image_to_image
     : false;
 
+  // The same question, of the same model, about the other conditional control.
+  // Unlike the attachment this does not clear what was typed when the answer is
+  // no: text is cheap to keep and expensive to retype, and the field is disabled
+  // anyway, so nothing can be sent by accident.
+  const acceptsNegative = capabilities?.supports_negative_prompt ?? false;
+
   // Switching to a model that takes no image drops the attachment rather than
   // keeping a thumbnail on screen and quietly generating without it.
   useEffect(() => {
@@ -92,7 +100,10 @@ export function Composer({
   // The gear reads "on" only when something was actually chosen: an untouched
   // composer still generates at the model's own defaults.
   const advancedTouched =
-    advanced.ratio !== "auto" || advanced.steps !== null || advanced.seed !== null;
+    advanced.ratio !== "auto" ||
+    advanced.steps !== null ||
+    advanced.seed !== null ||
+    (acceptsNegative && advanced.negativePrompt.trim() !== "");
 
   // While the popover is open, a press outside it or Escape closes it. mousedown
   // rather than click, so a selection dragged out of the panel is not a dismissal.
@@ -134,6 +145,7 @@ export function Composer({
     if (!prompt.trim() || busy) return;
     onSubmit({
       prompt,
+      negativePrompt: acceptsNegative ? advanced.negativePrompt.trim() || null : null,
       model: selected,
       n,
       image: attachment?.file ?? null,

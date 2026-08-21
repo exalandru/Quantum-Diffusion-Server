@@ -1,7 +1,15 @@
-import { Fragment, type ReactNode, useEffect, useRef, useState } from "react";
+import {
+  Fragment,
+  type CSSProperties,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 import type { PlaygroundGeneration, Progress } from "../types";
 import { ImageViewer } from "./ImageViewer";
+import { previewBlurPx, previewScale } from "./preview-blur";
+import { Tool } from "./Tool";
 
 /** What the viewer is showing, if anything. */
 type Viewing = { url: string; caption: string; detail?: string };
@@ -66,6 +74,8 @@ export function GenerationFeed({
   onRefine,
   onVariation,
   onDeleteImage,
+  onDeleteGroup,
+  paused,
   nameOf,
   srcOf = (url) => url,
 }: {
@@ -79,6 +89,10 @@ export function GenerationFeed({
   onRefine: (root: PlaygroundGeneration, image: { url: string; seed: number }) => void;
   onVariation: (root: PlaygroundGeneration) => void;
   onDeleteImage: (url: string) => void;
+  /** The whole entry: every generation of the lineage, and the files only it owned. */
+  onDeleteGroup: (groupId: string) => void;
+  /** The queue is held: what is queued says so instead of pretending to wait its turn. */
+  paused: boolean;
   /** Id → readable name; the record stores the API id. */
   nameOf: (id: string) => string;
   /**
@@ -122,7 +136,36 @@ export function GenerationFeed({
           const running = members.find((member) => member.status === "running");
           return (
           <article className="pg-entry" key={id}>
-            <p className="pg-prompt">{root.prompt}</p>
+            <div className="pg-entry-head">
+              <p className="pg-prompt">{root.prompt}</p>
+              {/* Revealed on hover or keyboard focus, like the session row's
+                  actions: a control a keyboard user cannot reach is not a
+                  control. `window.confirm` is the convention here for a
+                  destructive one click — the session list and the per-image
+                  tool both do it, and a misfire costs the whole entry. */}
+              <div className="pg-entry-actions">
+                <button
+                  type="button"
+                  className="small danger"
+                  aria-label={`Delete entry: ${root.prompt}`}
+                  onClick={() => {
+                    const count = images.length;
+                    const what =
+                      count === 0
+                        ? "Delete this entry?"
+                        : `Delete this entry and its ${count} ${count === 1 ? "image" : "images"}?`;
+                    if (window.confirm(what)) onDeleteGroup(id);
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            </div>
+            {root.negativePrompt && (
+              <p className="pg-prompt-negative">
+                <span className="pg-negative-tag">Negative</span> {root.negativePrompt}
+              </p>
+            )}
             <p className="pg-meta">
               {nameOf(root.model)} · {root.size} · {root.steps} steps · {requested}{" "}
               {requested === 1 ? "image" : "images"}
@@ -194,6 +237,11 @@ export function GenerationFeed({
                   <StepPreview
                     seq={progress.state === "generating" ? progress.preview_seq : 0}
                     size={running.size}
+                    // Guarded like `seq`, and for the same reason: while the
+                    // weights load, or while an external `/v1` client holds the
+                    // engine, that step count is not this preview's.
+                    step={progress.state === "generating" ? progress.step : 0}
+                    total={progress.state === "generating" ? progress.total : 0}
                   />
                 )}
               </div>
@@ -205,7 +253,7 @@ export function GenerationFeed({
               <Fragment key={member.id}>
                 {member.status === "queued" && (
                   <div className="pg-status">
-                    <span className="note">Queued…</span>
+                    <span className="note">{paused ? "Held — the queue is paused." : "Queued…"}</span>
                     <button
                       className="small"
                       disabled={cancelling === member.id}
@@ -304,8 +352,23 @@ const FADE_MS = 500;
  * in one server-side slot at `/playground/api/preview`, and `seq` is both the
  * change signal and the cache-buster. Two frames are on screen at once at most:
  * the new one fades in over the old, which is dropped once the fade is over.
+ *
+ * The frames are blurred in proportion to how far the run has got — see
+ * `preview-blur.ts` for why, and why the amount depends on the step count as
+ * well as the progress. The value is set as a custom property on the box rather
+ * than on each frame, so both sides of a crossfade always agree on it.
  */
-function StepPreview({ seq, size }: { seq: number; size: string }) {
+function StepPreview({
+  seq,
+  size,
+  step,
+  total,
+}: {
+  seq: number;
+  size: string;
+  step: number;
+  total: number;
+}) {
   const [frames, setFrames] = useState<{ seq: number; on: boolean }[]>([]);
   const sweep = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -328,8 +391,19 @@ function StepPreview({ seq, size }: { seq: number; size: string }) {
   const square = !(Number.isFinite(w) && Number.isFinite(h) && w > 0 && h > 0);
   const ratio = square ? "1 / 1" : `${w} / ${h}`;
 
+  const blur = previewBlurPx(step, total);
+
   return (
-    <div className="pg-preview" style={{ aspectRatio: ratio }}>
+    <div
+      className="pg-preview"
+      style={
+        {
+          aspectRatio: ratio,
+          "--pg-preview-blur": `${blur.toFixed(2)}px`,
+          "--pg-preview-scale": previewScale(blur).toFixed(4),
+        } as CSSProperties
+      }
+    >
       {frames.map((frame) => (
         <img
           key={frame.seq}
@@ -358,52 +432,5 @@ function StepPreview({ seq, size }: { seq: number; size: string }) {
           will not change for the next few seconds. */}
       <div className="pg-preview-glow" aria-hidden="true" />
     </div>
-  );
-}
-
-/**
- * One icon-only toolbar button, named by a tooltip rather than by `title`.
- *
- * `aria-label` carries the name for assistive technology; `data-tip` feeds the
- * CSS tooltip, which is styled like the rest of the app instead of being the
- * browser's own native box.
- */
-function Tool({
-  tip,
-  danger,
-  disabled,
-  onClick,
-  children,
-}: {
-  tip: string;
-  danger?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-  /** The icon's shape elements. */
-  children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      className={danger ? "small danger pg-tool" : "small pg-tool"}
-      data-tip={tip}
-      aria-label={tip}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      <svg
-        viewBox="0 0 24 24"
-        width="14"
-        height="14"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden="true"
-      >
-        {children}
-      </svg>
-    </button>
   );
 }

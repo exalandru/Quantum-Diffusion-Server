@@ -22,6 +22,12 @@ export type Advanced = {
   steps: number | null;
   /** null = a random seed, picked by the server. */
   seed: number | null;
+  /**
+   * What the image should avoid. Kept even while the selected model cannot use
+   * one — `Composer` stops *sending* it rather than erasing what was typed, so
+   * switching models and back does not cost the user their text.
+   */
+  negativePrompt: string;
 };
 
 export const MAX_SEED = 4294967295;
@@ -32,6 +38,7 @@ export const DEFAULT_ADVANCED: Advanced = {
   long: 1280,
   steps: null,
   seed: null,
+  negativePrompt: "",
 };
 
 /** "WxH" for the server, or null when the ratio is auto (model default size). */
@@ -76,6 +83,10 @@ export function AdvancedSettings({
   const explicit = value.ratio !== "auto";
   const size = sizeOf(value);
   const short = value.ratio === "auto" ? null : Math.round(value.long / RATIOS[value.ratio]);
+  // Fail closed, exactly as the composer's drop zone does: a capability fetch
+  // that has not landed — or that failed — leaves the field inert rather than
+  // offering an option the model may refuse.
+  const acceptsNegative = capabilities?.supports_negative_prompt ?? false;
   const outOfRange =
     capabilities !== null &&
     short !== null &&
@@ -177,6 +188,33 @@ export function AdvancedSettings({
           Denoising passes - more recovers detail and costs time linearly. Empty uses the model's
           default.
         </p>
+      </div>
+
+      <div className="pg-field">
+        <span className="pg-field-label">
+          <label htmlFor="pg-negative-prompt">Negative prompt</label>
+        </span>
+        <textarea
+          id="pg-negative-prompt"
+          className="pg-textarea"
+          rows={2}
+          disabled={!acceptsNegative}
+          placeholder={acceptsNegative ? "blurry, watermark, extra fingers…" : "unavailable"}
+          value={value.negativePrompt}
+          onChange={(event) => onChange({ ...value, negativePrompt: event.target.value })}
+        />
+        {acceptsNegative ? (
+          <p className="note">
+            What to steer away from. It works by pushing the image away from a second,
+            unconditional prediction — so it costs roughly a second pass per step.
+          </p>
+        ) : (
+          <p className="note">
+            {capabilities
+              ? "This model is guidance-distilled: it makes no unconditional prediction, so there is nothing for a negative prompt to steer away from."
+              : "Waiting for this model's capabilities."}
+          </p>
+        )}
       </div>
 
       <div className="pg-field">
