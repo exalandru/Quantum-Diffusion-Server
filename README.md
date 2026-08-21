@@ -37,7 +37,7 @@ back automatically when you stop generating - a knob rather than a compromise.
 roughly 1.1 GB for the Python runtime plus whatever the models weigh -
 several GB each, tens of GB for the largest, all shown per model in the app
 before you download anything. Memory is the real constraint rather than disk:
-the two models enabled by default are small and quantized to 4 bits, while the
+the two models enabled by default are small and quantized to 8 bits, while the
 20B and 32B entries in the catalogue assume a large-memory machine - FLUX.2-dev
 holds ~58 GB resident while it generates.
 
@@ -135,11 +135,15 @@ The app is a control panel over it, not a wrapper around it.
 |---|---|---|---|
 | `z-image-turbo` | Apache-2.0 | ✅ | the default; 9 steps, fast |
 | `ernie-image-turbo` | Apache-2.0 | ✅ | 8 steps, fast |
-| `z-image` | Apache-2.0 | - | 50 steps, adjustable guidance |
-| `ernie-image` | Apache-2.0 | - | 50 steps |
+| `z-image` | Apache-2.0 | - | 20 steps, adjustable guidance |
+| `ernie-image` | Apache-2.0 | - | 20 steps |
+| `qwen-image-flash` | NVIDIA Open Model | - | Qwen-Image distilled to 4 steps |
 | `qwen-image-2512` | Apache-2.0 | - | 20B, strong text rendering, optional editing |
 | `flux2-klein` | FLUX Non-Commercial 🔒 | - | 9B distilled, 4 steps, instruction editing |
 | `flux2-dev` | FLUX Non-Commercial 🔒 | - | 32B; raw HF source with bounded-memory pre-quantized variants |
+| `anima-turbo` | CircleStone Non-Commercial | - | 2B anime-oriented, distilled to 10 steps; the variant its author recommends |
+| `anima` | CircleStone Non-Commercial | - | the undistilled Aesthetic fine-tune, 30 steps |
+| `krea-2-turbo` | Krea 2 Community 🔒 | - | 12B distilled, 8 steps, adjustable guidance |
 | `fibo-lite` | CC-BY-NC-4.0 🔒 | - | prompts are structured JSON |
 | `fibo` | CC-BY-NC-4.0 🔒 | - | prompts are structured JSON |
 | `ideogram-4` | Ideogram Non-Commercial 🔒 | - | sampler presets instead of a step count |

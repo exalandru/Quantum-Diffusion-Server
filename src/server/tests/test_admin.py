@@ -424,7 +424,7 @@ def test_a_broken_configuration_still_serves_the_control_plane(tmp_path, monkeyp
     ("name", "text"),
     [
         ("malformed JSON", '{"server": {'),
-        ("out-of-range value", '{"default_quantize": 99}'),
+        ("out-of-range value", '{"models": {"z-image": {"quantize": 99}}}'),
         ("wrong type", '{"models": "not-an-object"}'),
         ("not an object", "[1, 2, 3]"),
     ],

@@ -239,10 +239,16 @@ class Settings(BaseModel):
     #: its catalogue size. Lives here rather than under `server` because it is a
     #: generation default, not a transport setting — same level as `default_model`.
     default_size: str | None = None
-    #: Config-wide quantization, same precedence as `default_size`: below the
-    #: per-model `quantize`, above the catalogue. Skipped on models whose weights
-    #: already carry their precision — mflux would keep the stored value anyway.
-    default_quantize: int | None = Field(default=None, ge=0, le=8)
+    # There is deliberately no config-wide `default_quantize`. It existed, and it
+    # overwrote the catalogue rather than standing behind it, so a single global
+    # silently decided the precision of every model — including the ones whose
+    # catalogue row had picked one on purpose. Precision is a property of a model,
+    # not a property of an installation: a 2B is unusable at 4-bit where a 20B is
+    # fine. `models.<key>.quantize` remains, for the one model you mean.
+    #
+    # A config that still carries the key is not rejected — `load_settings` says
+    # out loud that it is ignored, rather than letting pydantic drop it in
+    # silence, which is how a removed setting turns into a mystery.
     models: dict[str, ModelOverride] = Field(default_factory=dict)
 
     def runtime_issues(self) -> list[RuntimeIssue]:
@@ -403,7 +409,6 @@ class Settings(BaseModel):
         return build_registry(
             self.models,
             default_size=self.default_size,
-            default_quantize=self.default_quantize,
             include_disabled=include_disabled,
             imported=imported,
             cache_root=self.effective_cache_dir,
@@ -552,10 +557,22 @@ def load_settings(path: Path | None = None, *, strict: bool = True) -> Settings:
 
     # The generic `QDS_SERVER_*` loop above only covers `ServerSettings`
     # fields; these two live one level up and are special-cased.
-    for field_name in ("default_model", "default_size", "default_quantize"):
+    for field_name in ("default_model", "default_size"):
         value = env.get(field_name.upper())
         if value:
             raw[field_name] = value
+
+    # `default_quantize` was a config-wide bit depth that overwrote every model's
+    # catalogue precision. Removed, because it decided for models it knew nothing
+    # about. Announced rather than dropped: pydantic ignores unknown keys, so a
+    # user who set this would otherwise see their models change precision with
+    # nothing said.
+    if raw.pop("default_quantize", None) is not None or env.get("DEFAULT_QUANTIZE"):
+        logger.warning(
+            "default_quantize is no longer supported and was ignored. Precision now "
+            "comes from each model's catalogue entry; set models.<key>.quantize to "
+            "override one model (0 for bf16)."
+        )
 
     try:
         settings = Settings.model_validate(raw)

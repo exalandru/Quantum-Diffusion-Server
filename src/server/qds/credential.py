@@ -88,6 +88,31 @@ def _read(path: Path | None = None) -> dict[str, Any] | None:
     return record
 
 
+def hash_password(password: str) -> dict[str, Any]:
+    """A fresh scrypt record for this password, ready to persist anywhere.
+
+    Shared by the admin credential file and the playground's per-session
+    passwords, so there is one algorithm, one set of work factors and one
+    length floor — not two that drift apart.
+    """
+    if len(password) < MIN_LENGTH:
+        raise WeakPassword(f"The password must be at least {MIN_LENGTH} characters.")
+
+    salt = secrets.token_bytes(SALT_BYTES)
+    derived = _derive(password, salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
+    return {
+        "version": 1,
+        "algorithm": "scrypt",
+        # The parameters travel *with* the hash, so raising the defaults
+        # later does not invalidate a password somebody already set.
+        "n": SCRYPT_N,
+        "r": SCRYPT_R,
+        "p": SCRYPT_P,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "hash": base64.b64encode(derived).decode("ascii"),
+    }
+
+
 def set_password(password: str, path: Path | None = None) -> None:
     """Replace the stored credential.
 
@@ -95,25 +120,7 @@ def set_password(password: str, path: Path | None = None) -> None:
     the 0600-from-creation this file needs at least as much as the
     configuration does.
     """
-    if len(password) < MIN_LENGTH:
-        raise WeakPassword(f"The password must be at least {MIN_LENGTH} characters.")
-
-    salt = secrets.token_bytes(SALT_BYTES)
-    derived = _derive(password, salt, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
-    configfile.write(
-        {
-            "version": 1,
-            "algorithm": "scrypt",
-            # The parameters travel *with* the hash, so raising the defaults
-            # later does not invalidate a password somebody already set.
-            "n": SCRYPT_N,
-            "r": SCRYPT_R,
-            "p": SCRYPT_P,
-            "salt": base64.b64encode(salt).decode("ascii"),
-            "hash": base64.b64encode(derived).decode("ascii"),
-        },
-        credential_path(path),
-    )
+    configfile.write(hash_password(password), credential_path(path))
 
 
 def clear(path: Path | None = None) -> None:
@@ -121,15 +128,20 @@ def clear(path: Path | None = None) -> None:
 
 
 def verify(password: str, path: Path | None = None) -> bool:
-    """Whether this is the stored password.
+    """Whether this is the stored password. See `verify_record` for the failure
+    posture."""
+    return verify_record(password, _read(path))
+
+
+def verify_record(password: str, record: dict[str, Any] | None) -> bool:
+    """Whether `password` matches a record made by `hash_password`.
 
     Fails closed on anything it cannot read: a truncated, hand-edited or
     unparseable record verifies nothing rather than raising, because a
-    credential file that has been damaged should lock the door, not crash the
+    credential that has been damaged should lock the door, not crash the
     endpoint that guards it.
     """
-    record = _read(path)
-    if record is None:
+    if not isinstance(record, dict) or record.get("algorithm") != "scrypt":
         return False
     try:
         salt = base64.b64decode(record["salt"], validate=True)

@@ -25,13 +25,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, FastAPI, File, Form, Request, UploadFile
+from fastapi import APIRouter, Depends, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 
-from qds import __version__, admin, logbuffer
+from qds import __version__, admin, credential, logbuffer, playground_lock
 from qds import settings as settings_module
 from qds.auth import build_dependencies
 from qds.engine import GenerationJob, ModelEngine
@@ -65,6 +65,23 @@ DEFAULT_IMAGE_STRENGTH = 0.4
 PROGRESS_POLL_S = 0.25
 #: Heartbeat when nothing changes, so departed clients get noticed.
 PROGRESS_PING_S = 15.0
+
+
+#: An unlock token, as the playground sends it. Module-level on purpose: with
+#: postponed annotations FastAPI resolves names in the module namespace, so a
+#: local alias inside `create_app` would be read as a required body field.
+SessionToken = Annotated[str | None, Header(alias=playground_lock.UNLOCK_HEADER)]
+
+
+class RenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    #: `None` or blank clears the title back to "first prompt".
+    title: str | None = Field(default=None, max_length=1000)
+
+
+class SessionPasswordRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str
 
 
 class ImageGenerationRequest(BaseModel):
@@ -302,11 +319,9 @@ def create_app(
     )
     install_exception_handlers(app)
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
-    app.mount(
-        "/playground/images",
-        StaticFiles(directory=playground.images_dir),
-        name="playground-images",
-    )
+    # Playground images are *not* a mount: a session can be locked, and a file
+    # must then not be served without the session's unlock token. See the
+    # `/playground/images/{filename}` route below.
 
     # ── Authentication ─────────────────────────────────────────────────────
     #
@@ -315,6 +330,8 @@ def create_app(
 
     sessions = SessionStore()
     throttle = admin.LoginThrottle()
+    unlocks = playground_lock.UnlockStore()
+    unlock_throttles = playground_lock.UnlockThrottles()
     require_api, require_admin = build_dependencies(settings, sessions, local_token)
     auth = Depends(require_api)
 
@@ -767,15 +784,27 @@ def create_app(
         dependencies=[Depends(require_api), Depends(admin.deny_cross_site)],
     )
 
-    def session_or_404(session_id: str) -> dict:
-        detail = playground.get_session(session_id)
-        if detail is None:
-            raise APIError(
-                f"No playground session {session_id!r}.",
-                status_code=404,
-                code="not_found",
-            )
-        return detail
+    def not_found(session_id: str) -> APIError:
+        return APIError(
+            f"No playground session {session_id!r}.", status_code=404, code="not_found"
+        )
+
+    def assert_unlocked(session_id: str, token: str | None) -> None:
+        """404 for an unknown session, 403 `session_locked` for a protected one
+        the token does not open. An open session passes with any token."""
+        try:
+            record = playground.password_record(session_id)
+        except KeyError:
+            raise not_found(session_id) from None
+        if record is None:
+            return
+        if unlocks.session_for(token) != session_id:
+            raise playground_lock.locked(session_id)
+
+    def require_unlocked(session_id: str, x_qds_session_token: SessionToken = None) -> None:
+        assert_unlocked(session_id, x_qds_session_token)
+
+    unlocked = Depends(require_unlocked)
 
     @playground_api.post("/sessions", status_code=201)
     async def playground_create_session() -> dict:
@@ -785,20 +814,91 @@ def create_app(
     async def playground_list_sessions() -> dict:
         return {"sessions": playground.list_sessions()}
 
-    @playground_api.get("/sessions/{session_id}")
+    @playground_api.get("/sessions/{session_id}", dependencies=[unlocked])
     async def playground_get_session(session_id: str) -> dict:
-        return session_or_404(session_id)
+        detail = playground.get_session(session_id)
+        if detail is None:
+            raise not_found(session_id)
+        return detail
 
-    @playground_api.delete("/sessions/{session_id}", status_code=204)
+    @playground_api.patch("/sessions/{session_id}", dependencies=[unlocked])
+    async def playground_rename_session(session_id: str, body: RenameRequest) -> dict:
+        session = playground.rename_session(session_id, body.title)
+        if session is None:
+            raise not_found(session_id)
+        return session
+
+    @playground_api.delete("/sessions/{session_id}", status_code=204, dependencies=[unlocked])
     async def playground_delete_session(session_id: str) -> None:
-        session_or_404(session_id)
         # Stop the engine first: the worker is inside a generation whose record
         # is about to disappear, and it would otherwise keep the machine busy
         # producing images for a session nobody can see.
         runner.cancel_running_in({session_id})
         playground.unlink(playground.delete_session(session_id))
+        unlocks.revoke_session(session_id)
+        unlock_throttles.forget(session_id)
 
-    @playground_api.post("/sessions/{session_id}/generations", status_code=202)
+    # ── Session passwords ──
+    #
+    # Setting, changing and removing all go through `unlocked`: on an open
+    # session that passes trivially, on a protected one the token *is* the
+    # proof of knowing the current password. The hash work runs in a thread —
+    # ~100 ms of scrypt must not stall the event loop that serves previews.
+
+    @playground_api.post("/sessions/{session_id}/password", dependencies=[unlocked])
+    async def playground_set_password(session_id: str, body: SessionPasswordRequest) -> dict:
+        try:
+            record = await asyncio.to_thread(credential.hash_password, body.password)
+        except credential.WeakPassword as exc:
+            raise playground_lock.weak_password(str(exc)) from None
+        if not playground.set_password(session_id, record):
+            raise not_found(session_id)
+        # Every earlier token was minted against the old password (or none);
+        # the caller gets a fresh one so it stays where it is.
+        unlocks.revoke_session(session_id)
+        return {"token": unlocks.issue(session_id)}
+
+    @playground_api.delete(
+        "/sessions/{session_id}/password", status_code=204, dependencies=[unlocked]
+    )
+    async def playground_remove_password(session_id: str) -> None:
+        if playground.password_record(session_id) is None:
+            raise playground_lock.not_protected(session_id)
+        playground.set_password(session_id, None)
+        unlocks.revoke_session(session_id)
+        unlock_throttles.forget(session_id)
+
+    @playground_api.post("/sessions/{session_id}/unlock")
+    async def playground_unlock(session_id: str, body: SessionPasswordRequest) -> dict:
+        try:
+            record = playground.password_record(session_id)
+        except KeyError:
+            raise not_found(session_id) from None
+        if record is None:
+            raise playground_lock.not_protected(session_id)
+        throttle = unlock_throttles.for_session(session_id)
+        wait = throttle.retry_after()
+        if wait > 0:
+            raise playground_lock.too_many_attempts(wait)
+        if not await asyncio.to_thread(credential.verify_record, body.password, record):
+            throttle.record_failure()
+            logger.warning("playground: failed unlock attempt on session %s", session_id)
+            raise playground_lock.invalid_password()
+        throttle.record_success()
+        return {"token": unlocks.issue(session_id), "session": playground.session_summary(session_id)}
+
+    @playground_api.post("/sessions/{session_id}/lock", status_code=204)
+    async def playground_lock_session(session_id: str, x_qds_session_token: SessionToken = None) -> None:
+        """Give back the presented token. Only that one: another tab's unlock is
+        its own; changing the password is what revokes them all."""
+        try:
+            playground.password_record(session_id)
+        except KeyError:
+            raise not_found(session_id) from None
+        if unlocks.session_for(x_qds_session_token) == session_id:
+            unlocks.revoke(x_qds_session_token)
+
+    @playground_api.post("/sessions/{session_id}/generations", status_code=202, dependencies=[unlocked])
     async def playground_generate(
         session_id: str,
         prompt: Annotated[str, Form()],
@@ -887,15 +987,22 @@ def create_app(
         runner.submit(record["id"])
         return record
 
+    def no_generation(generation_id: str) -> APIError:
+        return APIError(
+            f"No playground generation {generation_id!r}.",
+            status_code=404,
+            code="not_found",
+        )
+
     @playground_api.post("/generations/{generation_id}/cancel")
-    async def playground_cancel(generation_id: str) -> dict:
+    async def playground_cancel(generation_id: str, x_qds_session_token: SessionToken = None) -> dict:
+        session_id = playground.session_of_generation(generation_id)
+        if session_id is None:
+            raise no_generation(generation_id)
+        assert_unlocked(session_id, x_qds_session_token)
         record = runner.cancel(generation_id)
         if record is None:
-            raise APIError(
-                f"No playground generation {generation_id!r}.",
-                status_code=404,
-                code="not_found",
-            )
+            raise no_generation(generation_id)
         return record
 
     @playground_api.get("/preview")
@@ -917,11 +1024,18 @@ def create_app(
             raise APIError("No preview is available.", status_code=404, code="not_found")
         return Response(payload, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
+    def no_image(filename: str) -> APIError:
+        return APIError(f"No playground image {filename!r}.", status_code=404, code="not_found")
+
     @playground_api.delete("/images/{filename}", status_code=204)
-    async def playground_delete_image(filename: str) -> None:
+    async def playground_delete_image(filename: str, x_qds_session_token: SessionToken = None) -> None:
         # `unlink` runs only when a DB row matched, and rows only ever hold names
         # minted by `save_image` (`uuid4().hex + ".png"`) or `context_path`
         # (`ctx-<uuid><suffix>`), so a crafted path never reaches the filesystem.
+        session_id = playground.session_of_image(filename)
+        if session_id is None:
+            raise no_image(filename)
+        assert_unlocked(session_id, x_qds_session_token)
         matched = playground.delete_image(filename)
         if matched is None:
             raise APIError(
@@ -934,6 +1048,60 @@ def create_app(
         playground.unlink([filename, *playground.dissolve_empty_group(group_id)])
 
     app.include_router(playground_api)
+
+    @app.get(
+        "/playground/images/{filename}",
+        dependencies=[auth, Depends(admin.deny_cross_site)],
+        include_in_schema=False,
+    )
+    async def playground_image(
+        filename: str,
+        x_qds_session_token: SessionToken = None,
+        t: Annotated[str | None, Query(alias=playground_lock.UNLOCK_QUERY)] = None,
+    ) -> FileResponse:
+        """A session's image, behind its lock.
+
+        A row lookup rather than a static mount: the row says which session the
+        file belongs to, and whether that session is locked. It also means a
+        name no row holds — a traversal, a guess — is a 404 before any path is
+        built. `?t=` is accepted here and only here, because an `<img>` sends no
+        headers. `no-store`, so a relocked session is not replayed from cache.
+        """
+        session_id = playground.session_of_image(filename)
+        if session_id is None:
+            raise no_image(filename)
+        assert_unlocked(session_id, x_qds_session_token or t)
+        path = playground.images_dir / filename
+        if not path.is_file():
+            raise no_image(filename)
+        return FileResponse(path, headers={"Cache-Control": "private, no-store"})
+
+    # ── Admin recovery ─────────────────────────────────────────────────────
+    #
+    # The one way past a session password without knowing it. Admin authority,
+    # because the admin already owns the disk the database sits on; this only
+    # saves them a sqlite shell.
+
+    playground_admin = APIRouter(
+        prefix="/admin/playground",
+        tags=["admin"],
+        dependencies=[Depends(require_admin), Depends(admin.deny_cross_site)],
+    )
+
+    @playground_admin.delete("/sessions/{session_id}/password", status_code=204)
+    async def admin_strip_session_password(session_id: str) -> None:
+        try:
+            record = playground.password_record(session_id)
+        except KeyError:
+            raise not_found(session_id) from None
+        if record is None:
+            raise playground_lock.not_protected(session_id)
+        playground.set_password(session_id, None)
+        unlocks.revoke_session(session_id)
+        unlock_throttles.forget(session_id)
+        logger.warning("playground: session %s password removed by admin", session_id)
+
+    app.include_router(playground_admin)
 
     return app
 

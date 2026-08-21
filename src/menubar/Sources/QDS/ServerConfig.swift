@@ -90,16 +90,24 @@ struct ServerConfig {
             ],
             "default_model": "z-image-turbo",
             "default_size": "1280x720",
-            "default_quantize": 4,
             "models": [
                 "z-image-turbo": ["enabled": true],
                 "ernie-image-turbo": ["enabled": true],
                 "z-image": ["enabled": false],
                 "ernie-image": ["enabled": false],
                 "qwen-image-2512": ["enabled": false, "enable_edit": false],
+                "qwen-image-flash": ["enabled": false],
                 "flux2-klein": ["enabled": false, "enable_edit": true],
                 // Also needs `qds prequantize` before it can answer at all.
                 "flux2-dev": ["enabled": false, "quantize": 8, "model_path": NSNull()],
+                // Ungated, but non-commercial: obtaining it is automatic,
+                // accepting the licence is still the user's decision.
+                "anima": ["enabled": false],
+                "anima-turbo": ["enabled": false],
+                // Gated, and free commercially only under Krea's revenue and
+                // seat thresholds — so it ships off, like the other models
+                // whose licence the server cannot evaluate for the user.
+                "krea-2-turbo": ["enabled": false],
                 "fibo-lite": ["enabled": false],
                 "fibo": ["enabled": false],
                 "ideogram-4": ["enabled": false, "preset": "V4_DEFAULT_20"],

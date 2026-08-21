@@ -23,7 +23,7 @@ this file matches it exactly — name, subdirectory, quantizability and all. Dri
 is a test failure rather than a silent lie, which is the same arrangement
 `registry._CAPABILITIES` already uses for quantization capability.
 
-Established against mflux 0.18.0, by inspecting each family's
+Established against mflux 0.19.0, by inspecting each family's
 `WeightDefinition.get_components()`, its initializer's `_init_models`, and its
 variant class's annotations:
 
@@ -131,7 +131,7 @@ _COMPONENTS: dict[str, tuple[ComponentSpec, ...]] = {
         ),
         _component(VAE, "VAE"),
     ),
-    # QDS's own definition rather than mflux's, for a model mflux 0.18.0 does not
+    # QDS's own definition rather than mflux's, for a model mflux 0.19.0 does not
     # ship. Same three components, and the one this whole mechanism was built for.
     "flux2-dev": _standard(),
 }

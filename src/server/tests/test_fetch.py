@@ -25,7 +25,7 @@ def test_status_lists_the_whole_catalogue_disabled_models_included(monkeypatch, 
     monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     rows = {row["key"]: row for row in cache_status()}
 
-    assert len(rows) == 10
+    assert len(rows) == 14
     assert rows["ideogram-4"]["enabled"] is False
     assert rows["z-image-turbo"]["enabled"] is True
 

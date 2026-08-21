@@ -67,6 +67,7 @@ export function GenerationFeed({
   onVariation,
   onDeleteImage,
   nameOf,
+  srcOf = (url) => url,
 }: {
   generations: PlaygroundGeneration[];
   progress: Progress;
@@ -80,6 +81,11 @@ export function GenerationFeed({
   onDeleteImage: (url: string) => void;
   /** Id → readable name; the record stores the API id. */
   nameOf: (id: string) => string;
+  /**
+   * Server URL → loadable `src`. A locked session's images need its unlock
+   * token on the URL; the URLs in the records stay the server's.
+   */
+  srcOf?: (url: string) => string;
 }) {
   const end = useRef<HTMLDivElement>(null);
   const [viewing, setViewing] = useState<Viewing | null>(null);
@@ -128,10 +134,10 @@ export function GenerationFeed({
                 type="button"
                 className="pg-thumb pg-context"
                 onClick={() =>
-                  setViewing({ url: root.contextImage as string, caption: "Reference image" })
+                  setViewing({ url: srcOf(root.contextImage as string), caption: "Reference image" })
                 }
               >
-                <img src={root.contextImage} alt="Reference image" />
+                <img src={srcOf(root.contextImage)} alt="Reference image" />
               </button>
             )}
 
@@ -149,13 +155,13 @@ export function GenerationFeed({
                       className="pg-thumb"
                       onClick={() =>
                         setViewing({
-                          url: image.url,
+                          url: srcOf(image.url),
                           caption: root.prompt,
                           detail: `seed ${image.seed} · ${root.size} · ${nameOf(root.model)}`,
                         })
                       }
                     >
-                      <img src={image.url} alt={root.prompt} />
+                      <img src={srcOf(image.url)} alt={root.prompt} />
                     </button>
                     <div className="pg-image-tools" role="toolbar" aria-label="Image actions">
                       <Tool tip="Refine" disabled={busy} onClick={() => onRefine(root, image)}>

@@ -1304,7 +1304,11 @@ function QuantizationDialog({
                 )
               }
             >
-              <option value="">default</option>
+              <option value="">
+                {quant.catalogue_quantize === null || quant.catalogue_quantize === undefined
+                  ? "default (bf16)"
+                  : `default (${quant.catalogue_quantize} bits)`}
+              </option>
               <option value="0">none (bf16)</option>
               {quant.quantize_choices.map((choice) => (
                 <option key={choice} value={String(choice)}>

@@ -14,7 +14,20 @@ import type {
   JobStatus,
   ModelStatus,
   Overview,
+  PlaygroundSession,
 } from "./types";
+
+export function playgroundSession(patch: Partial<PlaygroundSession> = {}): PlaygroundSession {
+  return {
+    id: "s1",
+    title: "a fox",
+    createdAt: 1_700_000_000,
+    updatedAt: 1_700_000_000,
+    generating: false,
+    locked: false,
+    ...patch,
+  };
+}
 
 export function overview(patch: Partial<Overview> = {}): Overview {
   return {
@@ -58,6 +71,8 @@ export function model(patch: Partial<ModelStatus> = {}): ModelStatus {
       // backend invites being read as the backend, and `test_react_keeps_no_
       // quantization_table_of_its_own` rightly cannot tell a mirror from a table.
       quantize_choices: [4, 8],
+      // Likewise a fixture value, not the catalogue's.
+      catalogue_quantize: 8,
       supports_prequantize: false,
       prequantize_choices: [],
       prequantize_strategy: null,

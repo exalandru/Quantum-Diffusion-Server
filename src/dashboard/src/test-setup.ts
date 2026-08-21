@@ -11,4 +11,6 @@ import { afterEach } from "vitest";
 
 afterEach(() => {
   window.localStorage.clear();
+  // Playground unlock tokens live here, per tab; per test, in other words.
+  window.sessionStorage.clear();
 });

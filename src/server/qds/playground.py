@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   title TEXT,
   created_at REAL NOT NULL,
-  updated_at REAL NOT NULL
+  updated_at REAL NOT NULL,
+  -- A `credential.hash_password` record as JSON, or NULL for an open session.
+  -- Never serialized: `_session_json` reports only whether it is set.
+  password TEXT
 );
 CREATE TABLE IF NOT EXISTS generations (
   id TEXT PRIMARY KEY,
@@ -105,6 +108,7 @@ def _session_json(row: sqlite3.Row, *, generating: bool) -> dict[str, Any]:
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "generating": generating,
+        "locked": row["password"] is not None,
     }
 
 
@@ -169,6 +173,10 @@ class PlaygroundStore:
             self._db.execute("ALTER TABLE generations ADD COLUMN group_id TEXT")
             self._db.execute("UPDATE generations SET group_id = id WHERE group_id IS NULL")
             logger.info("playground store migrated: generations.group_id added")
+        columns = {row["name"] for row in self._db.execute("PRAGMA table_info(sessions)")}
+        if "password" not in columns:
+            self._db.execute("ALTER TABLE sessions ADD COLUMN password TEXT")
+            logger.info("playground store migrated: sessions.password added")
 
     def close(self) -> None:
         with self._lock:
@@ -190,7 +198,98 @@ class PlaygroundStore:
             "createdAt": now,
             "updatedAt": now,
             "generating": False,
+            "locked": False,
         }
+
+    def rename_session(self, session_id: str, title: str | None) -> dict[str, Any] | None:
+        """Set a user-chosen title; `None` (or blank) returns the session to the
+        auto-title, which `add_generation` fills from the next prompt."""
+        now = time.time()
+        cleaned = (title or "").strip()[:TITLE_LIMIT] or None
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE sessions SET title = ?, updated_at = ? WHERE id = ?",
+                (cleaned, now, session_id),
+            )
+            if cursor.rowcount == 0:
+                return None
+            return self._session_row(session_id)
+
+    def _session_row(self, session_id: str) -> dict[str, Any] | None:
+        """Caller holds the lock."""
+        row = self._db.execute(
+            """
+            SELECT s.*, EXISTS (
+              SELECT 1 FROM generations g
+              WHERE g.session_id = s.id AND g.status IN ('queued', 'running')
+            ) AS generating
+            FROM sessions s WHERE s.id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        return None if row is None else _session_json(row, generating=bool(row["generating"]))
+
+    def session_summary(self, session_id: str) -> dict[str, Any] | None:
+        """The session row alone, without its generations."""
+        with self._lock:
+            return self._session_row(session_id)
+
+    # ── Passwords ──────────────────────────────────────────────────────────
+    #
+    # Persistence only: hashing and verification are `credential`'s, and they
+    # run outside this lock — a scrypt takes ~100 ms and nothing else should
+    # wait on it.
+
+    def password_record(self, session_id: str) -> dict[str, Any] | None:
+        """The stored hash record, `None` for an open session. `KeyError` when
+        the session does not exist — the caller must tell those apart."""
+        with self._lock:
+            row = self._db.execute(
+                "SELECT password FROM sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(session_id)
+        if row["password"] is None:
+            return None
+        try:
+            record = json.loads(row["password"])
+        except json.JSONDecodeError:
+            # Damaged is still locked: `verify_record` fails closed on it.
+            return {}
+        return record if isinstance(record, dict) else {}
+
+    def set_password(self, session_id: str, record: dict[str, Any] | None) -> bool:
+        """Store a hash record, or clear it with `None`. False if no such session."""
+        now = time.time()
+        with self._lock:
+            cursor = self._db.execute(
+                "UPDATE sessions SET password = ?, updated_at = ? WHERE id = ?",
+                (None if record is None else json.dumps(record), now, session_id),
+            )
+        return cursor.rowcount > 0
+
+    def session_of_image(self, filename: str) -> str | None:
+        """Which session a file belongs to — generated or uploaded as context."""
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT g.session_id AS session_id
+                FROM generation_images gi JOIN generations g ON g.id = gi.generation_id
+                WHERE gi.filename = ?
+                UNION
+                SELECT session_id FROM generations WHERE context_image = ?
+                LIMIT 1
+                """,
+                (filename, filename),
+            ).fetchone()
+        return None if row is None else row["session_id"]
+
+    def session_of_generation(self, generation_id: str) -> str | None:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT session_id FROM generations WHERE id = ?", (generation_id,)
+            ).fetchone()
+        return None if row is None else row["session_id"]
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._lock:

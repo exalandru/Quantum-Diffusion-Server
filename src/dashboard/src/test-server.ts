@@ -18,7 +18,8 @@
  */
 import { vi } from "vitest";
 
-export type Route = (request: { method: string; path: string; body: unknown }) => unknown;
+export type Seen = { method: string; path: string; body: unknown; headers: Record<string, string> };
+export type Route = (request: Seen) => unknown;
 
 export type FakeServer = {
   /** `on("GET /admin/overview", () => …)`. Later registrations win. */
@@ -26,20 +27,27 @@ export type FakeServer = {
   /** Answer with an OpenAI-shaped error, the way the real server does. */
   fail: (route: string, status: number, message: string, code?: string) => void;
   /** Every request seen, in order. */
-  requests: { method: string; path: string; body: unknown }[];
+  requests: Seen[];
   restore: () => void;
 };
 
 export function fakeServer(): FakeServer {
   const routes = new Map<string, Route>();
-  const requests: { method: string; path: string; body: unknown }[] = [];
+  const requests: Seen[] = [];
 
   const handler = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     const path = url.split("?")[0]!;
     const method = (init?.method ?? "GET").toUpperCase();
-    const body = init?.body ? JSON.parse(String(init.body)) : undefined;
-    requests.push({ method, path, body });
+    const body =
+      typeof init?.body === "string" ? JSON.parse(init.body) : (init?.body ?? undefined);
+    const headers = Object.fromEntries(
+      Object.entries((init?.headers as Record<string, string>) ?? {}).map(([key, value]) => [
+        key.toLowerCase(),
+        value,
+      ]),
+    );
+    requests.push({ method, path, body, headers });
 
     // Exact match first, then the query-stripped path, so `/admin/logs?after=3`
     // can be routed as `/admin/logs` without every test spelling the query.
@@ -48,7 +56,7 @@ export function fakeServer(): FakeServer {
       throw new Error(`no route for ${method} ${url}`);
     }
 
-    const result = route({ method, path, body });
+    const result = route({ method, path, body, headers });
     if (result instanceof Response) return result;
     return new Response(JSON.stringify(result ?? null), {
       status: 200,

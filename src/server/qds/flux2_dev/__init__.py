@@ -1,4 +1,4 @@
-"""Support for `black-forest-labs/FLUX.2-dev`, absent from mflux 0.18.0.
+"""Support for `black-forest-labs/FLUX.2-dev`, absent from mflux 0.19.0.
 
 Only `config` is imported when the package loads: it depends on nothing. Everything
 else is resolved lazily, because `registry` imports this package at module level

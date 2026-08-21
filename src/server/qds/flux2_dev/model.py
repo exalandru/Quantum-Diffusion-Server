@@ -3,7 +3,7 @@
 mflux's `Flux2Initializer` hardwires `Qwen3TextEncoder` and
 `Flux2KleinWeightDefinition`, hence this class rather than a call to
 `Flux2Klein`. The denoising loop faithfully reproduces
-`Flux2Klein.generate_image` (mflux 0.18.0) — that is the reference to compare
+`Flux2Klein.generate_image` (mflux 0.19.0) — that is the reference to compare
 against if results ever diverge.
 
 Two deliberate differences from klein:

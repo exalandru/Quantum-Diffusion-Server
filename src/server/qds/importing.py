@@ -59,6 +59,13 @@ CLASS_NAME_TO_FAMILY: dict[str, str] = {
     # the capability table as the gate here is what would keep a perfectly
     # loadable model unusable.
     "Ideogram4Transformer2DModel": "ideogram4",
+    # Read from `krea/Krea-2-Turbo`'s own `transformer/config.json` and
+    # `model_index.json` once access to that gated repository was granted — it
+    # was left out while the name could only have been guessed. mflux loads
+    # either of this model's two published layouts (a single root file or the
+    # diffusers `transformer/` shards) through its own variant selector, so a
+    # local diffusers-format directory is a real thing to accept.
+    "Krea2Transformer2DModel": "krea2",
 }
 
 #: Detected families a catalogue family will accept, beyond its own name.

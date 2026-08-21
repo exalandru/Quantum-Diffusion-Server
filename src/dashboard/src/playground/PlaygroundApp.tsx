@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import * as api from "../api";
-import { NotFound, Unauthorized, messageOf } from "../api";
+import { Locked, NotFound, Unauthorized, messageOf } from "../api";
 import { LoginPrompt } from "../LoginPrompt";
 import { Unreachable } from "../Unreachable";
 import type { PlaygroundGeneration, PlaygroundSession, Progress } from "../types";
 import { Composer, type Draft } from "./Composer";
 import { GenerationFeed } from "./GenerationFeed";
+import { PasswordDialog, RenameDialog, UnlockDialog } from "./SessionDialogs";
 import { SessionList } from "./SessionList";
 
 const IDLE: Progress = {
@@ -25,6 +26,12 @@ const IDLE: Progress = {
 /** While something is in flight; the list moves more slowly than the feed. */
 const DETAIL_POLL_MS = 2000;
 const LIST_POLL_MS = 5000;
+
+/** A form open over the studio, and the session it is about. */
+type Dialog =
+  | { kind: "rename"; id: string }
+  | { kind: "password"; id: string }
+  | { kind: "unlock"; id: string; then: "open" | "delete" };
 
 /**
  * One more image for a group, from the request that opened it.
@@ -66,6 +73,14 @@ export function PlaygroundApp() {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [dialog, setDialog] = useState<Dialog | null>(null);
+  // The selected session answered "locked": the studio shows that instead of an
+  // empty feed, and polling it again would only be told the same thing.
+  const [lockedOut, setLockedOut] = useState<string | null>(null);
+  // Re-rendered from when a token is stored or forgotten: `sessionStorage` is
+  // not React state, and the sidebar's lock glyphs read it.
+  const [, setTokenEpoch] = useState(0);
+  const tokensChanged = () => setTokenEpoch((epoch) => epoch + 1);
 
   const onUnauthorized = useCallback(() => {
     void api
@@ -111,10 +126,21 @@ export function PlaygroundApp() {
     try {
       const payload = await api.playgroundSession(id);
       setGenerations(payload.generations);
+      setLockedOut((current) => (current === id ? null : current));
       setConnectionError(null);
     } catch (cause) {
       if (cause instanceof Unauthorized) {
         onUnauthorized();
+      } else if (cause instanceof Locked) {
+        // Not a failure to report: the session asks for its password. A token
+        // this tab held is dead (expired, revoked, or the server restarted),
+        // so it is dropped rather than sent again. The prompt opens once — a
+        // poll that lands while it is open must not stack another.
+        api.forgetUnlock(id);
+        tokensChanged();
+        setGenerations([]);
+        setLockedOut(id);
+        setDialog((open) => open ?? { kind: "unlock", id, then: "open" });
       } else if (cause instanceof NotFound) {
         // Gone — deleted here or elsewhere. Drop the selection rather than
         // reporting a failure the user cannot act on.
@@ -183,13 +209,15 @@ export function PlaygroundApp() {
 
   useEffect(() => {
     if (!active) return;
-    const detail = setInterval(() => void refreshDetail(), DETAIL_POLL_MS);
+    const detail = setInterval(() => {
+      if (current.current !== lockedOut) void refreshDetail();
+    }, DETAIL_POLL_MS);
     const list = setInterval(() => void refreshSessions(), LIST_POLL_MS);
     return () => {
       clearInterval(detail);
       clearInterval(list);
     };
-  }, [active, refreshDetail, refreshSessions]);
+  }, [active, lockedOut, refreshDetail, refreshSessions]);
 
   /**
    * The one submission path: create the session on demand, POST, refresh.
@@ -245,7 +273,9 @@ export function PlaygroundApp() {
     setSubmitError(null);
     let form: FormData;
     try {
-      const blob = await fetch(image.url).then((response) => {
+      // The image route wants the session's token like everything else; the
+      // query form is what a bare `fetch` of a record URL lacks.
+      const blob = await fetch(api.imageUrl(image.url, root.sessionId)).then((response) => {
         if (!response.ok) throw new Error(`Could not fetch the image (${response.status}).`);
         return response.blob();
       });
@@ -276,7 +306,7 @@ export function PlaygroundApp() {
     const form = settingsOf(root);
     if (root.contextImage) {
       try {
-        const blob = await fetch(root.contextImage).then((response) => {
+        const blob = await fetch(api.imageUrl(root.contextImage, root.sessionId)).then((response) => {
           if (!response.ok)
             throw new Error(`Could not fetch the reference image (${response.status}).`);
           return response.blob();
@@ -293,7 +323,9 @@ export function PlaygroundApp() {
 
   async function deleteImage(url: string) {
     const filename = url.split("/").pop() ?? "";
-    await guarded(() => api.playgroundImageDelete(filename));
+    const sessionId = selected;
+    if (!sessionId) return;
+    await guarded(() => api.playgroundImageDelete(sessionId, filename));
     await refreshDetail();
     // The server bumps the session's `updated_at`, which is both the sidebar's
     // sort key and its timestamp: an idle session polls nothing, so without this
@@ -302,18 +334,79 @@ export function PlaygroundApp() {
   }
 
   async function cancel(id: string) {
+    const sessionId = generations.find((entry) => entry.id === id)?.sessionId ?? selected;
+    if (!sessionId) return;
     setCancelling(id);
-    await guarded(() => api.playgroundCancel(id));
+    await guarded(() => api.playgroundCancel(sessionId, id));
     await refreshDetail();
     await refreshSessions();
     setCancelling(null);
   }
 
   async function remove(id: string) {
-    await guarded(() => api.playgroundSessionDelete(id));
+    try {
+      await api.playgroundSessionDelete(id);
+    } catch (cause) {
+      if (cause instanceof Unauthorized) onUnauthorized();
+      else if (cause instanceof Locked) {
+        // The password is the proof the server wants: ask, then delete.
+        api.forgetUnlock(id);
+        tokensChanged();
+        setDialog({ kind: "unlock", id, then: "delete" });
+      } else setConnectionError(messageOf(cause));
+      return;
+    }
+    api.forgetUnlock(id);
     if (id === selected) setSelected(null);
     await refreshSessions();
   }
+
+  async function rename(id: string, title: string | null) {
+    await api.playgroundSessionRename(id, title);
+    setDialog(null);
+    await refreshSessions();
+  }
+
+  async function unlock(id: string, password: string, then: "open" | "delete") {
+    await api.playgroundSessionUnlock(id, password);
+    tokensChanged();
+    setDialog(null);
+    setLockedOut((current) => (current === id ? null : current));
+    if (then === "delete") {
+      await remove(id);
+      return;
+    }
+    if (id === selected) await refreshDetail();
+    else setSelected(id);
+    await refreshSessions();
+  }
+
+  async function lock(id: string) {
+    await guarded(() => api.playgroundSessionLock(id));
+    tokensChanged();
+    if (id === selected) {
+      setGenerations([]);
+      setLockedOut(id);
+    }
+  }
+
+  async function setPassword(id: string, password: string) {
+    await api.playgroundSessionPasswordSet(id, password);
+    tokensChanged();
+    setDialog(null);
+    await refreshSessions();
+  }
+
+  async function removePassword(id: string) {
+    await api.playgroundSessionPasswordRemove(id);
+    tokensChanged();
+    setDialog(null);
+    await refreshSessions();
+  }
+
+  const titleOf = (id: string) => sessions.find((entry) => entry.id === id)?.title ?? null;
+  const isLocked = (id: string) => sessions.find((entry) => entry.id === id)?.locked ?? false;
+  const srcOf = (url: string) => (selected ? api.imageUrl(url, selected) : url);
 
   if (session) {
     return (
@@ -368,12 +461,42 @@ export function PlaygroundApp() {
         <SessionList
           sessions={sessions}
           selected={selected}
+          unlocked={(id) => api.unlockToken(id) !== null}
           onSelect={setSelected}
           onNew={() => setSelected(null)}
+          onRename={(id) => {
+            if (isLocked(id) && api.unlockToken(id) === null)
+              setDialog({ kind: "unlock", id, then: "open" });
+            else setDialog({ kind: "rename", id });
+          }}
+          onPassword={(id) => {
+            // Renaming and changing a password are proof-gated like everything
+            // else on a locked session: unlock first, then the form.
+            if (isLocked(id) && api.unlockToken(id) === null)
+              setDialog({ kind: "unlock", id, then: "open" });
+            else setDialog({ kind: "password", id });
+          }}
+          onLock={(id) => void lock(id)}
           onDelete={(id) => void remove(id)}
         />
         <section className="pg-studio">
-          {generations.length === 0 ? (
+          {selected && lockedOut === selected ? (
+            <div className="pg-hero">
+              <span className="pg-hero-icon" aria-hidden="true">
+                🔒
+              </span>
+              <h2 className="pg-hero-title">This session is locked</h2>
+              <p className="pg-hero-tagline">Enter its password to see what it holds.</p>
+              <div className="pg-hero-actions">
+                <button
+                  className="primary"
+                  onClick={() => setDialog({ kind: "unlock", id: selected, then: "open" })}
+                >
+                  Unlock
+                </button>
+              </div>
+            </div>
+          ) : generations.length === 0 ? (
             <div className="pg-hero">
               <span className="pg-hero-icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.6">
@@ -398,6 +521,7 @@ export function PlaygroundApp() {
               onVariation={(entry) => void variation(entry)}
               onDeleteImage={(url) => void deleteImage(url)}
               nameOf={nameOf}
+              srcOf={srcOf}
             />
           )}
           <Composer
@@ -410,6 +534,34 @@ export function PlaygroundApp() {
           />
         </section>
       </div>
+
+      {dialog?.kind === "rename" && (
+        <RenameDialog
+          title={titleOf(dialog.id)}
+          onCancel={() => setDialog(null)}
+          onRename={(title) => rename(dialog.id, title)}
+        />
+      )}
+      {dialog?.kind === "unlock" && (
+        <UnlockDialog
+          title={titleOf(dialog.id)}
+          onCancel={() => {
+            setDialog(null);
+            // Cancelling on a locked selection leaves the locked hero, which
+            // has its own Unlock button; a cancelled delete just stops.
+          }}
+          onUnlock={(password) => unlock(dialog.id, password, dialog.then)}
+        />
+      )}
+      {dialog?.kind === "password" && (
+        <PasswordDialog
+          title={titleOf(dialog.id)}
+          locked={isLocked(dialog.id)}
+          onCancel={() => setDialog(null)}
+          onSet={(password) => setPassword(dialog.id, password)}
+          onRemove={() => removePassword(dialog.id)}
+        />
+      )}
     </main>
   );
 }

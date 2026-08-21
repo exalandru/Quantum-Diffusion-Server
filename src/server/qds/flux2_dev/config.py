@@ -1,4 +1,4 @@
-"""FLUX.2-dev's `ModelConfig`, absent from mflux 0.18.0.
+"""FLUX.2-dev's `ModelConfig`, absent from mflux 0.19.0.
 
 mflux's `AVAILABLE_MODELS` only contains the klein variants, so there is neither
 a `ModelConfig.flux2_dev()` nor a usable alias. We build the config by hand from

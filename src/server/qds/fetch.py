@@ -249,7 +249,7 @@ def cache_status() -> list[dict[str, Any]]:
     """
     from qds import availability as av
     from qds import components as comp
-    from qds.registry import PROVENANCE_BUILT_IN
+    from qds.registry import BASE_SPECS_BY_KEY, PROVENANCE_BUILT_IN
 
     # Not strict: scanning sources needs the storage root, the enabled flags and
     # the path overrides, and none of the runtime invariants. A catalogue that
@@ -375,6 +375,18 @@ def cache_status() -> list[dict[str, Any]]:
                     # from the backend's table rather than from the interface's
                     # idea of what a model is made of.
                     "prequantize_components": comp.payload(spec.family),
+                    # What this model loads at when the config asks for nothing:
+                    # the catalogue's own choice, `null` meaning bf16. Published
+                    # so the interface can say which depth "default" is rather
+                    # than showing the word alone — a config-wide setting used to
+                    # decide this invisibly, and that is how a model ended up
+                    # running at a depth that broke it with nothing on screen to
+                    # say so.
+                    "catalogue_quantize": (
+                        BASE_SPECS_BY_KEY[spec.key].quantize
+                        if spec.key in BASE_SPECS_BY_KEY
+                        else None
+                    ),
                     "note": spec.quantization.note,
                 },
             }

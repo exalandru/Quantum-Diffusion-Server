@@ -73,29 +73,111 @@ export class NotFound extends Error {
   }
 }
 
-function headers(extra: HeadersInit = {}): HeadersInit {
-  return extra;
+/**
+ * Thrown for a 403 whose code is `session_locked`: a playground session with a
+ * password, and no live unlock token for it.
+ *
+ * Its own class, and never a 401: a 401 is what sends the shell to the admin
+ * login, and a locked session is not a missing admin credential. Matched on the
+ * code rather than the status, because `cross_site_denied` is a 403 too and
+ * must stay an ordinary error.
+ */
+export class Locked extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "Locked";
+  }
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+// ── Unlock tokens ──────────────────────────────────────────────────────────
+//
+// A session password is redeemed once for a token the server keeps in memory.
+// The browser's copy lives in `sessionStorage`: it dies with the tab, which is
+// the lifetime the user asked for when they set a password, and it is not
+// shared with other tabs, each of which unlocks on its own.
+
+const UNLOCK_HEADER = "X-QDS-Session-Token";
+const unlockKey = (sessionId: string) => `qds.playground.unlock.${sessionId}`;
+
+export function unlockToken(sessionId: string): string | null {
+  try {
+    return window.sessionStorage.getItem(unlockKey(sessionId));
+  } catch {
+    return null;
+  }
+}
+
+export function rememberUnlock(sessionId: string, token: string): void {
+  try {
+    window.sessionStorage.setItem(unlockKey(sessionId), token);
+  } catch {
+    // Storage disabled: the unlock lasts as long as the page does.
+  }
+}
+
+export function forgetUnlock(sessionId: string): void {
+  try {
+    window.sessionStorage.removeItem(unlockKey(sessionId));
+  } catch {
+    // Nothing to forget.
+  }
+}
+
+/** The token's header, when one is held for this session. */
+function unlockHeaders(sessionId: string | undefined): Record<string, string> {
+  const token = sessionId ? unlockToken(sessionId) : null;
+  return token ? { [UNLOCK_HEADER]: token } : {};
+}
+
+/**
+ * An image URL the browser can load directly.
+ *
+ * An `<img>` sends no headers, so the image route accepts the token as a query
+ * parameter — and only the image route does. Applied at render time: the URL
+ * in state stays the server's, so a token change or a lock never has to rewrite
+ * history, and the filename the delete button parses out of it stays clean.
+ */
+export function imageUrl(url: string, sessionId: string): string {
+  const token = unlockToken(sessionId);
+  return token ? `${url}?t=${encodeURIComponent(token)}` : url;
+}
+
+/** Extra per-request options on top of `fetch`'s. */
+type Options = RequestInit & {
+  /** Attach the unlock token held for this playground session, if any. */
+  sessionId?: string;
+};
+
+async function request<T>(path: string, { sessionId, ...init }: Options = {}): Promise<T> {
   const response = await fetch(path, {
     ...init,
-    headers: headers(init.headers),
+    headers: { ...unlockHeaders(sessionId), ...(init.headers as Record<string, string>) },
     // The session cookie is same-origin, and this is what sends it.
     credentials: "same-origin",
   });
   if (response.status === 401) throw new Unauthorized((await describe(response)).message);
   if (response.status === 429) throw new TooManyAttempts((await describe(response)).message);
   if (response.status === 404) throw new NotFound((await describe(response)).message);
-  if (!response.ok) throw await describe(response);
+  if (response.status === 403) {
+    const { message, code } = await describe(response);
+    if (code === "session_locked") throw new Locked(message);
+    throw new Error(message);
+  }
+  if (!response.ok) throw new Error((await describe(response)).message);
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
-const get = <T,>(path: string) => request<T>(path);
+const get = <T,>(path: string, options: Options = {}) => request<T>(path, options);
 
-const send = <T,>(path: string, method: "POST" | "PUT", body?: unknown) =>
+const send = <T,>(
+  path: string,
+  method: "POST" | "PUT" | "PATCH" | "DELETE",
+  body?: unknown,
+  options: Options = {},
+) =>
   request<T>(path, {
+    ...options,
     method,
     headers: body === undefined ? {} : { "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -264,10 +346,75 @@ export const playgroundSessionCreate = () =>
 export const playgroundSession = (id: string) =>
   get<{ session: PlaygroundSession; generations: PlaygroundGeneration[] }>(
     `/playground/api/sessions/${encodeURIComponent(id)}`,
+    { sessionId: id },
   );
 
 export const playgroundSessionDelete = (id: string) =>
-  request<void>(`/playground/api/sessions/${encodeURIComponent(id)}`, { method: "DELETE" });
+  send<void>(`/playground/api/sessions/${encodeURIComponent(id)}`, "DELETE", undefined, {
+    sessionId: id,
+  });
+
+/** `null` or blank hands the title back to the first prompt. */
+export const playgroundSessionRename = (id: string, title: string | null) =>
+  send<PlaygroundSession>(
+    `/playground/api/sessions/${encodeURIComponent(id)}`,
+    "PATCH",
+    { title },
+    { sessionId: id },
+  );
+
+/**
+ * Redeem the password for a token, and keep it. The rejection for a wrong
+ * password is a plain `Error` (403, not 401); five of them are a `TooManyAttempts`.
+ */
+export const playgroundSessionUnlock = async (id: string, password: string) => {
+  const payload = await send<{ token: string; session: PlaygroundSession }>(
+    `/playground/api/sessions/${encodeURIComponent(id)}/unlock`,
+    "POST",
+    { password },
+  );
+  rememberUnlock(id, payload.token);
+  return payload.session;
+};
+
+/** Give the token back. Forgotten here even if the server no longer has it. */
+export const playgroundSessionLock = async (id: string) => {
+  try {
+    await send<void>(`/playground/api/sessions/${encodeURIComponent(id)}/lock`, "POST", undefined, {
+      sessionId: id,
+    });
+  } finally {
+    forgetUnlock(id);
+  }
+};
+
+/**
+ * Set or change the password. Every other token dies with the old password;
+ * the one that comes back is this tab's, kept so it stays where it is.
+ */
+export const playgroundSessionPasswordSet = async (id: string, password: string) => {
+  const payload = await send<{ token: string }>(
+    `/playground/api/sessions/${encodeURIComponent(id)}/password`,
+    "POST",
+    { password },
+    { sessionId: id },
+  );
+  rememberUnlock(id, payload.token);
+};
+
+export const playgroundSessionPasswordRemove = async (id: string) => {
+  await send<void>(
+    `/playground/api/sessions/${encodeURIComponent(id)}/password`,
+    "DELETE",
+    undefined,
+    { sessionId: id },
+  );
+  forgetUnlock(id);
+};
+
+/** The admin's way past a forgotten password: needs the admin session, not the token. */
+export const playgroundAdminStripPassword = (id: string) =>
+  send<void>(`/admin/playground/sessions/${encodeURIComponent(id)}/password`, "DELETE");
 
 /**
  * Accepted, not finished: the record comes back `queued`.
@@ -278,18 +425,20 @@ export const playgroundSessionDelete = (id: string) =>
 export const playgroundGenerate = (sessionId: string, form: FormData) =>
   request<PlaygroundGeneration>(
     `/playground/api/sessions/${encodeURIComponent(sessionId)}/generations`,
-    { method: "POST", body: form },
+    { method: "POST", body: form, sessionId },
   );
 
-export const playgroundCancel = (generationId: string) =>
+export const playgroundCancel = (sessionId: string, generationId: string) =>
   send<PlaygroundGeneration>(
     `/playground/api/generations/${encodeURIComponent(generationId)}/cancel`,
     "POST",
+    undefined,
+    { sessionId },
   );
 
-export const playgroundImageDelete = (filename: string) =>
-  request<void>(`/playground/api/images/${encodeURIComponent(filename)}`, {
-    method: "DELETE",
+export const playgroundImageDelete = (sessionId: string, filename: string) =>
+  send<void>(`/playground/api/images/${encodeURIComponent(filename)}`, "DELETE", undefined, {
+    sessionId,
   });
 
 /**
@@ -331,10 +480,10 @@ export function subscribeProgress(
 
   const consume = async (signal: AbortSignal) => {
     const response = await fetch("/v1/progress", {
-      headers: headers({ Accept: "text/event-stream" }),
+      headers: { Accept: "text/event-stream" },
       signal,
     });
-    if (!response.ok || !response.body) throw await describe(response);
+    if (!response.ok || !response.body) throw new Error((await describe(response)).message);
     // The connection opened, so whatever went wrong before is over: the next
     // failure starts its backoff from the beginning rather than inheriting a
     // ten-second delay from an outage that has since been fixed.
@@ -416,14 +565,14 @@ export function backoffMs(attempt: number): number {
   return Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** Math.max(0, attempt));
 }
 
-async function describe(response: Response): Promise<Error> {
+async function describe(response: Response): Promise<{ message: string; code: string | null }> {
   try {
-    const body = (await response.json()) as { error?: { message?: string } };
-    if (body.error?.message) return new Error(body.error.message);
+    const body = (await response.json()) as { error?: { message?: string; code?: string | null } };
+    if (body.error?.message) return { message: body.error.message, code: body.error.code ?? null };
   } catch {
     // Non-JSON body: fall back to the status.
   }
-  return new Error(`HTTP ${response.status}`);
+  return { message: `HTTP ${response.status}`, code: null };
 }
 
 export function messageOf(error: unknown): string {

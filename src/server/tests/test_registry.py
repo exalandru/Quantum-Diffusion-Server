@@ -10,6 +10,7 @@ from qds.registry import (
     BASE_SPECS_BY_KEY,
     build_registry,
     edit_enabled,
+    family_structure,
     latent_creator_for,
     load_model,
     normalize_dimension,
@@ -18,9 +19,11 @@ from qds.registry import (
 from qds.settings import ModelOverride, Settings, load_settings
 
 
-def test_the_catalogue_exposes_ten_models():
+def test_the_catalogue_exposes_fourteen_models():
     registry = build_registry({})
     assert set(registry) == {
+        "anima",
+        "anima-turbo",
         "ernie-image",
         "ernie-image-turbo",
         "fibo",
@@ -28,7 +31,9 @@ def test_the_catalogue_exposes_ten_models():
         "flux2-dev",
         "flux2-klein",
         "ideogram-4",
+        "krea-2-turbo",
         "qwen-image-2512",
+        "qwen-image-flash",
         "z-image",
         "z-image-turbo",
     }
@@ -68,6 +73,131 @@ def test_flux2_klein_is_distilled():
     # Distilled model: 4 steps, not the prototype's 20.
     assert spec.default_steps == 4
     assert spec.scheduler == "flow_match_euler_discrete"
+
+
+def test_krea_2_turbo_is_distilled_but_still_takes_guidance():
+    """Distillation and a fixed guidance are two facts, and Krea 2 separates them.
+
+    Every other distilled model here refuses another value — `flux2-klein`'s CLI
+    calls `parser.error()`, `z-image-turbo`'s `ModelConfig` forces it to 0 — which
+    is what `supports_guidance=False` reports. Krea 2 Turbo does neither: 1.0 is
+    the reference value, not a constraint, so the flags follow mflux rather than
+    the word "turbo".
+    """
+    spec = BASE_SPECS_BY_KEY["krea-2-turbo"]
+    assert spec.supports_guidance is True
+    assert spec.supports_negative_prompt is True
+    assert spec.default_guidance == 1.0
+    assert spec.default_steps == 8
+    # `Krea2._resolve_scheduler` maps "linear" onto er_sde, the published sampler.
+    assert spec.scheduler == "linear"
+    assert spec.gated is True
+
+
+def test_krea_2_flags_match_the_mflux_config_they_were_read_from():
+    """The derivation, not just the result: if mflux changes, this fails loudly."""
+    from mflux.models.common.config.model_config import ModelConfig
+
+    spec = BASE_SPECS_BY_KEY["krea-2-turbo"]
+    config = ModelConfig.krea2()
+    assert config.model_name == spec.repo
+    assert config.supports_guidance is spec.supports_guidance
+
+    # The contrasting case, so the assertion above cannot pass by both being True
+    # for unrelated reasons: z-image-turbo is where mflux does force the value.
+    assert ModelConfig.z_image_turbo().supports_guidance is False
+    assert BASE_SPECS_BY_KEY["z-image-turbo"].supports_guidance is False
+
+
+def test_krea_2_refuses_conversion_because_of_its_layout():
+    """Not for want of a `save_model` -- `Krea2` has one. The layout is the reason.
+
+    Its transformer is a single file at the repository root, so the component's
+    `hf_subdir` is empty, and the converter is built on one component per
+    subdirectory named after it. Publishing the refusal keeps the dashboard from
+    offering a conversion that would write an artifact nothing could find again.
+    """
+    from mflux.models.krea2.weights.krea2_weight_definition import Krea2WeightDefinition
+
+    transformer = next(c for c in Krea2WeightDefinition.get_components() if c.name == "transformer")
+    assert transformer.hf_subdir == ""
+
+    capability = BASE_SPECS_BY_KEY["krea-2-turbo"].quantization
+    assert capability.supports_prequantize is False
+    assert capability.prequantize_choices == ()
+    # Runtime quantization is unaffected: that path never needs a subdirectory.
+    assert capability.supports_quantization is True
+    assert BASE_SPECS_BY_KEY["krea-2-turbo"].quantize == 8
+
+    with pytest.raises(ValueError, match="krea2"):
+        family_structure("krea2")
+
+
+def test_anima_is_configured_from_its_own_card_and_ships_off():
+    spec = BASE_SPECS_BY_KEY["anima"]
+    assert spec.family == "anima"
+    assert spec.repo == "circlestone-labs/Anima"
+    # Real CFG with a real unconditional branch, unlike the distilled models.
+    assert spec.supports_guidance is True
+    assert spec.supports_negative_prompt is True
+    assert (spec.default_steps, spec.default_guidance) == (30, 4.5)
+    # 512-1536 per the card, checked before a 4 GB download rather than after.
+    assert (spec.min_dimension, spec.max_dimension) == (512, 1536)
+    # Ungated — unusually for a non-commercial release — so the licence, not the
+    # access request, is the reason it ships disabled.
+    assert spec.gated is False
+    assert "Non-Commercial" in spec.license
+
+
+def test_anima_loads_unquantized_and_qwen_does_not():
+    """The two rows that used to inherit their precision from a config-wide setting.
+
+    Anima at 4-bit produces visibly broken images -- illegible architecture and a
+    scratchy overlay -- while bf16 and 8-bit are indistinguishable from each
+    other. At 2B the weights are ~4.2 GB, so bf16 costs almost nothing and is the
+    row's answer. Qwen is the opposite case at 20B: unquantized it is ~55 GB, and
+    this row points at raw bf16 weights precisely so the setting has something to
+    act on, so leaving it unset would have made 55 GB the default.
+    """
+    registry = build_registry({}, include_disabled=True)
+    assert registry["anima"].quantize is None
+    assert registry["qwen-image-2512"].quantize == 8
+
+    # And a config can still ask for something else, per model.
+    asked = build_registry({"anima": ModelOverride(quantize=8)}, include_disabled=True)
+    assert asked["anima"].quantize == 8
+
+
+def test_anima_refuses_conversion_because_its_components_do_not_map_to_the_layout():
+    """Two components share one file and a third comes from another repository."""
+    capability = BASE_SPECS_BY_KEY["anima"].quantization
+    assert capability.supports_prequantize is False
+    assert capability.prequantize_choices == ()
+    # Runtime quantization is still offered: that path needs no artifact layout.
+    assert capability.supports_quantization is True
+
+    with pytest.raises(ValueError, match="anima"):
+        family_structure("anima")
+
+
+def test_anima_does_not_pull_mflux_into_the_catalogue_path():
+    """`registry` imports `qds.anima.config` eagerly, so it must stay light.
+
+    Importing mflux drags in torch and transformers — seconds of start-up on a
+    path that only needs to answer what the catalogue contains.
+    """
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; import qds.registry; "
+        "heavy = [m for m in sys.modules if m.split('.')[0] in {'mflux', 'torch', 'transformers'}]; "
+        "print(len(heavy))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "0", result.stdout
 
 
 def test_quantization_is_only_advertised_where_it_happens():
@@ -128,9 +258,11 @@ def test_an_unknown_family_gets_no_previews_rather_than_an_error():
 
 def test_qwen_does_not_use_from_name():
     # from_name() would lose the scheduler's sigma_* values; we pass the
-    # canonical factory plus the repo as model_path. And the path is needed at all
-    # because `ModelConfig.qwen_image()` points at `Qwen/Qwen-Image`, the original
-    # release, not the 2512 this key is named after.
+    # canonical factory plus the repo as model_path. As of mflux 0.19.0 that path
+    # agrees with `ModelConfig.qwen_image()`, which now resolves to the 2512
+    # release; it kept its place because mflux moved that name once already
+    # (0.18.0 resolved it to `Qwen/Qwen-Image`), and which weights a key serves is
+    # the catalogue's statement rather than a dependency's default.
     spec = BASE_SPECS_BY_KEY["qwen-image-2512"]
     assert spec.model_config_name == "qwen_image"
     assert spec.model_path == "Qwen/Qwen-Image-2512"
@@ -294,7 +426,12 @@ def test_the_shipped_config_says_what_the_readme_says():
         assert spec.gated is False, spec.key
         assert spec.license == "Apache-2.0", spec.key
         assert "text" in spec.prompt_formats, spec.key
-        assert spec.quantize == 4, spec.key
+        # The catalogue's own precision, reaching the shipped install untouched.
+        # It used to be 4 here for every model, from a config-wide setting that
+        # overwrote each row; the setting is gone, and this is what proves the
+        # shipped file no longer overrides what the catalogue chose.
+        assert spec.quantize == BASE_SPECS_BY_KEY[spec.key].quantize, spec.key
+        assert spec.quantize == 8, spec.key
 
 
 def codes(raw: dict) -> list[str]:

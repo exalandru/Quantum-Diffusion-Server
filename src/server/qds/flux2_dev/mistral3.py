@@ -2,7 +2,7 @@
 
 FLUX.2 [dev] conditions its transformer on three stacked intermediate hidden
 states of the `Mistral3ForConditionalGeneration` encoder — exactly the mechanic
-FLUX.2 klein uses with Qwen3, except mflux 0.18.0 only ships
+FLUX.2 klein uses with Qwen3, except mflux 0.19.0 only ships
 `Qwen3TextEncoder`.
 
 The gap is narrow: the Mistral decoder is standard dense (GQA + RoPE + RMSNorm +

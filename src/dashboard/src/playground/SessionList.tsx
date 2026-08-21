@@ -19,14 +19,23 @@ function ago(seconds: number): string {
 export function SessionList({
   sessions,
   selected,
+  unlocked,
   onSelect,
   onNew,
+  onRename,
+  onPassword,
+  onLock,
   onDelete,
 }: {
   sessions: PlaygroundSession[];
   selected: string | null;
+  /** Locked sessions this tab holds a token for. */
+  unlocked: (id: string) => boolean;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onRename: (id: string) => void;
+  onPassword: (id: string) => void;
+  onLock: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
   return (
@@ -49,7 +58,19 @@ export function SessionList({
                   onClick={() => onSelect(session.id)}
                   aria-current={session.id === selected}
                 >
-                  <span className="pg-session-title">{session.title ?? "New session"}</span>
+                  <span className="pg-session-title">
+                    {session.locked && (
+                      <span
+                        className="pg-session-lock"
+                        role="img"
+                        aria-label={unlocked(session.id) ? "Locked, open in this tab" : "Locked"}
+                        title={unlocked(session.id) ? "Locked, open in this tab" : "Locked"}
+                      >
+                        {unlocked(session.id) ? "🔓" : "🔒"}
+                      </span>
+                    )}
+                    {session.title ?? "New session"}
+                  </span>
                   <span className="pg-session-meta">
                     {session.generating && (
                       <span className="pg-dot" aria-label="Generating" title="Generating" />
@@ -57,20 +78,50 @@ export function SessionList({
                     {ago(session.updatedAt)}
                   </span>
                 </button>
-                <button
-                  className="small danger pg-session-delete"
-                  aria-label={`Delete ${session.title ?? "session"}`}
-                  onClick={() => {
-                    // A generation in flight is stopped and its images deleted:
-                    // worth a confirmation, and `window.confirm` is what the
-                    // rest of this app uses for a destructive one-click action.
-                    if (window.confirm("Delete this session and its images?")) {
-                      onDelete(session.id);
-                    }
-                  }}
-                >
-                  Delete
-                </button>
+                {/* Revealed with the row, like Delete was: the sidebar is a list
+                    of names, not a toolbar per line. */}
+                <div className="pg-session-actions" role="group" aria-label="Session actions">
+                  <button
+                    className="small"
+                    aria-label={`Rename ${session.title ?? "session"}`}
+                    title="Rename"
+                    onClick={() => onRename(session.id)}
+                  >
+                    Rename
+                  </button>
+                  <button
+                    className="small"
+                    aria-label={`${session.locked ? "Change password of" : "Set a password on"} ${session.title ?? "session"}`}
+                    title={session.locked ? "Change password" : "Set a password"}
+                    onClick={() => onPassword(session.id)}
+                  >
+                    {session.locked ? "Password…" : "Protect"}
+                  </button>
+                  {session.locked && unlocked(session.id) && (
+                    <button
+                      className="small"
+                      aria-label={`Lock ${session.title ?? "session"}`}
+                      title="Lock: ask for the password again in this tab"
+                      onClick={() => onLock(session.id)}
+                    >
+                      Lock
+                    </button>
+                  )}
+                  <button
+                    className="small danger pg-session-delete"
+                    aria-label={`Delete ${session.title ?? "session"}`}
+                    onClick={() => {
+                      // A generation in flight is stopped and its images deleted:
+                      // worth a confirmation, and `window.confirm` is what the
+                      // rest of this app uses for a destructive one-click action.
+                      if (window.confirm("Delete this session and its images?")) {
+                        onDelete(session.id);
+                      }
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             </li>
           ))}

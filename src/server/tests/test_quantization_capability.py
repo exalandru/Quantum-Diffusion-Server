@@ -108,31 +108,63 @@ def test_a_per_model_override_cannot_advertise_ineffective_quantization():
     assert registry["flux2-dev"].quantize == BASE_SPECS_BY_KEY["flux2-dev"].quantize
 
 
-def test_the_global_default_skips_models_where_it_would_be_ignored():
-    registry = build_registry({}, default_quantize=4, include_disabled=True)
-    assert registry["z-image"].quantize == 4
-    assert registry["ideogram-4"].quantize is None
-    assert registry["flux2-dev"].quantize == BASE_SPECS_BY_KEY["flux2-dev"].quantize
+def test_nothing_config_wide_can_change_a_model_s_precision():
+    """The invariant whose absence let a global silently break a model.
+
+    There used to be a `default_quantize`, and it *overwrote* each row rather
+    than standing behind it — so a single number decided the precision of every
+    model, including the ones that had chosen one. Anima at 4-bit produces
+    visibly broken images while the same depth is harmless on a 20B, which is
+    what makes precision a property of the model rather than of the install.
+
+    `build_registry` therefore takes no config-wide quantization at all. This
+    asserts the shape of the call, not just today's behaviour: a future
+    keyword would fail here before it could reach a catalogue row.
+    """
+    import inspect
+
+    assert "quantize" not in inspect.signature(build_registry).parameters
+
+    registry = build_registry({}, include_disabled=True)
+    for key, base in BASE_SPECS_BY_KEY.items():
+        assert registry[key].quantize == base.quantize, key
+
+
+def test_a_config_that_still_carries_the_removed_global_starts_and_says_so(
+    tmp_path, monkeypatch, caplog
+):
+    """Pydantic ignores unknown keys, which is how a removed setting becomes a mystery."""
+    import json as _json
+    import logging
+
+    config = tmp_path / "server-config.json"
+    config.write_text(_json.dumps({"default_quantize": 4}), encoding="utf-8")
+    monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
+    from qds.settings import load_settings
+
+    with caplog.at_level(logging.WARNING):
+        settings = load_settings()
+
+    # Started, rather than refused: an install that set this must not be bricked.
+    assert settings.registry(include_disabled=True)["z-image"].quantize == (
+        BASE_SPECS_BY_KEY["z-image"].quantize
+    )
+    assert any("default_quantize" in record.message for record in caplog.records)
 
 
 def test_an_unsupported_bit_depth_is_rejected_by_the_backend(tmp_path, monkeypatch):
     """React is UX; a hand-edited config must not reach runtime unchecked.
 
-    The two live at different layers, which is worth pinning: a per-model value is
-    a field validator, while the global one is only caught when the registry is
-    built. `load_settings` builds it eagerly for exactly that reason, so both
-    reach the user as a startup error rather than as a silent no-op.
+    The per-model value is a field validator, so an impossible bit depth is a
+    startup error rather than a silent no-op. `load_settings` builds the registry
+    eagerly so that it reaches the user at that point and not on first request.
     """
     with pytest.raises(ValueError):
         Settings.model_validate({"models": {"z-image": {"quantize": 7}}})
 
-    # The global default is enforced where the registry is assembled...
-    with pytest.raises(ValueError):
-        build_registry({}, default_quantize=7)
-
     # ...and `load_settings` is what makes that reach a real config file.
     config = tmp_path / "server-config.json"
-    config.write_text(json.dumps({"default_quantize": 7}), encoding="utf-8")
+    config.write_text(json.dumps({"models": {"z-image": {"quantize": 7}}}), encoding="utf-8")
     monkeypatch.setenv("QDS_SERVER_CONFIG", str(config))
     from qds.settings import load_settings
 

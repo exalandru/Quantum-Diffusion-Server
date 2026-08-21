@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import inspect
 import logging
 import os
 import shutil
@@ -237,10 +238,48 @@ def _quantization_units(module) -> list:
     return units
 
 
+def _predicate_for_bits(predicate, bits: int | None):
+    """Bind the requested bit depth into a family's quantization predicate.
+
+    A family predicate takes either `(path, module)` or `(path, module, bits)`.
+    The three-argument form is how a family varies precision per layer with the
+    level asked for: Qwen keeps `.img_mod_linear` at 8-bit when the rest goes to
+    4, because that is where 4-bit error compounds along the denoising
+    trajectory. `nn.quantize` only ever calls a predicate with two arguments, so
+    the third has to be bound here — and a three-argument predicate declares its
+    `bits` parameter with a default, which means calling it blind loses the
+    per-layer decision silently rather than raising.
+
+    This mirrors `WeightApplier._predicate_with_bits`, which is what mflux
+    applies on the load path. The two must agree: a prequantized artifact whose
+    layer precisions disagree with the ones mflux would have chosen is an
+    artifact mflux cannot rebuild faithfully. `test_prequantize_predicate.py`
+    holds them to that, against the real family predicates.
+    """
+    if predicate is None:
+        return None
+    try:
+        parameters = inspect.signature(predicate).parameters
+    except (TypeError, ValueError):
+        return predicate
+    # Only parameters that can take `bits` positionally count: a keyword-only
+    # third one would raise on the call below, and `*args` reports a single
+    # parameter while happily accepting three.
+    positional = [
+        p
+        for p in parameters.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    if len(positional) < 3:
+        return predicate
+    return lambda path, module: predicate(path, module, bits)
+
+
 def _quantize_incrementally(module, *, bits: int, predicate) -> None:
     import mlx.core as mx
     from mlx import nn
 
+    predicate = _predicate_for_bits(predicate, bits)
     units = _quantization_units(module)
     for index, unit in enumerate(units, start=1):
         nn.quantize(unit, class_predicate=predicate, bits=bits)

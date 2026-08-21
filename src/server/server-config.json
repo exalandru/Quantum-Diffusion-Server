@@ -19,7 +19,6 @@
   },
   "default_model": "z-image-turbo",
   "default_size": "1280x720",
-  "default_quantize": 4,
   "models": {
     "z-image-turbo": {
       "enabled": true,
@@ -53,6 +52,14 @@
       "default_guidance": null,
       "quantize": null
     },
+    "qwen-image-flash": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
     "qwen-image-2512": {
       "enabled": false,
       "model_path": null,
@@ -78,6 +85,30 @@
       "default_steps": null,
       "default_guidance": null,
       "quantize": 8
+    },
+    "anima-turbo": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "anima": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "krea-2-turbo": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
     },
     "fibo-lite": {
       "enabled": false,

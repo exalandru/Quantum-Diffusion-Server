@@ -44,6 +44,10 @@ _UNLOADABLE_ATTRS = (
     "vae",
     "image_encoder",
     "qwen_vl_encoder",
+    # Anima's text adapter. Small, but a submodule this tuple does not name is a
+    # submodule unload leaves resident, and the point of unloading is that
+    # nothing stays.
+    "text_conditioner",
 )
 
 #: Past this point we purge Qwen's embedding cache: it is keyed by prompt and

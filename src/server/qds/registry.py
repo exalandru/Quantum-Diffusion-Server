@@ -16,8 +16,10 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from qds.anima import config as anima_config
 from qds.flux2_dev import config as flux2_dev_config
 from qds.logs import SERVER_LOGGER
+from qds.qwen_flash import config as qwen_flash_config
 
 logger = logging.getLogger(f"{SERVER_LOGGER}.registry")
 
@@ -196,7 +198,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         display_name="Flux 2 Dev",
         family="flux2-dev",
         repo="black-forest-labs/FLUX.2-dev",
-        # No factory on `ModelConfig`: mflux 0.18.0 does not know FLUX.2-dev.
+        # No factory on `ModelConfig`: mflux 0.19.0 does not know FLUX.2-dev.
         # Resolved through `_LOCAL_MODEL_CONFIGS`.
         model_config_name="flux2_dev",
         # The raw repository, like every other built-in. It used to be a
@@ -225,6 +227,154 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         quantize=8,
     ),
     ModelSpec(
+        key="anima-turbo",
+        display_name="Anima Turbo",
+        family="anima",
+        repo="circlestone-labs/Anima",
+        # Same repository, same architecture, different checkpoint: the file is
+        # chosen by `model_config_name` through `anima.config.WEIGHT_FILE_BY_CONFIG`.
+        model_config_name="anima_turbo",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # "Use at CFG 1 and 8-12 steps", from the card. 10 is the middle of that
+        # range. Its author recommends starting here rather than with Aesthetic:
+        # "only slightly worse on average, while being very fast to generate".
+        default_steps=10,
+        default_guidance=1.0,
+        # Distilled, and 1.0 is where it belongs — but nothing rejects another
+        # value, so this reports what the model accepts rather than what the name
+        # suggests. Same distinction Krea 2 Turbo makes.
+        supports_guidance=True,
+        # Honoured only above guidance 1.0, where an unconditional branch exists
+        # to put it in. At the distilled default it is inert.
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="CircleStone Labs Non-Commercial",
+        gated=False,
+        # bf16, for the reason the Aesthetic row gives: 2B has no headroom for
+        # 4-bit, and at this size there is nothing to reclaim.
+        quantize=None,
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="anima",
+        display_name="Anima Aesthetic",
+        family="anima",
+        repo="circlestone-labs/Anima",
+        # No factory on `ModelConfig`: mflux 0.19.0 does not know Anima, and its
+        # DiT and text adapter are implemented in `qds/anima/`. Resolved through
+        # `_LOCAL_MODEL_CONFIGS`.
+        model_config_name="anima",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # The card asks for 30-50 at CFG 4-5 on the Aesthetic checkpoints. 30 is
+        # the low end of its own range rather than this server's usual 20: at 2B
+        # a step is cheap, and Anima is not step-distilled.
+        default_steps=30,
+        default_guidance=4.5,
+        supports_guidance=True,
+        # Real CFG, and therefore a real unconditional branch to put a negative
+        # prompt in — two transformer passes per step above guidance 1.0.
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        # Non-commercial for the weights; the images they produce are not, per the
+        # card. A fact reported, not advice — hence the plain name.
+        license="CircleStone Labs Non-Commercial",
+        # Ungated, unusually for a non-commercial release: the files download
+        # without a token.
+        gated=False,
+        # bf16, chosen rather than defaulted to. At 2B the weights are ~4.2 GB,
+        # so there is nothing to gain, and there is a great deal to lose: the
+        # quality cliff on this model sits between 6 and 4 bits. Rendered from one
+        # seed at 1280x720, bf16 and 8-bit are indistinguishable and 6-bit is
+        # clean, while 4-bit produces illegible architecture and a scratchy
+        # overlay across the whole frame. `models.anima.quantize` can still ask
+        # for a depth; nothing config-wide can impose one.
+        quantize=None,
+        # 512-1536 per the card, and the DiT is patched 2x2 over an 8x downscale,
+        # so a side must stay a multiple of 16 — which `DIMENSION_STEP` already is.
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="krea-2-turbo",
+        display_name="Krea 2 Turbo",
+        family="krea2",
+        repo="krea/Krea-2-Turbo",
+        # Turbo, not Raw. Krea publishes Raw as the base checkpoint to fine-tune
+        # and post-train on, and says plainly it is not the one to run inference
+        # with; Turbo is the distilled inference model. mflux carries configs for
+        # both (`ModelConfig.krea2()` / `.krea2_raw()`), so Raw remains one row
+        # away should a reason to serve it appear.
+        model_config_name="krea2",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # 8 steps: mflux's own registry value for this model
+        # (cli/defaults/defaults.py, MODEL_INFERENCE_STEPS["krea-2"]), and the
+        # reference count for the distilled checkpoint.
+        default_steps=8,
+        # 1.0, from the family's CLI `DEFAULT_GUIDANCE` — the distilled default.
+        default_guidance=1.0,
+        # True, unlike the other distilled models here, and the distinction is
+        # mflux's rather than a judgement call: `ModelConfig.krea2()` publishes
+        # `supports_guidance=True`, and nothing rejects another value. FLUX.2
+        # klein is the contrasting case — its CLI calls `parser.error()` on any
+        # guidance but 1.0 — which is what this flag was introduced to report.
+        supports_guidance=True,
+        # Accepted, and honoured whenever guidance is not 1.0: the prompt encoder
+        # builds the unconditional branch only then (`krea2_text_encoder/
+        # prompt_encoder.py`). At the default of 1.0 it is inert, and mflux warns
+        # rather than refusing. Reported as supported for the same reason z-image
+        # does with the same conditional shape: the model does take one.
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        # `Krea2._resolve_scheduler` maps `None`/`"linear"` onto `er_sde`, the
+        # sampler Krea publishes for this checkpoint. `"euler"` is the only other
+        # value it accepts.
+        scheduler="linear",
+        # Free commercially below Krea's revenue and seat thresholds, which is a
+        # condition this server cannot evaluate — hence the plain name, and the
+        # shipped config leaving it off.
+        license="Krea 2 Community",
+        gated=True,
+        quantize=8,
+    ),
+    ModelSpec(
+        key="qwen-image-flash",
+        display_name="Qwen Image Flash",
+        family="qwen",
+        repo="nvidia/Qwen-Image-Flash",
+        # Qwen-Image's architecture with Flash's noise schedule. mflux's own
+        # `qwen_image` config would apply dynamic shifting and a terminal stretch
+        # this distillation was not trained against — see `qds/qwen_flash/`.
+        model_config_name="qwen_image_flash",
+        model_path=None,
+        default_width=1280,
+        default_height=720,
+        # Four steps at CFG 1.0, from NVIDIA's own example — this is a
+        # few-step distillation, and the card's code passes exactly these.
+        default_steps=4,
+        default_guidance=1.0,
+        # `true_cfg_scale=1.0` in the card's example, but nothing rejects another
+        # value: the Qwen pipeline runs its negative pass unconditionally.
+        supports_guidance=True,
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="linear",
+        # NVIDIA Open Model License, per the repository. Ungated.
+        license="NVIDIA Open Model",
+        gated=False,
+        # The raw bf16 release, so the setting below has something to act on:
+        # unquantized this is a 20B at ~55 GB, the same arithmetic as the 2512 row.
+        quantize=8,
+    ),
+    ModelSpec(
         key="qwen-image-2512",
         display_name="Qwen",
         family="qwen",
@@ -233,10 +383,14 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         # the scheduler's sigma_* parameters
         # (mflux/models/common/resolution/config_resolution.py:112-128).
         model_config_name="qwen_image",
-        # `ModelConfig.qwen_image()` points at `Qwen/Qwen-Image`, the original —
-        # hence an explicit path for the 2512 release. The bf16 repo rather than
-        # the 8-bit conversion: mflux keeps a stored quantization and ignores
-        # `-q 4`, so only the raw weights can honour `default_quantize`.
+        # `ModelConfig.qwen_image()` points at `Qwen/Qwen-Image-2512` as of mflux
+        # 0.19.0, which is this row's repo — so the explicit path now restates
+        # the factory rather than correcting it. It stays: which weights a
+        # catalogue row serves is this file's statement to make, and mflux moved
+        # that name once already (0.18.0 resolved it to `Qwen/Qwen-Image`, the
+        # original). The bf16 repo rather than the 8-bit conversion: mflux keeps
+        # a stored quantization and ignores `-q`, so only the raw weights can
+        # honour the `quantize` below.
         model_path="Qwen/Qwen-Image-2512",
         default_width=1920,
         default_height=1072,
@@ -258,6 +412,12 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         supports_image_to_image=True,
         scheduler="linear",
         license="Apache-2.0",
+        # 8, stated here rather than left to a config-wide setting. This row
+        # points at the raw bf16 repository *so that* the runtime setting has
+        # something to quantize; unquantized it is ~55 GB resident, which fits a
+        # 103 GB machine and not a 32 GB one. Leaving it unset would have made
+        # that the default the day the global was removed.
+        quantize=8,
         edit=EditSpec(
             family="qwen-edit",
             model_config_name="qwen_image_edit",
@@ -357,7 +517,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         repo="briaai/FIBO",
         # `ModelConfig.fibo().model_name` is already `briaai/FIBO`, so no path
         # override is needed — unlike the 8-bit conversion, which would pin the
-        # precision and make `default_quantize` a no-op.
+        # precision and make this row's `quantize` a no-op.
         model_config_name="fibo",
         model_path=None,
         default_width=1024,
@@ -490,7 +650,7 @@ class QuantizationCapability:
 
 #: Runtime quantization is inert here: `Ideogram4WeightDefinition` marks
 #: `conditional_transformer`, `unconditional_transformer` and `text_encoder`
-#: `skip_quantization=True` — verified against mflux 0.18.0 — leaving only the VAE,
+#: `skip_quantization=True` — verified against mflux 0.19.0 — leaving only the VAE,
 #: and the FP8 layers are `Fp8Linear`, which `nn.quantize` does not convert.
 #: Saving would be worse than useless: `ModelSaver` would stamp
 #: `quantization_level` onto weights nothing had quantized, and the reload path
@@ -519,8 +679,58 @@ _FLUX2_DEV = QuantizationCapability(
     note="Loaded from a pre-quantized artifact, whose stored precision mflux keeps.",
 )
 
+#: Krea 2 quantizes at load like any other family — `WeightApplier` walks its
+#: definition and `Krea2WeightDefinition.quantization_predicate` decides, keeping
+#: the text encoder out of it (`skip_quantization=True`) and skipping the layers
+#: whose last dimension is not a multiple of 64. Conversion is the part that does
+#: not fit, and not for want of a `save_model`: the class has one.
+#:
+#: Its transformer ships as a single file at the repo root, so its
+#: `ComponentDefinition.hf_subdir` is `""` — while the converter is built on one
+#: component per subdirectory, named after the component. `single_component_definition`
+#: would ask for `"/*.safetensors"`, which matches nothing; `availability` would
+#: look for a `transformer/` directory the saver never wrote. Both are structural,
+#: so this family refuses conversion rather than producing an artifact that cannot
+#: be found again.
+_SINGLE_FILE_COMPONENT = QuantizationCapability(
+    supports_quantization=True,
+    quantize_choices=QUANTIZE_CHOICES,
+    supports_prequantize=False,
+    prequantize_choices=(),
+    prequantize_strategy=None,
+    note="Quantized as it loads. This model keeps its transformer in one "
+    "repository-root file, which the saved-artifact layout cannot represent.",
+)
+
+#: Anima quantizes at load like any other family, and its predicate skips the
+#: layers MLX cannot group into 64s. Conversion is refused for a reason of the
+#: same kind as Krea 2's, though the shape of it differs: Anima's components do
+#: not sit one per subdirectory named after the component. Its transformer and
+#: text adapter are two halves of *one* file under `split_files/diffusion_models`,
+#: split by key prefix, and its VAE comes from a different repository altogether.
+#: The converter writes and finds artifacts by component subdirectory, so there is
+#: no layout for it to write this family into.
+#:
+#: It also has little to gain: 2B at bf16 is ~4.2 GB, and the whole point of the
+#: saved-artifact path is models too large to quantize on the way in.
+_ANIMA = QuantizationCapability(
+    supports_quantization=True,
+    quantize_choices=QUANTIZE_CHOICES,
+    supports_prequantize=False,
+    prequantize_choices=(),
+    prequantize_strategy=None,
+    note="No saved copy is needed here. A pre-quantized artifact and the runtime "
+    "setting run the same quantizer over the same layers, so they produce the "
+    "same weights — a saved copy only spares the conversion on models too large "
+    "to quantize while loading, and this one is 4.2 GB. Set the bit depth under "
+    "Runtime quantization instead; the default is bf16, and below 6 bits this "
+    "model degrades badly. (Its components could not be saved in that layout "
+    "anyway: two of them share one file, and its VAE comes from a second "
+    "repository.)",
+)
+
 #: Families whose class defines its own `save_model` and whose components are
-#: quantizable. Verified per family against mflux 0.18.0: `save_model` present on
+#: quantizable. Verified per family against mflux 0.19.0: `save_model` present on
 #: the exact class `load_model` instantiates, no `skip_quantization` on the
 #: transformer, and `ModelSaver`/`WeightLoader` round-trip the level generically.
 #:
@@ -547,6 +757,8 @@ _CAPABILITIES: dict[str, QuantizationCapability] = {
     "fibo": _GENERIC,
     "ideogram4": _IDEOGRAM4,
     "flux2-dev": _FLUX2_DEV,
+    "krea2": _SINGLE_FILE_COMPONENT,
+    "anima": _ANIMA,
 }
 
 #: Edit variants are reached through their parent model, and `Flux2KleinEdit` has
@@ -595,28 +807,23 @@ def build_registry(
     overrides: dict[str, Any] | None = None,
     *,
     default_size: str | None = None,
-    default_quantize: int | None = None,
     include_disabled: bool = False,
     imported: list[Any] | None = None,
     cache_root: str | None = None,
 ) -> dict[str, ModelSpec]:
     """Apply the `server-config.json` overrides on top of the base catalogue.
 
-    `default_size` and `default_quantize` are the config-wide settings. Both sit
-    **below** the per-model overrides:
+    `default_size` is the one config-wide setting, and it sits **below** the
+    per-model override:
 
         request `size` > models.<key>.default_size > default_size > catalogue
-                         models.<key>.quantize     > default_quantize > catalogue
+                         models.<key>.quantize                    > catalogue
 
-    Keeping the per-model level under the global one is the escape hatch that
-    matters: a 32B does not want the same area as a distilled 4B, so pinning
-    `flux2-dev` alone stays possible without giving up a single global knob.
-
-    `default_quantize` skips the `prequantized` models. mflux resolves a stored
-    quantization in favour of the file
-    (`QuantizationResolution`, rule `conflict` → action `STORED`) and merely prints
-    "Ignoring -q 4", so applying the setting there would make the catalogue — and
-    `/v1/capabilities` — claim a bit depth the model will not use.
+    Size and precision are deliberately not symmetric. Area is a taste that
+    applies across a catalogue — a single global is a reasonable thing to want.
+    Precision is not: what a bit depth costs in quality depends entirely on the
+    model it is applied to, so it is decided per row here and overridden per
+    model in the config, with nothing in between.
     """
     overrides = overrides or {}
     imported_keys = {getattr(model, "id", None) for model in (imported or [])}
@@ -627,8 +834,6 @@ def build_registry(
         )
 
     global_size = parse_size(default_size) if default_size else None
-    if default_quantize is not None and default_quantize != 0 and default_quantize not in QUANTIZE_CHOICES:
-        raise ValueError(f"default_quantize must be 0 (none) or one of {list(QUANTIZE_CHOICES)}")
 
     registry: dict[str, ModelSpec] = {}
     for key, base in BASE_SPECS_BY_KEY.items():
@@ -637,12 +842,13 @@ def build_registry(
         spec = replace(base, cache_root=cache_root)
         if global_size is not None:
             spec = replace(spec, default_width=global_size[0], default_height=global_size[1])
-        # The global default only reaches models where it would actually do
-        # something. On the others mflux keeps the stored precision and prints
-        # "Ignoring -q", so applying it would make `/v1/capabilities` claim a bit
-        # depth the model will not use.
-        if default_quantize is not None and spec.quantization.supports_quantization:
-            spec = replace(spec, quantize=default_quantize or None)
+        # Note what does *not* happen here: nothing config-wide touches
+        # `quantize`. There used to be a `default_quantize`, and it overwrote the
+        # catalogue rather than standing behind it, so one number decided the
+        # precision of every model — including rows that had chosen one for a
+        # reason. Anima is why that is no longer acceptable: at 4-bit a 2B model
+        # produces visibly broken images, where the same setting is harmless on a
+        # 20B. Precision belongs to the model.
         override = overrides.get(key)
         if override is not None:
             spec = _apply_override(spec, override)
@@ -770,7 +976,12 @@ def edit_enabled(spec: ModelSpec) -> bool:
 
 #: Configs mflux does not know about and that we build ourselves. These are
 #: factories, not instances: they only import `ModelConfig` when called.
-_LOCAL_MODEL_CONFIGS: dict[str, Any] = {"flux2_dev": flux2_dev_config.flux2_dev_model_config}
+_LOCAL_MODEL_CONFIGS: dict[str, Any] = {
+    "flux2_dev": flux2_dev_config.flux2_dev_model_config,
+    "anima": anima_config.anima_model_config,
+    "anima_turbo": anima_config.anima_turbo_model_config,
+    "qwen_image_flash": qwen_flash_config.qwen_image_flash_model_config,
+}
 
 
 def _model_config(name: str):
@@ -968,6 +1179,28 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
 
         return Flux2KleinEdit(model_config=model_config, model_path=model_path, quantize=quantize)
 
+    if family == "anima":
+        from qds.anima import Anima
+
+        # Which checkpoint, from the row's config name: Aesthetic and Turbo are
+        # one architecture and two trainings, so they differ by file alone.
+        return Anima(
+            model_config=model_config,
+            model_path=model_path,
+            quantize=quantize,
+            weight_file=anima_config.weight_file_for(model_config_name),
+        )
+
+    if family == "krea2":
+        # Importing the package is also what registers `er_sde` as a scheduler —
+        # a side effect of `mflux/models/krea2/__init__.py` — so the import has
+        # to happen before `generate_image` resolves this spec's `"linear"`.
+        # Doing it here rather than at module scope is the same rule as every
+        # other family: the catalogue must not pull in torch.
+        from mflux.models.krea2 import Krea2
+
+        return Krea2(model_config=model_config, model_path=model_path, quantize=quantize)
+
     if family == "qwen":
         # QwenImage is not re-exported by mflux.models.qwen.variants.
         from mflux.models.qwen.variants.txt2img.qwen_image import QwenImage
@@ -1033,6 +1266,16 @@ def latent_creator_for(family: str) -> Any | None:
         from mflux.models.qwen.latent_creator.qwen_latent_creator import QwenLatentCreator
 
         return QwenLatentCreator
+
+    if family == "krea2":
+        from mflux.models.krea2.latent_creator import Krea2LatentCreator
+
+        return Krea2LatentCreator
+
+    if family == "anima":
+        from qds.anima.latent_creator import AnimaLatentCreator
+
+        return AnimaLatentCreator
 
     if family == "z-image":
         from mflux.models.z_image.latent_creator.z_image_latent_creator import ZImageLatentCreator

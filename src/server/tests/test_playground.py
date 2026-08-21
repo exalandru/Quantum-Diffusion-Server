@@ -80,8 +80,9 @@ def new_session(client: TestClient) -> str:
 def submit(client: TestClient, session_id: str, **fields):
     body = {"prompt": "a fox", **fields}
     files = body.pop("files", None)
+    headers = body.pop("headers", None)
     return client.post(
-        f"/playground/api/sessions/{session_id}/generations", data=body, files=files
+        f"/playground/api/sessions/{session_id}/generations", data=body, files=files, headers=headers
     )
 
 

@@ -17,7 +17,7 @@ classifiers = [
     "Topic :: Multimedia :: Graphics",
 ]
 dependencies = [
-    "mflux==0.18.0",
+    "mflux==0.19.0",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.34",
     "python-multipart>=0.0.20",
@@ -39,6 +39,13 @@ dev = [
     "pytest-asyncio>=1.0",
     "httpx>=0.28",
     "ruff>=0.9",
+    # Reference implementations, for `tests/test_anima.py` only. QDS ships an MLX
+    # port of Anima's DiT and text adapter; these are what the port is checked
+    # against, tensor for tensor, so they are a test dependency and never a
+    # runtime one — the server never imports diffusers. torchvision comes with
+    # them because the Cosmos reference resizes its padding mask through it.
+    "diffusers==0.39.0",
+    "torchvision>=0.20",
 ]
 
 [build-system]

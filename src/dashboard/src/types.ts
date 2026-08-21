@@ -150,12 +150,14 @@ export type Progress = {
 /** A playground conversation, as `/playground/api/sessions` lists it. */
 export type PlaygroundSession = {
   id: string;
-  /** The first prompt, truncated. Null until the session has one. */
+  /** The name the user gave it, else the first prompt, truncated. Null until either. */
   title: string | null;
   createdAt: number;
   updatedAt: number;
   /** Something in this session is queued or running: the sidebar's live dot. */
   generating: boolean;
+  /** Has a password: its content is served only with an unlock token. */
+  locked: boolean;
 };
 
 export type PlaygroundStatus = "queued" | "running" | "completed" | "failed" | "cancelled";
@@ -246,6 +248,12 @@ export type QuantizationCapability = {
   prequantize_strategy: "mflux_save" | "qds_memory_bounded" | null;
   /** Empty for a family whose components have not been established. */
   prequantize_components: ComponentSpec[];
+  /**
+   * What this model loads at when the config asks for nothing — the catalogue's
+   * own choice, `null` meaning bf16. Shown in the runtime selector so "default"
+   * names a depth instead of hiding one.
+   */
+  catalogue_quantize: number | null;
   note: string | null;
 };
 

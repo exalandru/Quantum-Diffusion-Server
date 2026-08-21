@@ -1699,15 +1699,32 @@ main.playground > header {
   }
 }
 
+.pg-session-lock {
+  margin-right: 4px;
+  font-size: var(--font-sm);
+}
+
 /* Revealed on hover or keyboard focus, not on hover alone: a control a keyboard
    user cannot reach is not a control. */
-.pg-session-delete {
+.pg-session-actions {
+  display: flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.pg-session-actions > button {
   visibility: hidden;
 }
 
-.pg-session-row:hover .pg-session-delete,
-.pg-session-delete:focus-visible {
+.pg-session-row:hover .pg-session-actions > button,
+.pg-session-actions > button:focus-visible,
+.pg-session-actions:focus-within > button {
   visibility: visible;
+}
+
+/* A locked session's studio: the same hero, saying why it is empty. */
+.pg-hero-actions {
+  margin-top: var(--s3);
 }
 
 .pg-studio {
@@ -1919,6 +1936,7 @@ main.playground > header {
 @media (prefers-reduced-motion: reduce) {
   .pg-preview img {
     transition: none;
+    filter: blur(20px);
   }
 
   .pg-preview-glow {

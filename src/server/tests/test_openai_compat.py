@@ -28,6 +28,8 @@ def test_model_list_is_conformant(client):
     assert payload["object"] == "list"
     # Every catalogue entry, since the fixture disables none of them.
     assert {entry["id"] for entry in payload["data"]} == {
+        "anima",
+        "anima-turbo",
         "ernie-image",
         "ernie-image-turbo",
         "fibo",
@@ -35,7 +37,9 @@ def test_model_list_is_conformant(client):
         "flux2-dev",
         "flux2-klein",
         "ideogram-4",
+        "krea-2-turbo",
         "qwen-image-2512",
+        "qwen-image-flash",
         "z-image",
         "z-image-turbo",
     }
