@@ -322,3 +322,53 @@ def test_it_can_be_removed_on_loopback(configured):
         client.post("/admin/session", json={"password": PASSWORD})
         assert client.delete("/admin/password").status_code == 200
         assert credential.is_set() is False
+
+
+# ── The data-plane predicate ───────────────────────────────────────────────
+#
+# `build_authorizer` is what `require_api` is now a wrapper over, and what the
+# mounted `/mcp` application is gated by. Tested directly as well as through
+# HTTP: a wrapper can be correct while the predicate under it is not, and the
+# ASGI guard reaches the predicate without passing through the wrapper at all.
+
+
+def authorizer(tmp_path, *, token=None, sessions=None, **server):
+    from qds.auth import build_authorizer
+
+    return build_authorizer(settings_for(tmp_path, **server), sessions, token)
+
+
+def test_the_data_plane_is_open_when_no_key_is_configured(tmp_path):
+    """The loopback default: an image without ceremony."""
+    assert authorizer(tmp_path)(None, None, None) is True
+
+
+def test_a_configured_key_refuses_a_request_that_presents_none(tmp_path):
+    assert authorizer(tmp_path, api_key="s3cret")(None, None, None) is False
+
+
+def test_a_configured_key_accepts_exactly_that_key(tmp_path):
+    allow = authorizer(tmp_path, api_key="s3cret")
+    assert allow("Bearer s3cret", None, None) is True
+    assert allow("Bearer s3cre", None, None) is False
+    assert allow("s3cret", None, None) is False, "a bare token is not a bearer credential"
+
+
+def test_an_admin_session_reaches_the_data_plane(tmp_path):
+    """Not a shortcut: an admin can read `server.api_key` out of the config."""
+    store = SessionStore()
+    allow = authorizer(tmp_path, sessions=store, api_key="s3cret")
+    assert allow(None, store.create(), None) is True
+    assert allow(None, "not-a-session", None) is False
+
+
+def test_the_local_token_reaches_the_data_plane(tmp_path):
+    allow = authorizer(tmp_path, token="local-token", api_key="s3cret")
+    assert allow(None, None, "local-token") is True
+    assert allow(None, None, "another-token") is False
+
+
+def test_the_local_token_is_not_accepted_in_the_api_key_field(tmp_path):
+    """Two credentials, two headers. Pasting one into the other authenticates nothing."""
+    allow = authorizer(tmp_path, token="local-token", api_key="s3cret")
+    assert allow("Bearer local-token", None, None) is False

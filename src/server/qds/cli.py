@@ -58,6 +58,13 @@ def _rewrite() -> Entry:
     return main
 
 
+@_command("mcp", "bridge a stdio MCP client to this machine's server")
+def _mcp() -> Entry:
+    from qds.mcp_cli import main
+
+    return main
+
+
 @_command("prequantize", "convert a model into a saved, already-quantized artifact")
 def _prequantize() -> Entry:
     from qds.prequantize import main

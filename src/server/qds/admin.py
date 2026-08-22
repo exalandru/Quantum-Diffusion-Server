@@ -103,13 +103,17 @@ class ForgetRequest(BaseModel):
 # ── Cross-origin protection ────────────────────────────────────────────────
 
 
-def _same_origin(origin: str, request: Request) -> bool:
-    """Whether `Origin` names the very server handling this request.
+def origin_matches(origin: str, *, scheme: str, host: str) -> bool:
+    """Whether `Origin` names the server reachable at `scheme`://`host`.
 
     Parsed, not pattern-matched. A suffix test on `//<host>` reads
     `http://evil.example//127.0.0.1:8765` as same-origin, and ignores the scheme
     entirely; no browser would send either, but a check that fails open on input
     it did not anticipate is a check whose guarantee nobody can state.
+
+    Takes the scheme and host rather than a `Request` so that the *same* rule
+    gates the mounted `/mcp` application, which never sees one. A second copy of
+    this comparison is how one plane quietly stops refusing what the other does.
     """
     try:
         parsed = urlsplit(origin)
@@ -121,10 +125,10 @@ def _same_origin(origin: str, request: Request) -> bool:
     # request itself. Without this, `https://127.0.0.1` counts as same-origin
     # for a plain-http server — which it is not, and which a browser would never
     # send to one.
-    if parsed.scheme != request.url.scheme:
+    if parsed.scheme != scheme:
         return False
 
-    host = (request.headers.get("host") or "").lower()
+    host = (host or "").lower()
     if not host:
         return False
     # A default port is implicit in one spelling and explicit in the other often
@@ -132,6 +136,22 @@ def _same_origin(origin: str, request: Request) -> bool:
     authority = parsed.netloc.lower()
     default_port = "443" if parsed.scheme == "https" else "80"
     return host in {authority, f"{authority}:{default_port}"} or authority == f"{host}:{default_port}"
+
+
+def cross_site_denied() -> APIError:
+    """The refusal `deny_cross_site` raises, so the ASGI guard can render it."""
+    return APIError(
+        "Cross-site requests are not accepted on the control plane.",
+        status_code=403,
+        error_type="invalid_request_error",
+        code="cross_site_denied",
+    )
+
+
+def _same_origin(origin: str, request: Request) -> bool:
+    return origin_matches(
+        origin, scheme=request.url.scheme, host=request.headers.get("host") or ""
+    )
 
 
 async def deny_cross_site(request: Request) -> None:
@@ -145,12 +165,7 @@ async def deny_cross_site(request: Request) -> None:
     origin = request.headers.get("origin")
     if origin is None or _same_origin(origin, request):
         return
-    raise APIError(
-        "Cross-site requests are not accepted on the control plane.",
-        status_code=403,
-        error_type="invalid_request_error",
-        code="cross_site_denied",
-    )
+    raise cross_site_denied()
 
 
 # ── Logging in ─────────────────────────────────────────────────────────────

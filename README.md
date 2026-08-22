@@ -74,6 +74,10 @@ holds ~58 GB resident while it generates.
   variant, image-to-image on the others, over the standard edits endpoint.
 - **Readable logs** - structured events and raw output side by side, filterable
   by level, in the dashboard's Logs tab.
+- **MCP, for a local chat model** - `/mcp` on the same port, or `qds mcp` for
+  clients that speak only stdio. Generate, refine, vary and upscale from a
+  conversation, with the results landing in the playground where you can carry
+  on with them by hand.
 - **Local by default** - binds to `127.0.0.1`; opening it to the network
   requires setting an API key, which the server enforces rather than suggests.
 
@@ -189,6 +193,25 @@ Server-Sent Events, `/v1/cancel`, `/v1/unload`, `/v1/capabilities`, and a
 complete configuration reference, is documented in
 [`src/server/README.md`](src/server/README.md).
 
+### From a chat with a local model
+
+The server speaks MCP as well. Point an HTTP-capable client at
+`http://127.0.0.1:8765/mcp`, or, for a client that only launches processes:
+
+```json
+{
+  "mcpServers": {
+    "quantum-diffusion": { "command": "qds", "args": ["mcp"] }
+  }
+}
+```
+
+The model gets `generate_image`, `refine_image`, `vary_image`, `upscale_image`
+and a few others; it sees a thumbnail of what it made, and the full-resolution
+file lands in a playground session you can open in the browser. The tools and
+their bounds are documented in
+[`src/server/README.md`](src/server/README.md#mcp).
+
 Worth knowing before you build on it: **one generation at a time**. Concurrent
 requests are queued rather than refused, and `n > 1` produces images
 sequentially. That is deliberate - on unified memory two live models saturate
@@ -231,7 +254,7 @@ Three pieces, each owning one thing:
 
 - [`src/server`](src/server/README.md): the Python API server exposing mflux
   through an OpenAI Images-compatible API. It also owns the control plane
-  (`/admin`) and serves the dashboard.
+  (`/admin`), the MCP surface (`/mcp`) and serves the dashboard.
 - `src/dashboard`: the React interface, built into the Python package and
   served at `/dashboard`. It is a pure HTTP client — same origin, no privileges
   of its own.
@@ -243,6 +266,7 @@ src/
 ├── server/       Python package, tests, and the built dashboard it ships
 ├── dashboard/    React sources for that interface
 └── menubar/      Swift menubar app (SwiftPM)
+docs/adr/         architecture decision records
 dist/             the wheel, the source archive, QDS.app and its DMG
 ```
 

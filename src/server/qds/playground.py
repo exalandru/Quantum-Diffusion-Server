@@ -385,6 +385,62 @@ class PlaygroundStore:
             "seed": row["seed"],
         }
 
+    def generation_of_image(self, filename: str) -> dict[str, Any] | None:
+        """Everything needed to *replay* a generated image, or None.
+
+        `generated_image` above answers "who owns this file", which is what an
+        upscale needs. A refinement or a variation needs more: it re-runs the
+        settings that produced the image, so it needs the size, the step count,
+        the kind, the negative and rewritten prompts, and the reference the
+        original started from.
+
+        Raw column names rather than `_generation_json`, deliberately. That
+        serializer rewrites `context_image` into a URL for a browser, and a
+        replay needs the filename to copy the file -- a URL would have to be
+        parsed back into one, which is the sort of round trip that survives
+        review and then breaks the first time the route changes.
+
+        Restricted to `generation_images` for the same reason `generated_image`
+        is: a context file has no seed and may not be a PNG.
+        """
+        with self._lock:
+            row = self._db.execute(
+                """
+                SELECT g.id AS id, g.session_id AS session_id, g.group_id AS group_id,
+                       g.prompt AS prompt, g.negative_prompt AS negative_prompt,
+                       g.rewritten_prompt AS rewritten_prompt, g.model AS model,
+                       g.kind AS kind, g.width AS width, g.height AS height,
+                       g.steps AS steps, g.steps_from_preset AS steps_from_preset,
+                       g.image_strength AS image_strength, g.context_image AS context_image,
+                       gi.seed AS seed
+                FROM generation_images gi JOIN generations g ON g.id = gi.generation_id
+                WHERE gi.filename = ?
+                LIMIT 1
+                """,
+                (filename,),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": row["id"],
+            "session_id": row["session_id"],
+            # A generation with no group is its own group, the same convention
+            # `generated_image` applies.
+            "group_id": row["group_id"] or row["session_id"],
+            "prompt": row["prompt"],
+            "negative_prompt": row["negative_prompt"],
+            "rewritten_prompt": row["rewritten_prompt"],
+            "model": row["model"],
+            "kind": row["kind"],
+            "width": row["width"],
+            "height": row["height"],
+            "steps": row["steps"],
+            "steps_from_preset": bool(row["steps_from_preset"]),
+            "image_strength": row["image_strength"],
+            "context_image": row["context_image"],
+            "seed": row["seed"],
+        }
+
     def session_of_generation(self, generation_id: str) -> str | None:
         with self._lock:
             row = self._db.execute(

@@ -28,7 +28,8 @@ from qds.session import SessionStore
 from qds.settings import Settings
 
 
-def _invalid_key() -> APIError:
+def invalid_key() -> APIError:
+    """The data plane's refusal, so the ASGI guard can render the same one."""
     return APIError(
         "Missing or invalid API key.",
         status_code=401,
@@ -67,6 +68,49 @@ def _login_required() -> APIError:
     )
 
 
+def build_authorizer(
+    settings: Settings,
+    sessions: SessionStore | None = None,
+    local_token: str | None = None,
+):
+    """The data-plane rule, as a predicate over three raw credential values.
+
+    Extracted from `require_api` rather than copied, and for the reason this
+    module exists at all: `/mcp` is a *mounted ASGI application*, so a FastAPI
+    dependency cannot gate it, and the only other way to protect it would be a
+    second implementation of these rules — the exact drift the module docstring
+    names. `require_api` is a wrapper over this; there is one rule.
+
+    Takes the values, not a `Request`: an ASGI guard reads them off `scope`
+    while FastAPI extracts them from the signature, and neither should have to
+    fabricate the other's argument.
+    """
+
+    def authorize(
+        authorization: str | None,
+        qds_admin: str | None,
+        x_qds_admin_token: str | None,
+    ) -> bool:
+        # An admin is already strictly stronger than the data-plane key — they
+        # can read `server.api_key` out of `GET /admin/config` — so accepting an
+        # admin credential here grants nothing new, and it saves the dashboard
+        # from holding two secrets to call two planes of one server.
+        if sessions is not None and sessions.validate(qds_admin):
+            return True
+        if local_token and x_qds_admin_token and _same(x_qds_admin_token, local_token):
+            return True
+
+        expected = settings.server.api_key
+        # No key configured is the default on loopback, and it means the data
+        # plane is open. That is deliberate: a local install should generate an
+        # image without ceremony.
+        if not expected:
+            return True
+        return matches_api_key(authorization, expected)
+
+    return authorize
+
+
 def build_dependencies(
     settings: Settings,
     sessions: SessionStore | None = None,
@@ -88,28 +132,15 @@ def build_dependencies(
     remains only so a test can pin the old behaviour as *not* the current one.
     """
 
+    authorize = build_authorizer(settings, sessions, local_token)
+
     async def require_api(
         authorization: Annotated[str | None, Header()] = None,
         qds_admin: Annotated[str | None, Cookie(alias=session_module.COOKIE)] = None,
         x_qds_admin_token: Annotated[str | None, Header()] = None,
     ) -> None:
-        # An admin is already strictly stronger than the data-plane key — they
-        # can read `server.api_key` out of `GET /admin/config` — so accepting an
-        # admin credential here grants nothing new, and it saves the dashboard
-        # from holding two secrets to call two planes of one server.
-        if sessions is not None and sessions.validate(qds_admin):
-            return
-        if local_token and x_qds_admin_token and _same(x_qds_admin_token, local_token):
-            return
-
-        expected = settings.server.api_key
-        # No key configured is the default on loopback, and it means the data
-        # plane is open. That is deliberate: a local install should generate an
-        # image without ceremony.
-        if not expected:
-            return
-        if not matches_api_key(authorization, expected):
-            raise _invalid_key()
+        if not authorize(authorization, qds_admin, x_qds_admin_token):
+            raise invalid_key()
 
     async def require_admin(
         authorization: Annotated[str | None, Header()] = None,
@@ -131,7 +162,7 @@ def build_dependencies(
                 # transition; without this an api_key-protected server would be
                 # briefly open to anything that reached it.
                 if not matches_api_key(authorization, settings.server.api_key):
-                    raise _invalid_key()
+                    raise invalid_key()
             return
 
         if accept_api_key_for_admin and settings.server.api_key:

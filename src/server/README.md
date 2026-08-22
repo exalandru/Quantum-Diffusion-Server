@@ -180,8 +180,9 @@ The download works by loading the model and exiting. That is deliberate: the dow
 | `/playground/api/sessions/{id}/password` | POST/DELETE | set or change a session password (returns an unlock token) / remove it |
 | `/playground/api/sessions/{id}/unlock`, `…/lock` | POST | redeem the password for an unlock token (sent as `X-QDS-Session-Token`; in-memory, 30 min idle, gone on restart) / give it back |
 | `/playground/api/preview` | GET | the running playground generation's latest partially-denoised frame (JPEG); 404 when there is none |
-| `/playground/images/{name}.png` | GET | images owned by a playground session; **not** TTL-purged. A locked session's images need its token (`?t=` accepted here, since `<img>` sends no header) |
+| `/playground/images/{name}.png` | GET | images owned by a playground session; **not** TTL-purged. A locked session's images need its token (`?t=` accepted here, since `<img>` sends no header). The **only** playground route without the cross-site check — the `uuid4` filename is the capability, and MCP clients render in their own origin (see [MCP](#mcp)) |
 | `/admin/playground/sessions/{id}/password` | DELETE | admin recovery: remove a session password without knowing it |
+| `/mcp` | POST/GET/DELETE | the MCP surface (see below). Same credential as `/v1`; absent when `mcp.enabled` is false, and absent in recovery mode |
 
 ### Following, cancelling, freeing
 
@@ -494,6 +495,242 @@ Things worth knowing before using it:
 - **The engine keeps a second, bounded slot** for the upscaler, so enlarging an
   image never evicts a warm diffusion model. See `engine.py`'s module docstring
   for why that exception is safe and what bounds it.
+
+## MCP
+
+A third plane, for a language model in a chat client rather than for an
+application or a browser. It reaches the same engine, the same queue and the
+same durable sessions as everything else, over the same port and the same
+credential — and if you are already running the server, it is already there.
+
+### Connecting
+
+Clients that speak HTTP MCP want one URL:
+
+```
+http://127.0.0.1:8765/mcp
+```
+
+Set `Authorization: Bearer <api_key>` if you configured one; on a loopback
+install with no key, nothing is needed.
+
+Clients that speak only stdio get a bridge:
+
+```json
+{
+  "mcpServers": {
+    "quantum-diffusion": { "command": "qds", "args": ["mcp"] }
+  }
+}
+```
+
+`qds mcp` is a relay, not a second server. It reads `server-config.json` for the
+address and the API key, connects to the running server before it accepts
+anything on stdin, and if nothing is listening it exits with a line saying so
+rather than hanging. It never carries the local admin token: that credential
+opens the control plane, and this needs the data plane.
+
+### The tools
+
+| Tool | What it does |
+|---|---|
+| `generate_image` | prompt → image(s). Optionally from a reference image, to edit or vary |
+| `refine_image` | change an image this server made; joins its feed entry |
+| `vary_image` | same settings, new seed; joins its feed entry |
+| `upscale_image` | enlarge one, ×2 or ×4 |
+| `wait_for_generation` | pick up a generation that outlived its tool call |
+| `cancel_generation` | stop one |
+| `list_models`, `list_sessions`, `open_session` | the catalogue, the sessions, and a new one |
+
+`delete_image` and `delete_group` exist behind `mcp.allow_destructive`, off by
+default: deleting in the playground is a click a person makes with the image in
+front of them, and a tool has no equivalent of that confirmation. There is no
+tool for session passwords and none for pausing the queue — see below.
+
+Resources: `qds://models`, `qds://upscalers`, `qds://sessions`, and
+`qds://images/{filename}` for an image at full resolution. `list_models`
+duplicates `qds://models` deliberately: many clients never surface resources to
+the model, while a tool is always reachable by it.
+
+### What a tool call returns
+
+Three blocks per image, **text first** — anything that truncates a long result
+drops what is at the end.
+
+1. The **text** — which file, which seed, its real size, and a `link:` line
+   carrying `[Open the image](http://…)`, ready to include in a reply.
+2. The **image** — a JPEG preview, `mcp.thumbnail_px` on the long side,
+   annotated for the `user` audience. This is what a client renders on its own,
+   and the only channel that needs nothing from the model.
+3. A **resource link** to the file's own http URL, resolvable through
+   `resources/read` and openable directly.
+
+**A link, never a markdown image**, and that is a conclusion rather than a
+preference. Two ways of showing the picture *inside the reply* were tried and
+both failed for different reasons:
+
+- `![](http://127.0.0.1:8765/…)` — a chat client's webview allows `img-src` of
+  `https:` and `data:` but not `http:`, so it is refused before any request is
+  made. That is why the server's access log stayed empty while the tile stayed
+  broken, and why every server-side measurement said the URL was fine. It was,
+  for everything that does not pass through `img-src`: `curl`, a browser address
+  bar, and the client's own download button.
+- `![](data:image/jpeg;base64,…)` — this *does* render, verified in the client.
+  But only the model can put it in a reply, and reproducing base64 is close to
+  the worst task a language model can be given: zero redundancy, so one wrong
+  character invalidates the image; about 2.5 characters per token; no way to
+  check its own output; and long high-entropy sequences invite repetition loops.
+  One model exhausted its context window trying. It declined at every size
+  tried, down to 1 300 characters.
+
+So the reply gets a link — twenty tokens, reliably reproduced, and it opens the
+full file rather than a preview. The picture itself rides in the image block,
+where nothing depends on the model at all.
+
+### The preview is a context budget
+
+`mcp.thumbnail_px` sizes a base64 block in a model's context, and its cost
+follows how much detail survives the downscale — not how big the source file is.
+Measured on real 2880×1600 generations:
+
+| `thumbnail_px` / `thumbnail_quality` | median tokens | worst seen |
+|---|---|---|
+| 512 / 82 (the first default, and wrong) | 16 800 | 22 100 |
+| 320 / 70 | 5 800 | 7 300 |
+| **256 / 70 (the default)** | **4 000** | 4 900 |
+| 192 / 60 | 2 200 | 2 600 |
+
+The original was validated against a flat-colour test image, came out at 3 KB
+and looked free. It was not: on an 8B model with an 8k window it *is* the
+context. `thumbnail_px: 0` omits the block entirely — the right setting for a
+text-only model, and there is no way to detect one, since MCP's
+`ClientCapabilities` says nothing about what the model can read.
+
+### Why an image link works from a chat client at all
+
+`GET /playground/images/{name}.png` is the one route on this server that grants
+two things every other route refuses, and both exist for the same reason: a chat
+client renders in an origin of its own, on a page that is not local.
+
+- **No cross-site check.** Every other playground route refuses a request a
+  browser marked cross-site. Here the origin was never the authority: the
+  filename is a `uuid4().hex`, so naming a file is holding 122 bits of secret.
+- **Private Network Access is granted.** Chromium asks permission before letting
+  a page reach a more private address than its own, sending a preflight with
+  `Access-Control-Request-Private-Network: true`. Starlette's CORS middleware
+  refuses that outright with a 400, so an `<img>` in an Electron chat client
+  never loaded — while `curl`, which sends no preflight, fetched the same URL
+  perfectly. That asymmetry is why this looked like a client bug for a long time.
+
+The grant is one route wide. `/v1`, `/admin`, `/playground/api` and `/mcp` all
+still answer a private-network preflight with a 400, which matters most for
+`/v1`: a keyless loopback install has an open data plane, and granting it there
+would let any page in any tab spend this machine's GPU. That is precisely the
+drive-by Private Network Access exists to stop, which is why the one-line
+`allow_private_network=True` on the CORS middleware was **not** the fix — it
+would have granted the same to all of them. See `qds/pna.py`.
+
+What still holds on the image route: a password-protected session's images need
+its token even so, a name no row holds is a 404, and `no-store` keeps a relocked
+session out of the cache. A preflight only says the request may be *made*; every
+check still runs on the GET that follows.
+
+### The preview is a context budget
+
+`mcp.thumbnail_px` sizes the JPEG embedded in the `markdown:` line, and its cost
+follows how much detail survives the downscale — not how big the source file is.
+Measured on real 2880×1600 generations:
+
+| `thumbnail_px` / `thumbnail_quality` | median tokens | worst seen |
+|---|---|---|
+| 512 / 82 (the first default, and wrong) | 16 800 | 22 100 |
+| 320 / 70 | 5 800 | 7 300 |
+| **256 / 70 (the default)** | **4 000** | 4 900 |
+| 192 / 60 | 2 200 | 2 600 |
+
+The original 512/82 was validated against a flat-colour test image, came out at
+3 KB, and looked free. It was not: on an 8B model with an 8k window it *is* the
+context.
+
+Set `thumbnail_px: 0` to omit the block entirely. That is the right setting for
+a text-only model, where the thumbnail is pure cost — and there is no way for
+the server to detect one: MCP's `ClientCapabilities` says nothing about whether
+the client or its model can read an image. Switching it off removes a view, not
+a fact: the file, its real size, the resource link and the markdown line all
+remain.
+
+Full resolution is named three ways and carried none of them. The absolute
+filesystem path is deliberately not among them: it used to be, and it put the
+operator's home directory — their username with it — into a model's context on
+every generation, to save a lookup the file name and the playground already
+answer.
+
+### Waiting, and the ceiling
+
+Generating blocks, because a chat client's model wants one call that comes back
+with a picture. While it waits it emits MCP progress notifications.
+
+After `mcp.tool_timeout_s` (default 600) the call **returns** rather than fails,
+carrying the generation id, the status, and whether the queue is paused. The
+work is queued and durable; `wait_for_generation` picks it up. A client that
+disconnects or cancels mid-call cancels the generation with it.
+
+**A caveat about progress, stated as one.** The engine keeps a single global
+progress snapshot — one lock serializes every job, so one snapshot serves
+`/v1/progress` for the whole process. A per-call notification therefore reports
+a denoising step only when four facts agree: the runner has claimed *this*
+generation, the engine is denoising, the model matches, and the seed is one of
+this call's. Otherwise the notification carries lifecycle only — "queued",
+"waiting for the engine" — rather than a step borrowed from another request.
+What that buys is that progress is never *misleading*; what it does not buy is
+precision, since two simultaneous jobs of the same model and the same seed would
+still be conflated. Making it exact means a per-job progress channel in the
+engine, which would cost the lock-free snapshot.
+
+### Where the images go
+
+Into playground sessions, which is the point rather than an implementation
+detail: a chat generation is visible in the playground, survives the
+conversation, and can be refined, varied, upscaled or deleted there. Each MCP
+conversation gets its own session, created the first time it generates something
+— connecting and listing tools leaves nothing behind. `open_session` starts a
+fresh one; `session_id` names an existing one.
+
+A **password-protected session is unreachable over MCP**, and there is no tool to
+unlock one. A password is a decision someone made at a browser, and a tool that
+could walk past it would make the control mean nothing. Unlock it in the
+playground.
+
+There is no tool to pause the queue either. Pausing is a person's control over
+their own machine, and combined with a blocking tool it guarantees a timeout —
+so `paused` is *reported* in what a timed-out call returns, rather than being
+something a model can set.
+
+### Settings
+
+Under `mcp` in `server-config.json`. Like `rewrite`, it is not reachable through
+`QDS_SERVER_*` — those cover the `server` section only.
+
+| Key | Default | Note |
+|---|---|---|
+| `enabled` | `true` | `false` removes the route entirely |
+| `thumbnail_px` | `512` | long side of the image in a tool result |
+| `thumbnail_quality` | `82` | JPEG quality for it |
+| `tool_timeout_s` | `600` | when a blocking call gives back an id instead |
+| `poll_interval_s` | `0.5` | how often the generation row is re-read while waiting |
+| `image_roots` | `[]` | absolute directories a model-chosen `reference_path` may read from |
+| `allow_destructive` | `false` | offer `delete_image` and `delete_group` |
+
+There is deliberately no `mcp.max_n`: `server.max_n` is the one authority, and it
+already applies here.
+
+**`image_roots` is a containment boundary, not a convenience.** `reference_path`
+is an argument the *model* fills in, and a model is untrusted — what it asks for
+may have been written into a prompt by someone you never met. Publishing an
+arbitrary readable file into the playground store would put it behind an HTTP
+route a loopback install serves without a credential. So it is empty by default,
+every path outside it is refused without the file being opened, and symlinks are
+resolved before the check. Point it at the one directory you meant.
 
 ## Configuration
 

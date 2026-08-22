@@ -21,7 +21,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -34,7 +34,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from qds import __version__, admin, credential, logbuffer, playground_lock
 from qds import settings as settings_module
-from qds.auth import build_dependencies
+from qds.auth import build_authorizer, build_dependencies
 from qds.engine import GenerationJob, ModelEngine
 from qds.errors import APIError, error_payload, install_exception_handlers
 from qds.hosts import allows as host_allows
@@ -44,6 +44,7 @@ from qds.jobs import JobManager
 from qds.logbuffer import LogBuffer
 from qds.logs import SERVER_LOGGER, setup_logging
 from qds.playground import PlaygroundRunner, PlaygroundStore
+from qds.pna import PrivateNetworkImages
 from qds.registry import ModelSpec, edit_enabled, parse_size
 from qds.rewrite.catalogue import MAX_PROMPT_CHARS
 from qds.rewrite.prompt import should_rewrite
@@ -316,7 +317,19 @@ def create_app(
         )
         if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
             logger.warning("Server exposed without an API key")
-        yield
+        # A mounted application's lifespan is never run by Starlette, and the
+        # MCP transport's task group is created here or not at all — without
+        # this the first request fails with "Task group is not initialized".
+        #
+        # Entered last so it exits first: on shutdown an in-flight tool call
+        # must be unwound before `runner.shutdown()` and `engine.shutdown()`
+        # below, or a tool task would be left touching a stopped runner.
+        async with AsyncExitStack() as stack:
+            if mcp_mount is not None:
+                await stack.enter_async_context(
+                    mcp_mount.serving(lambda: mcp_server.session_manager.run())
+                )
+            yield
         # Before `engine.shutdown()`: the worker may be inside
         # `engine.generate()`, and stopping the engine under it would raise from
         # a task nobody is awaiting.
@@ -346,6 +359,12 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # After `CORSMiddleware`, therefore *outside* it: it must see the
+    # private-network preflight first, because `CORSMiddleware` answers that one
+    # with a 400 and an image a chat client asked for never loads. Scoped to
+    # `/playground/images/` alone -- see `qds/pna.py` for why it is not the
+    # `allow_private_network` flag, which would grant the same to `/v1`.
+    app.add_middleware(PrivateNetworkImages)
     install_exception_handlers(app)
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
     # Playground images are *not* a mount: a session can be locked, and a file
@@ -1193,27 +1212,32 @@ def create_app(
             ]
         }
 
-    @playground_api.post("/sessions/{session_id}/upscales", status_code=202, dependencies=[unlocked])
-    async def playground_upscale(session_id: str, body: UpscaleRequest) -> dict:
-        """Enlarge an image this session already owns.
+    def submit_upscale(
+        session_id: str, *, image: str, model: str, scale: int, group: str | None = None
+    ) -> dict:
+        """Enlarge an image this session already owns: admit, copy, enqueue.
 
-        A separate route rather than a field on `/generations`, and JSON rather
-        than multipart, for the same reason: the source is by construction a
-        file the server already holds and already knows the owner of. `refine`
-        round-trips its PNG through the browser because a refinement may
-        legitimately start from an image the server has never seen; an upscale
-        cannot. Sending those bytes out and back would be pure work, and would
-        put a trust boundary where there was none.
+        A closure rather than route logic because there are now two callers --
+        `POST /playground/api/sessions/{id}/upscales` and the MCP
+        `upscale_image` tool -- and every refusal below is an admission rule.
+        A second copy of the render-budget arithmetic, or of the "only this
+        session's images" check, is a second thing to get wrong the next time
+        the catalogue changes.
+
+        The source is by construction a file the server already holds and
+        already knows the owner of, which is why nothing is uploaded here.
+        `refine` round-trips its bytes because a refinement may legitimately
+        start from an image the server has never seen; an upscale cannot.
         """
-        spec = upscale_catalogue.by_key(body.model)
+        spec = upscale_catalogue.by_key(model)
         if spec is None:
             raise APIError(
-                f"Unknown upscaler {body.model!r}. Available: "
+                f"Unknown upscaler {model!r}. Available: "
                 f"{', '.join(upscale_catalogue.KEYS)}.",
                 param="model",
                 code="invalid_model",
             )
-        if body.scale not in upscale_catalogue.SCALES:
+        if scale not in upscale_catalogue.SCALES:
             raise APIError(
                 f"scale must be one of {', '.join(str(s) for s in upscale_catalogue.SCALES)}.",
                 param="scale",
@@ -1223,18 +1247,18 @@ def create_app(
         # Only a generated image, and only one of this session's. `not_found`
         # rather than `forbidden` for someone else's: the answer to "does this
         # exist" should not depend on who is asking.
-        source_row = playground.generated_image(body.image)
+        source_row = playground.generated_image(image)
         if source_row is None or source_row["session_id"] != session_id:
             raise APIError(
-                f"No playground image {body.image!r} in this session.",
+                f"No playground image {image!r} in this session.",
                 status_code=404,
                 param="image",
                 code="not_found",
             )
-        source = playground.images_dir / body.image
+        source = playground.images_dir / image
         if not source.is_file():
             raise APIError(
-                f"No playground image {body.image!r} in this session.",
+                f"No playground image {image!r} in this session.",
                 status_code=404,
                 param="image",
                 code="not_found",
@@ -1242,7 +1266,7 @@ def create_app(
 
         with Image.open(source) as opened:
             source_width, source_height = opened.size
-        width, height = source_width * body.scale, source_height * body.scale
+        width, height = source_width * scale, source_height * scale
         # Bounded on what the network renders, which is not what was asked for:
         # it always works at `native_scale` and a smaller factor is that result
         # resampled down. See `MAX_RENDER_PIXELS`.
@@ -1253,7 +1277,7 @@ def create_app(
                 f"Upscaling {source_width}x{source_height} means rendering "
                 f"{side[0]}x{side[1]} ({rendered} pixels), past the "
                 f"{upscale_catalogue.MAX_RENDER_PIXELS} pixel limit. The network "
-                f"always works at x{spec.native_scale}, so x{body.scale} costs the same.",
+                f"always works at x{spec.native_scale}, so x{scale} costs the same.",
                 param="image",
                 code="image_too_large",
             )
@@ -1278,7 +1302,7 @@ def create_app(
                 # the seed the source was generated with.
                 seeds=[source_row["seed"]],
                 context_image=destination.name,
-                group=body.group or source_row["group_id"],
+                group=group or source_row["group_id"],
             )
         except KeyError as exc:
             destination.unlink(missing_ok=True)
@@ -1288,7 +1312,7 @@ def create_app(
         except ValueError as exc:
             destination.unlink(missing_ok=True)
             raise APIError(
-                f"No generation group {body.group!r} in this session.",
+                f"No generation group {group!r} in this session.",
                 param="group",
                 code="invalid_group",
             ) from exc
@@ -1299,6 +1323,16 @@ def create_app(
             raise
         runner.submit(record["id"])
         return record
+
+    @playground_api.post("/sessions/{session_id}/upscales", status_code=202, dependencies=[unlocked])
+    async def playground_upscale(session_id: str, body: UpscaleRequest) -> dict:
+        """JSON rather than multipart: the bytes are already here.
+
+        See `submit_upscale` for why the mechanism is not in this route.
+        """
+        return submit_upscale(
+            session_id, image=body.image, model=body.model, scale=body.scale, group=body.group
+        )
 
     def no_generation(generation_id: str) -> APIError:
         return APIError(
@@ -1388,7 +1422,7 @@ def create_app(
 
     @app.get(
         "/playground/images/{filename}",
-        dependencies=[auth, Depends(admin.deny_cross_site)],
+        dependencies=[auth],
         include_in_schema=False,
     )
     async def playground_image(
@@ -1403,6 +1437,25 @@ def create_app(
         name no row holds — a traversal, a guess — is a 404 before any path is
         built. `?t=` is accepted here and only here, because an `<img>` sends no
         headers. `no-store`, so a relocked session is not replayed from cache.
+
+        **`deny_cross_site` does not apply here, and only here.** Every other
+        playground route keeps it. The reason is that on this one route the
+        origin was never what authorized the request: the filename is a
+        `uuid4().hex`, so naming a file *is* holding 122 bits of secret, and the
+        session lock is checked underneath regardless. An origin check on top of
+        that only refused a page that already knew the name -- which is to say,
+        a page that already had the thing being protected.
+
+        What it did break is real. `/mcp` hands a model this URL, and every MCP
+        client renders in an origin of its own (`tauri://localhost` for one), so
+        the guard turned the advertised link into a 403 whose JSON body then got
+        saved as a `.png`. A URL published to clients that structurally cannot
+        satisfy an origin check is a URL that does not work.
+
+        The narrower guarantees are unchanged and are what this rests on: an
+        unguessable name, a session lock enforced per request, `no-store`, and
+        `/playground/api` still refusing cross-site outright -- so a hostile page
+        can neither list what exists nor create anything.
         """
         session_id = playground.session_of_image(filename)
         if session_id is None:
@@ -1439,6 +1492,72 @@ def create_app(
         logger.warning("playground: session %s password removed by admin", session_id)
 
     app.include_router(playground_admin)
+
+    # ── The MCP plane ──────────────────────────────────────────────────────
+    #
+    # A mounted ASGI application rather than a router: the SDK owns the
+    # streamable-HTTP transport, and it is a whole app. Mounted *inside* this
+    # one, so a model reaches the same engine, the same queue and the same
+    # durable sessions as the browser, over the same port and the same
+    # credential — and the menubar app, which knows how to start exactly one
+    # process on exactly one port, needs to know nothing about it.
+    #
+    # `streamable_http_path="/"` because the mount already supplies `/mcp`; the
+    # SDK's own default would make the route `/mcp/mcp`.
+    #
+    # The SDK's DNS-rebinding protection is switched off *here* because it is
+    # not switched off in this server: `install_host_guard` already refuses an
+    # unknown `Host` on every route, driven by `server.allowed_hosts`. Leaving
+    # the SDK's on would be a second allowlist, silently refusing `/mcp` the
+    # first time an operator adds a LAN name for `/v1`.
+    mcp_server = None
+    mcp_mount = None
+    if settings.mcp.enabled:
+        from mcp.server.transport_security import TransportSecuritySettings
+
+        from qds.mcp.asgi import MCPGuard, MCPMount
+        from qds.mcp.deps import MCPDeps
+        from qds.mcp.server import build_server
+
+        mcp_server = build_server(
+            MCPDeps(
+                settings=settings,
+                store=playground,
+                runner=runner,
+                engine=engine,
+                resolve_spec=resolve_spec,
+                resolve_size=resolve_size,
+                check_prompt=check_prompt,
+                check_capabilities=check_capabilities,
+                check_rewrite=check_rewrite,
+                check_n=check_n,
+                seeds_for=seeds_for,
+                submit_upscale=submit_upscale,
+                capabilities=_capabilities,
+                models=by_public_name,
+                base_url=f"http://{settings.server.host}:{settings.server.port}",
+            )
+        )
+        # The handle a test needs. Semantics are quicker to exercise against the
+        # server object directly; anything about the *guard* must still go over
+        # HTTP, because an in-memory client never passes through it.
+        app.state.mcp_server = mcp_server
+        mcp_mount = MCPMount(
+            lambda: mcp_server.streamable_http_app(
+                streamable_http_path="/",
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False
+                ),
+            )
+        )
+        app.mount(
+            "/mcp",
+            MCPGuard(
+                mcp_mount,
+                authorize=build_authorizer(settings, sessions, local_token),
+                deny_cross_site=True,
+            ),
+        )
 
     return app
 

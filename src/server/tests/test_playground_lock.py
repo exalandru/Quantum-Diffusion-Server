@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
 from fastapi.testclient import TestClient
 
 from qds import credential, playground_lock
@@ -391,3 +392,137 @@ def test_a_damaged_record_stays_locked(tmp_path):
         assert credential.verify_record(PASSWORD, store.password_record(session_id)) is False
     finally:
         store.close()
+
+
+# ── Cross-site, on the one route where the origin never was the authority ──
+#
+# `deny_cross_site` guards every playground route except `GET
+# /playground/images/{filename}`. That exception is deliberate and narrow, and
+# these four tests are what make it a decision rather than an oversight: the
+# first pins what changed, and the other three pin everything that must not.
+
+
+def image_of(client: TestClient) -> str:
+    session_id = new_session(client)
+    submit(client, session_id)
+    wait_until(lambda: status_of(client, session_id) == "completed")
+    url = generations(client, session_id)[0]["images"][0]["url"]
+    return session_id, url
+
+
+def test_an_image_is_readable_from_another_origin(client):
+    """What changed, and why.
+
+    The filename is a `uuid4().hex`, so naming a file is holding 122 bits of
+    secret; the session lock is checked underneath regardless. An origin check
+    on top of that only refused a page that already knew the name.
+
+    What it did break is real: `/mcp` publishes this URL to models, and every
+    MCP client renders in an origin of its own -- so the guard turned the
+    advertised link into a 403 whose JSON body got saved as a `.png`.
+    """
+    _session_id, url = image_of(client)
+    response = client.get(url, headers={"Origin": "tauri://localhost"})
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.content[:8] == b"\x89PNG\r\n\x1a\n", "the body is the image, not an error"
+
+
+def test_a_locked_sessions_image_is_still_refused_from_another_origin(client):
+    """The lock, not the origin, is what protects a protected session -- so
+    relaxing the origin check must not reach it. This is the assertion that
+    would fail if the relaxation had been applied one layer too high."""
+    session_id, url = image_of(client)
+    protect(client, session_id)
+    response = client.get(url, headers={"Origin": "tauri://localhost"})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "session_locked"
+
+
+def test_the_api_still_refuses_another_origin(client):
+    """Scope: one route, not the plane. A hostile page still cannot list what
+    exists, so it cannot learn a filename to ask for in the first place."""
+    session_id, _url = image_of(client)
+    for response in (
+        client.get("/playground/api/sessions", headers={"Origin": "http://evil.example"}),
+        client.get(f"/playground/api/sessions/{session_id}", headers={"Origin": "http://evil.example"}),
+        client.post("/playground/api/sessions", headers={"Origin": "http://evil.example"}),
+    ):
+        assert response.status_code == 403, response.text
+        assert response.json()["error"]["code"] == "cross_site_denied"
+
+
+def test_an_unguessable_name_is_the_capability(client):
+    """The relaxation rests on the name being secret, so a name that holds no
+    row stays a 404 from any origin -- there is nothing to enumerate."""
+    for name in ("stray.png", "../playground.db", "00000000000000000000000000000000.png"):
+        response = client.get(f"/playground/images/{name}", headers={"Origin": "tauri://localhost"})
+        assert response.status_code == 404, name
+
+
+# ── Private Network Access, granted on one route only ──────────────────────
+#
+# Chromium asks permission before letting a page reach a more private address
+# than its own. Starlette's CORSMiddleware refuses that preflight outright, so
+# an `<img src="http://127.0.0.1:8765/playground/images/…">` in an Electron chat
+# client never loaded -- while `curl`, which sends no preflight, fetched the
+# same URL perfectly. That asymmetry is what made it hard to see, and these
+# tests are what stop it coming back.
+
+PNA = {
+    "Origin": "https://app.example",
+    "Access-Control-Request-Method": "GET",
+    "Access-Control-Request-Private-Network": "true",
+}
+
+
+def test_a_private_network_preflight_for_an_image_is_granted(client):
+    response = client.options("/playground/images/anything.png", headers=PNA)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-private-network"] == "true"
+
+
+@pytest.mark.parametrize(
+    "route",
+    [
+        "/v1/images/generations",
+        "/v1/models",
+        "/admin/config",
+        "/playground/api/sessions",
+        "/mcp",
+    ],
+)
+def test_every_other_route_still_refuses_a_private_network_preflight(client, route):
+    """The grant is one route wide, and this is what says so.
+
+    `allow_private_network=True` on the CORS middleware would have been one
+    line and would have granted the same to all of these. A keyless loopback
+    install has an open `/v1`; granting it there lets any page in any tab spend
+    this machine's GPU, which is the exact drive-by that PNA exists to stop.
+    """
+    response = client.options(route, headers=PNA)
+    assert response.status_code == 400, response.text
+    assert "private-network" in response.text
+
+
+def test_the_grant_does_not_answer_an_ordinary_preflight(client):
+    """Only the private-network question is answered here; everything else is
+    still the CORS middleware's to decide, unchanged."""
+    ordinary = {"Origin": "https://app.example", "Access-Control-Request-Method": "GET"}
+    response = client.options("/playground/images/anything.png", headers=ordinary)
+    assert "access-control-allow-private-network" not in response.headers
+
+
+def test_granting_the_preflight_does_not_grant_the_image(client):
+    """A preflight says whether the request may be *made*. Every check on the
+    route still runs on the GET that follows -- so a locked session's image is
+    still refused, and a name no row holds is still a 404."""
+    session_id, url = image_of(client)
+    protect(client, session_id)
+
+    assert client.options(url, headers=PNA).status_code == 200
+    refused = client.get(url, headers={"Origin": "https://app.example"})
+    assert refused.status_code == 403
+    assert refused.json()["error"]["code"] == "session_locked"
+
+    assert client.get("/playground/images/nope.png", headers=PNA).status_code == 404

@@ -73,6 +73,13 @@ class FakeEngine:
         self.unload_count = 0
         #: Simulates a running generation, to exercise `/v1/cancel`.
         self.busy = False
+        #: What `progress()` should report while busy. Reflects the last job
+        #: handed to `generate`, so a test that asks "whose step is this?" can
+        #: get a truthful answer -- and `pretend_busy_with` can make it somebody
+        #: else's, which is the only way to witness that MCP does not forward
+        #: another job's progress as its own.
+        self._busy_with: dict = {"model": "z-image-turbo", "kind": "txt2img", "seed": 42,
+                                 "step": 3, "total": 9}
         self.cancel_requested = False
         #: Whatever `/playground/api/preview` should serve right now.
         self.preview_bytes: bytes | None = None
@@ -86,6 +93,15 @@ class FakeEngine:
     async def generate(self, job: GenerationJob) -> bytes:
         self.jobs.append(job)
         self.loaded_model = f"{job.spec.key}:{job.kind}"
+        # `spec.key`, not the public name: that is what the real engine writes
+        # into its snapshot, and an attribution check compares against it.
+        self._busy_with = {
+            "model": job.spec.key,
+            "kind": job.kind,
+            "seed": job.seed,
+            "step": self._busy_with.get("step", 3),
+            "total": job.steps,
+        }
         return tiny_png()
 
     async def upscale(self, job) -> bytes:
@@ -109,14 +125,28 @@ class FakeEngine:
     def memory_stats(self) -> dict:
         return {"active_gb": 0.0, "peak_gb": 0.0, "cache_gb": 0.0}
 
+    def pretend_busy_with(
+        self, model: str, *, seed: int, step: int, total: int, kind: str = "txt2img"
+    ) -> None:
+        """Report a job that is *not* the one under test.
+
+        The real engine's snapshot is global, so "the engine is denoising" and
+        "the engine is denoising *my* image" are different facts. Without a way
+        to make them differ, a test cannot tell an implementation that checks
+        from one that simply forwards whatever the engine last said.
+        """
+        self.busy = True
+        self._busy_with = {"model": model, "kind": kind, "seed": seed, "step": step, "total": total}
+
     def progress(self) -> dict:
+        busy = self._busy_with
         return {
             "state": "generating" if self.busy else "idle",
-            "model": "z-image-turbo" if self.busy else None,
-            "kind": "txt2img" if self.busy else None,
-            "seed": 42 if self.busy else None,
-            "step": 3 if self.busy else 0,
-            "total": 9 if self.busy else 0,
+            "model": busy["model"] if self.busy else None,
+            "kind": busy["kind"] if self.busy else None,
+            "seed": busy["seed"] if self.busy else None,
+            "step": busy["step"] if self.busy else 0,
+            "total": busy["total"] if self.busy else 0,
             "preview_seq": 0,
             "elapsed_s": 1.5 if self.busy else None,
             "loaded_model": self.loaded_model,

@@ -275,6 +275,111 @@ class RewriteSettings(BaseModel):
         return value
 
 
+class MCPSettings(BaseModel):
+    """The MCP surface: whether it is offered, and how far it may reach.
+
+    MCP is the third plane. `/v1` serves other *applications*, `/playground/api`
+    serves a *person* at a browser, and `/mcp` serves a *model* — which is the
+    distinction every setting here exists for. A model is not a hostile party,
+    but it is an untrusted one: what it asks for may have been written into a
+    prompt by someone else, so the arguments it chooses get bounds the other two
+    planes do not need.
+
+    On by default, matching `RewriteSettings`: the SDK arrives with the server,
+    nothing is downloaded on first use, and a surface that must be discovered in
+    a config file is a surface nobody finds. Setting `enabled: false` removes
+    the route entirely rather than answering it with a refusal.
+
+    There is deliberately no `mcp.max_n`. `server.max_n` is the one authority on
+    how many images a request may ask for, and `check_n` already enforces it on
+    every plane. A second ceiling would be two numbers for one rule, and the
+    lower one would silently win.
+
+    Nothing here is reachable through `QDS_SERVER_*`: `_env_overrides` covers
+    `ServerSettings` only, as it does for `rewrite`. This is configuration for
+    an installation, set in the file or through the dashboard.
+    """
+
+    enabled: bool = True
+    #: Long side of the preview attached to a tool result, in pixels. `0` omits
+    #: it.
+    #:
+    #: A **context budget**, and only that. It was briefly bounded by something
+    #: stranger -- what a model could retype -- while the preview was being fed
+    #: through the model as a `data:` URI it would paste into its reply. That
+    #: approach is gone: the model would not paste it, at any size tried. The
+    #: picture now reaches the client as an image block, which needs nothing
+    #: from the model, so the only cost left is the tokens it occupies.
+    #:
+    #: The size still matters, and its first default was wrong by an order of
+    #: magnitude: 512px at quality 82 was validated against a flat-colour test
+    #: image, came out at 3 KB and looked free, while real 2880x1600 generations
+    #: produced 40-54 KB -- 16 000 to 22 000 tokens, which on an 8B model with an
+    #: 8k window is the whole context. Cost follows detail surviving the
+    #: downscale, not the source file's size, so measure against real output.
+    #:
+    #: 256/70 lands near 4 000 tokens on those images, stays legible in a
+    #: client's tool panel, and leaves the full file one link away.
+    thumbnail_px: int = Field(default=256, ge=0, le=2048)
+    thumbnail_quality: int = Field(default=70, ge=40, le=95)
+    #: How long a generation tool waits before returning the generation id
+    #: instead of the images. Not a failure when it elapses -- the work is
+    #: queued and durable, and `wait_for_generation` resumes it.
+    #:
+    #: Generous because the alternative is worse: a client that gets an id back
+    #: has to be told to call another tool, and a small model asked to do that
+    #: mid-conversation frequently does not. Ten minutes covers a cold model
+    #: load plus an n=4 run on the shipped default.
+    tool_timeout_s: float = Field(default=600.0, gt=0)
+    #: How often that wait re-reads the generation row. Reading a row, not the
+    #: engine: the row is authoritative for *this* job, and the engine's
+    #: snapshot is not (see `qds/mcp/progress.py`).
+    poll_interval_s: float = Field(default=0.5, gt=0)
+    #: Directories a model-chosen filesystem path may name. Empty by default,
+    #: and that is the setting's whole point: `reference_path` is an argument
+    #: the *model* fills in, so an unbounded one would let a prompt-injected
+    #: model publish any readable file into the playground store -- which is
+    #: served over HTTP behind a credential a loopback install does not have.
+    #: Fail closed, and let an operator open exactly the directory they meant.
+    image_roots: list[str] = Field(default_factory=list)
+    #: Whether `delete_image` and `delete_group` are offered at all. Off by
+    #: default: deletion in the playground is a click a human makes with the
+    #: image in front of them, and a tool has no equivalent of that confirmation.
+    allow_destructive: bool = False
+
+    @field_validator("thumbnail_px")
+    @classmethod
+    def _thumbnail_is_off_or_useful(cls, value: int) -> int:
+        # 0 is "omit it"; anything positive has to be big enough to be worth
+        # the tokens it costs. A 32px thumbnail is unreadable to a person and
+        # useless to a model, while still spending context.
+        if value != 0 and value < 64:
+            raise ValueError(
+                f"mcp.thumbnail_px is {value}: use 0 to omit the thumbnail, or at "
+                f"least 64 for one worth the context it costs."
+            )
+        return value
+
+    @field_validator("image_roots")
+    @classmethod
+    def _absolute_roots(cls, value: list[str]) -> list[str]:
+        roots: list[str] = []
+        for entry in value:
+            if entry is None or entry.strip() == "":
+                continue
+            path = Path(entry).expanduser()
+            if not path.is_absolute():
+                raise ValueError(
+                    f"mcp.image_roots entries must be absolute paths (got {entry!r}). A "
+                    f"relative path would resolve against the working directory, which is "
+                    f"'/' for an app launched from Finder -- and this setting is a "
+                    f"containment boundary, so a root that moves with the CWD contains "
+                    f"nothing."
+                )
+            roots.append(str(path))
+        return roots
+
+
 class ModelOverride(BaseModel):
     # `model_path` falls into pydantic's reserved `model_` namespace; we free it
     # up rather than rename a field that speaks to mflux.
@@ -342,6 +447,7 @@ class Settings(BaseModel):
     server: ServerSettings = Field(default_factory=ServerSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     rewrite: RewriteSettings = Field(default_factory=RewriteSettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
     #: `z-image-turbo` because a default has to work with nothing set up: its repo
     #: is neither gated nor licence-restricted (Apache-2.0), it needs no
     #: preparation step, 9 steps make it the fastest usable model here, and its
@@ -530,9 +636,7 @@ class Settings(BaseModel):
         if not self.rewrite.enabled:
             return "Prompt rewriting is switched off (`rewrite.enabled`)."
         if by_key(self.rewrite.model) is None:
-            return (
-                f"Unknown rewriter {self.rewrite.model!r}. Valid keys: {sorted(KEYS)}."
-            )
+            return f"Unknown rewriter {self.rewrite.model!r}. Valid keys: {sorted(KEYS)}."
         return None
 
     def registry(self, *, include_disabled: bool = False) -> dict[str, ModelSpec]:
