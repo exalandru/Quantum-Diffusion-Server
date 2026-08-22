@@ -25,6 +25,7 @@ that would mis-parse a nested object, and the thumbnail is the part they judge.
 
 from __future__ import annotations
 
+import base64
 from typing import Annotated, Any, Literal
 
 from mcp import types
@@ -52,9 +53,11 @@ Sizes are given as width and height in pixels, and models have their own limits 
 call list_models when unsure, or omit them for the model's own default. Leave seed
 unset for something new; pass a previous image's seed to reproduce it.
 
-When an image tool returns a `link:` line, include that link in your reply --
-relabelled in the person's language if you like. It is how they open what you
-made. Then say briefly what it shows and what you can change about it.
+An image tool's result contains a line beginning `![`. Copy that whole line into
+your reply, character for character, **on a single line** -- do not wrap it, do
+not break it, do not indent it. It is long, and it is what shows the person the
+picture; a line break anywhere inside it, or four spaces in front of it, and
+nothing appears. Then say briefly what you made and what you can change.
 
 Every image is kept in a playground session on this machine and stays there after
 the conversation ends. The person running this server can see them.
@@ -309,8 +312,11 @@ def build_server(deps) -> Any:
             try:
                 width, height = image_tools.dimensions(path)
                 if max_side:
-                    thumb, _ = image_tools.thumbnail_jpeg(
-                        path, max_side=max_side, quality=deps.settings.mcp.thumbnail_quality
+                    thumb, _ = image_tools.preview_jpeg(
+                        path,
+                        max_side=max_side,
+                        quality=deps.settings.mcp.thumbnail_quality,
+                        max_chars=deps.settings.mcp.preview_max_chars,
                     )
             except (OSError, ValueError):
                 # The record is the deliverable; a thumbnail is a view of it.
@@ -319,22 +325,24 @@ def build_server(deps) -> Any:
                 continue
 
             url = f"{deps.base_url}{image['url']}"
-            # A markdown *link*, not a markdown image, and not a `data:` URI.
+            # The picture, ready to paste, on its own line and flush left.
             #
-            # A markdown image is the only thing that would show the picture in
-            # the reply, and it cannot be made to work: with the server's URL a
-            # chat client's `img-src` refuses `http:` outright, and with a
-            # `data:` URI the model has to reproduce the encoding -- which it
-            # declined to do at every size tried, down to 1 300 characters.
+            # Both of those are load-bearing. Markdown treats four or more
+            # leading spaces as a code block, so an indented `![...]` renders as
+            # literal text rather than an image -- and every other line here is
+            # indented, so a model copying the shape would have copied that too.
+            # And it must stay one line: a newline anywhere inside `(...)` ends
+            # the image and leaves `![alt](` and `)` stranded as prose, which is
+            # exactly what was observed.
             #
-            # So the reply gets a link instead. It is twenty tokens, the model
-            # actually reproduces it, and it opens the full file rather than a
-            # preview. The picture itself travels as the image block below,
-            # which asks nothing of the model at all.
-            lines.append(
-                f"image {index}  file: {filename}  seed: {image['seed']}  size: {width}x{height}\n"
-                f"         link: [Open the image]({url})"
-            )
+            # `data:` rather than the server's URL because a chat client's
+            # `img-src` allows `https:` and `data:` but not `http:`, so a link
+            # to this server is refused before any request is made.
+            lines.append(f"image {index}  file: {filename}  seed: {image['seed']}  size: {width}x{height}")
+            if thumb is not None:
+                data = base64.b64encode(thumb).decode("ascii")
+                lines.append(f"![{_alt_text(record)}](data:image/jpeg;base64,{data})")
+            lines.append(f"full image: {url}")
             if thumb is not None:
                 # The block a client actually renders. It was removed once, on
                 # the reasoning that the person judges the image and the model
@@ -371,6 +379,20 @@ def build_server(deps) -> Any:
         # the reply depends on: a thumbnail is a view of the deliverable, while
         # that line is the only way the deliverable reaches the person.
         return ["\n".join(lines)] + blocks
+
+    def _alt_text(record: dict) -> str:
+        """Alt text for the markdown image: the prompt, made safe to sit in one.
+
+        Markdown has no escaping inside `![...]`, so a `]` in the prompt ends
+        the alt text early and the rest becomes stray characters -- the model
+        copies it verbatim and the image silently fails. A newline breaks the
+        line outright. Both are replaced rather than escaped, and the result is
+        bounded: alt text is a label, not a caption.
+        """
+        text = (record.get("prompt") or "image").replace("\n", " ").replace("\r", " ")
+        text = text.replace("[", "(").replace("]", ")")
+        text = " ".join(text.split())
+        return (text[:77] + "...") if len(text) > 80 else (text or "image")
 
     # ── Generation ─────────────────────────────────────────────────────────
 

@@ -557,54 +557,60 @@ the model, while a tool is always reachable by it.
 Three blocks per image, **text first** — anything that truncates a long result
 drops what is at the end.
 
-1. The **text** — which file, which seed, its real size, and a `link:` line
-   carrying `[Open the image](http://…)`, ready to include in a reply.
-2. The **image** — a JPEG preview, `mcp.thumbnail_px` on the long side,
-   annotated for the `user` audience. This is what a client renders on its own,
-   and the only channel that needs nothing from the model.
-3. A **resource link** to the file's own http URL, resolvable through
-   `resources/read` and openable directly.
+1. The **text** — the facts, then a line beginning `![` carrying the preview as
+   a `data:` URI, flush left and on one line, then `full image:` with the URL.
+2. The **image** — the same JPEG as a content block, annotated for the `user`
+   audience. This is what a client renders on its own, without the model.
+3. A **resource link** to the file's own http URL.
 
-**A link, never a markdown image**, and that is a conclusion rather than a
-preference. Two ways of showing the picture *inside the reply* were tried and
-both failed for different reasons:
+**Only the model can put a picture in a reply** — no MCP block reaches the
+assistant's message body — and it can only do so as markdown. Two forms were
+tried and only one works:
 
-- `![](http://127.0.0.1:8765/…)` — a chat client's webview allows `img-src` of
-  `https:` and `data:` but not `http:`, so it is refused before any request is
-  made. That is why the server's access log stayed empty while the tile stayed
-  broken, and why every server-side measurement said the URL was fine. It was,
-  for everything that does not pass through `img-src`: `curl`, a browser address
-  bar, and the client's own download button.
-- `![](data:image/jpeg;base64,…)` — this *does* render, verified in the client.
-  But only the model can put it in a reply, and reproducing base64 is close to
-  the worst task a language model can be given: zero redundancy, so one wrong
-  character invalidates the image; about 2.5 characters per token; no way to
-  check its own output; and long high-entropy sequences invite repetition loops.
-  One model exhausted its context window trying. It declined at every size
-  tried, down to 1 300 characters.
+- `![](http://127.0.0.1:8765/…)` — refused. A chat client's webview allows
+  `img-src` of `https:` and `data:` but not `http:`, so it is rejected *before
+  any request is made*. That is why the server's access log stayed empty while
+  the tile stayed broken, and why every server-side measurement said the URL was
+  fine. It was, for everything that does not pass through `img-src`.
+- `![](data:image/jpeg;base64,…)` — renders, and models do reproduce it, though
+  not all of them and not at any length.
 
-So the reply gets a link — twenty tokens, reliably reproduced, and it opens the
-full file rather than a preview. The picture itself rides in the image block,
-where nothing depends on the model at all.
+Two formatting rules make the difference between an image and stray prose, and
+both were observed failing in a real client:
 
-### The preview is a context budget
+- **Flush left.** Markdown treats four or more leading spaces as a code block,
+  and every other row in the block is indented — so the `![` row is not.
+- **One line.** A newline anywhere inside `(...)` ends the image and strands
+  `![alt](` and `)` as text.
 
-`mcp.thumbnail_px` sizes a base64 block in a model's context, and its cost
-follows how much detail survives the downscale — not how big the source file is.
-Measured on real 2880×1600 generations:
+The alt text is the prompt with `[`, `]` and newlines removed: markdown has no
+escaping inside `![...]`, and a stray `]` makes the image fail silently.
 
-| `thumbnail_px` / `thumbnail_quality` | median tokens | worst seen |
-|---|---|---|
-| 512 / 82 (the first default, and wrong) | 16 800 | 22 100 |
-| 320 / 70 | 5 800 | 7 300 |
-| **256 / 70 (the default)** | **4 000** | 4 900 |
-| 192 / 60 | 2 200 | 2 600 |
+### The preview is bounded by its encoding, not its size
 
-The original was validated against a flat-colour test image, came out at 3 KB
-and looked free. It was not: on an 8B model with an 8k window it *is* the
-context. `thumbnail_px: 0` omits the block entirely — the right setting for a
-text-only model, and there is no way to detect one, since MCP's
-`ClientCapabilities` says nothing about what the model can read.
+`mcp.preview_max_chars` (default 1300) is the setting that decides whether the
+picture appears. `mcp.thumbnail_px` is only an upper bound: the encoder walks
+quality and then dimension down until the base64 fits the budget.
+
+Dimensions bound the wrong quantity. Measured across ten real generations at
+256px/quality 70, the encoding ran from **1 400 to 19 600 characters** — a factor
+of fourteen, because cost follows the detail surviving the downscale, not the
+pixel count. A fixed size holds for a gradient sky and fails on a forest.
+
+The budget's default comes from a client: one model reproduced 1 308 characters
+into its reply; larger encodings were declined, and one sent a model into a
+retry loop that exhausted its context window. Reproducing base64 is close to the
+worst task a language model can be given — zero redundancy, so one wrong
+character invalidates the image; about 2.5 characters per token; no way to check
+its own output; and long high-entropy runs invite repetition loops.
+
+At that budget a detailed image previews around 60–110px. That is the honest
+cost of the guarantee, and the right trade: a small picture that reaches the
+person beats a large one that does not. **Raise `preview_max_chars`, not
+`thumbnail_px`**, if your model copies more — the failure is a cliff, not a
+slope, and it is silent.
+
+`thumbnail_px: 0` omits the preview entirely.
 
 ### Why an image link works from a chat client at all
 

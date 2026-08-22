@@ -70,9 +70,7 @@ def test_blank_image_roots_are_dropped_rather_than_becoming_a_root(tmp_path):
 def _deps_with_roots(tmp_path, *roots):
     from types import SimpleNamespace
 
-    settings = Settings.model_validate(
-        {"mcp": {"image_roots": [str(root) for root in roots]}}
-    )
+    settings = Settings.model_validate({"mcp": {"image_roots": [str(root) for root in roots]}})
     return SimpleNamespace(settings=settings)
 
 
@@ -335,26 +333,40 @@ async def test_the_result_never_carries_the_operators_filesystem_path(tmp_path):
     assert "file://" not in body, "which is why the resource URI is the http one"
 
 
-async def test_the_result_offers_a_link_and_not_a_markdown_image(tmp_path):
-    """A link, because a markdown image cannot be made to work here.
+async def test_the_markdown_image_is_flush_left_and_on_one_line(tmp_path):
+    """Both properties are load-bearing, and both were observed failing.
 
-    With the server's URL, a chat client's `img-src` refuses `http:` outright.
-    With a `data:` URI the model has to reproduce the encoding, and it declined
-    at every size tried -- down to 1 300 characters, well under the 2 263 it had
-    been observed copying successfully once. The link is twenty tokens, it gets
-    reproduced, and it opens the full file rather than a preview.
+    Markdown treats four or more leading spaces as a code block, so an indented
+    `![...]` renders as literal text -- and every other row in this block is
+    indented, so a model copying the shape copies that too. And it has to stay
+    one line: a newline anywhere inside `(...)` ends the image and strands
+    `![alt](` and `)` as prose, which is exactly what a real client showed.
     """
-    from .mcp_support import filenames_of, mcp_session, text_of
+    from .mcp_support import mcp_session, text_of
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
         result = await client.call_tool("generate_image", {"prompt": "a red cube on grass"})
 
-    body = text_of(result)
-    row = next(r for r in body.splitlines() if "link:" in r).strip()
-    link = row.partition("link: ")[2]
-    assert link == f"[Open the image](http://127.0.0.1:8765/playground/images/{filenames_of(result)[0]})"
-    assert "![" not in body, "never a markdown image: it cannot render from this server"
-    assert "data:" not in body, "and never the encoding, which the model will not retype"
+    rows = text_of(result).splitlines()
+    image_rows = [r for r in rows if r.lstrip().startswith("![")]
+    assert len(image_rows) == 1
+    row = image_rows[0]
+    assert not row.startswith(" "), "indented four spaces or more, markdown makes it a code block"
+    assert row.startswith("![a red cube on grass](data:image/jpeg;base64,")
+    assert row.endswith(")")
+    assert "\n" not in row
+
+
+async def test_the_full_size_url_is_offered_beside_the_preview(tmp_path):
+    """The preview is small on purpose; the real file is one line below it."""
+    from .mcp_support import filenames_of, mcp_session, text_of
+
+    async with mcp_session(tmp_path) as (client, _app, _engine):
+        result = await client.call_tool("generate_image", {"prompt": "a cube"})
+
+    row = next(r for r in text_of(result).splitlines() if r.startswith("full image:"))
+    assert filenames_of(result)[0] in row
+    assert row.startswith("full image: http://")
 
 
 async def test_the_attached_preview_is_bounded_by_the_setting(tmp_path):
@@ -388,15 +400,16 @@ async def test_with_no_thumbnail_the_facts_and_the_link_survive(tmp_path):
     assert "size: 2x2" in text_of(result), "the real dimensions survive"
 
 
-async def test_the_instructions_ask_for_the_link_and_nothing_more(tmp_path):
-    """One thing has to travel through the model, and it is small enough that
-    it does."""
+async def test_the_instructions_spell_out_the_one_line_rule(tmp_path):
+    """The two ways a model breaks this -- wrapping it, indenting it -- are the
+    two the instruction names, because neither is guessable and both fail
+    silently."""
     from .mcp_support import mcp_session
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
         instructions = client.instructions or ""
-    assert "`link:` line" in instructions
-    assert "data:" not in instructions
+    assert "single line" in instructions
+    assert "indent" in instructions
 
 
 async def test_the_resource_link_is_annotated_for_the_user(tmp_path):
@@ -740,3 +753,65 @@ async def test_the_text_block_comes_first(tmp_path):
     kinds = [getattr(block, "type", "") for block in result.content]
     assert kinds[0] == "text", kinds
     assert set(kinds[1:]) == {"image", "resource_link"}, kinds
+
+
+# --------------------------------------------------------------------------
+# The preview is bounded by its encoding, not by its dimensions.
+# --------------------------------------------------------------------------
+
+
+def test_the_preview_budget_bounds_the_encoding_on_any_image():
+    """Dimensions bound the wrong quantity, and by a wide margin.
+
+    Measured across ten real generations at 256px/q70, the base64 ran from
+    1 400 to 19 600 characters -- a factor of fourteen -- because cost follows
+    the detail surviving the downscale, not the pixel count. A fixed size holds
+    for a gradient sky and fails on a forest, so the encoder walks quality and
+    then dimension down until the encoding itself fits.
+
+    The synthetic pair here is the cheap version of that spread: flat colour
+    compresses to nothing, noise does not.
+    """
+    import base64
+    import io
+    import random
+
+    from PIL import Image
+
+    from qds.mcp.images import preview_jpeg
+
+    flat = io.BytesIO()
+    Image.new("RGB", (1280, 720), (40, 90, 140)).save(flat, format="PNG")
+
+    random.seed(7)
+    noisy_image = Image.new("RGB", (1280, 720))
+    noisy_image.putdata(
+        [(random.randrange(256), random.randrange(256), random.randrange(256)) for _ in range(1280 * 720)]
+    )
+    noisy = io.BytesIO()
+    noisy_image.save(noisy, format="PNG")
+
+    for name, buffer in (("flat", flat), ("noisy", noisy)):
+        buffer.seek(0)
+        data, original = preview_jpeg(buffer, max_side=256, quality=70, max_chars=1300)
+        assert len(base64.b64encode(data)) <= 1300, name
+        assert original == (1280, 720), "the real size is still reported"
+
+
+def test_the_preview_budget_is_the_setting_that_decides_the_size():
+    """`thumbnail_px` is an upper bound; this is the operative one, and its
+    default is what a model was observed reproducing into its reply."""
+    assert Settings().mcp.preview_max_chars == 1300
+
+
+async def test_the_pasted_markdown_stays_within_the_budget(tmp_path):
+    """Asserted on the artefact a model would actually retype, not only on the
+    setting."""
+    from .mcp_support import mcp_session, text_of
+
+    async with mcp_session(tmp_path) as (client, _app, _engine):
+        result = await client.call_tool("generate_image", {"prompt": "a cube"})
+
+    row = next(r for r in text_of(result).splitlines() if r.startswith("!["))
+    data = row.split("base64,")[1].rstrip(")")
+    assert len(data) <= Settings().mcp.preview_max_chars

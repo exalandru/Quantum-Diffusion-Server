@@ -233,33 +233,36 @@ adds a third caller to one queue, not a third lane.
 - No streaming previews to the model. `engine.preview()` carries the same
   attribution hazard as the progress snapshot, for a much smaller benefit.
 - Nothing here bounds engine memory.
-- **The reply gets a link; the picture rides in the image block. A markdown
-  image is not achievable here.** This went round several times, and the loop
-  itself is the finding worth keeping.
+- **The preview is a `data:` URI the model pastes, bounded by its encoded
+  length rather than its dimensions.** This went round five times, and the loop
+  is the finding worth keeping.
 
-  Two ways of putting the picture *in the reply* were tried. `![](http://…)` is
-  refused by a chat client's `img-src`, which allows `https:` and `data:` but
-  not `http:` — before any request is made, which is why the access log stayed
-  empty while the tile stayed broken, and why three correct server-side fixes
-  (a cross-site refusal, a missing private-network grant, an oversized
-  thumbnail) changed nothing. `![](data:…)` *does* render — verified in the
-  client, not assumed — but only the model can place it, and reproducing base64
-  is close to the worst task a language model can be given: zero redundancy, so
-  one wrong character invalidates the image; roughly 2.5 characters per token;
-  no way to check its own output; and long high-entropy sequences invite
-  repetition loops. One model exhausted its context window trying.
+  `![](http://…)` cannot work: a chat client's `img-src` allows `https:` and
+  `data:` but not `http:`, so it is refused before any request is made — which
+  is why the access log stayed empty while the tile stayed broken, and why three
+  correct server-side fixes (a cross-site refusal, a missing private-network
+  grant, an oversized thumbnail) changed nothing. `![](data:…)` renders;
+  verified in the client.
 
-  An intermediate conclusion — "a model will not copy base64" — was drawn from a
-  single refusal at 256px and turned out to be **wrong in the interesting
-  direction**: 2 263 characters had been copied successfully in a controlled
-  test, so it looked like a size limit, and the preview was shrunk to fit under
-  it. The model then declined at 1 300 characters too. Both the original
-  generalisation and its correction were premature; what the evidence actually
-  supports is only that *this* model, in *this* client, does not reliably
-  reproduce base64 of any useful length.
+  Whether a model will reproduce it was got wrong twice, in both directions.
+  From one refusal at 256px: "a model will not copy base64" — wrong, 2 263
+  characters had been copied in a controlled test. From that: "it is a size
+  limit, shrink it" — the same model then declined at 1 300. Then a different
+  model (Hermes) reproduced 1 308 unprompted. What the evidence actually
+  supports is narrow: *some* models reproduce *short* encodings, and the ceiling
+  is per-model. So it became a setting with a measured default, not a constant.
 
-  So nothing depends on the model reproducing anything but a twenty-token link,
-  and the picture reaches the client as an image block, which asks nothing of it.
+  Dimensions were the wrong bound throughout. Across ten real generations at
+  256px the encoding ranged 1 400–19 600 characters — cost follows detail, not
+  pixels — so `preview_max_chars` bounds the encoding directly and the encoder
+  walks quality then size down to fit. The consequence is a 60–110px preview on
+  detailed output, accepted deliberately: a small picture that arrives beats a
+  large one that does not.
+
+  Two formatting rules are load-bearing and both were observed failing: the
+  `![` row is flush left, because four leading spaces make markdown a code
+  block and every neighbouring row is indented; and it stays on one line,
+  because a newline inside `(...)` strands `![alt](` and `)` as prose.
 
 - **Private Network Access is granted on `GET /playground/images/…`, and only
   there.** Chromium preflights any request from a page to a more private address

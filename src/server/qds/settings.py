@@ -306,26 +306,20 @@ class MCPSettings(BaseModel):
     """
 
     enabled: bool = True
-    #: Long side of the preview attached to a tool result, in pixels. `0` omits
-    #: it.
+    #: Upper bound on the preview's long side, in pixels. `0` omits the preview
+    #: entirely.
     #:
-    #: A **context budget**, and only that. It was briefly bounded by something
-    #: stranger -- what a model could retype -- while the preview was being fed
-    #: through the model as a `data:` URI it would paste into its reply. That
-    #: approach is gone: the model would not paste it, at any size tried. The
-    #: picture now reaches the client as an image block, which needs nothing
-    #: from the model, so the only cost left is the tokens it occupies.
+    #: An upper bound, not the operative one: `preview_max_chars` decides the
+    #: real size, and the encoder walks quality and dimension down until the
+    #: encoding fits. On detailed output the result lands well under this --
+    #: 60px is common at the shipped budget. That is what guaranteeing the
+    #: encoding costs, and it is the right trade: a small picture that reaches
+    #: the person beats a large one that does not.
     #:
-    #: The size still matters, and its first default was wrong by an order of
-    #: magnitude: 512px at quality 82 was validated against a flat-colour test
-    #: image, came out at 3 KB and looked free, while real 2880x1600 generations
-    #: produced 40-54 KB -- 16 000 to 22 000 tokens, which on an 8B model with an
-    #: 8k window is the whole context. Cost follows detail surviving the
-    #: downscale, not the source file's size, so measure against real output.
-    #:
-    #: 256/70 lands near 4 000 tokens on those images, stays legible in a
-    #: client's tool panel, and leaves the full file one link away.
+    #: Raise `preview_max_chars` to get a bigger preview, not this.
     thumbnail_px: int = Field(default=256, ge=0, le=2048)
+    #: Starting JPEG quality. The encoder lowers it before shrinking, because a
+    #: smaller image at readable quality beats a larger one at forty.
     thumbnail_quality: int = Field(default=70, ge=40, le=95)
     #: How long a generation tool waits before returning the generation id
     #: instead of the images. Not a failure when it elapses -- the work is
@@ -335,6 +329,24 @@ class MCPSettings(BaseModel):
     #: has to be told to call another tool, and a small model asked to do that
     #: mid-conversation frequently does not. Ten minutes covers a cold model
     #: load plus an n=4 run on the shipped default.
+    #: Hard bound on the base64 length of the preview, in characters.
+    #:
+    #: This is the setting that decides whether the picture appears in a reply,
+    #: and it bounds the right quantity. Dimensions do not: measured across ten
+    #: real generations at 256px, the encoding ran from 1 400 to 19 600
+    #: characters -- a factor of fourteen -- because cost follows detail, not
+    #: pixels. A fixed size holds for a gradient sky and fails on a forest.
+    #:
+    #: The number comes from a client: one model reproduced 1 308 characters
+    #: into its reply, and larger encodings were declined or sent it into a
+    #: retry loop that exhausted its context. Reproducing base64 is close to the
+    #: worst task a model can be given -- zero redundancy, so one wrong
+    #: character invalidates the image; about 2.5 characters per token; and no
+    #: way for it to check its own output.
+    #:
+    #: Raise it for a model known to copy more. It costs output tokens, and it
+    #: fails as a cliff rather than a slope.
+    preview_max_chars: int = Field(default=1300, ge=256, le=65536)
     tool_timeout_s: float = Field(default=600.0, gt=0)
     #: How often that wait re-reads the generation row. Reading a row, not the
     #: engine: the row is authoritative for *this* job, and the engine's
