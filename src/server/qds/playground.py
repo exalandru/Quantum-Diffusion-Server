@@ -54,6 +54,21 @@ TITLE_LIMIT = 80
 #: Playground generations only — `/v1` never asks for them.
 PREVIEW_EVERY = 2
 
+#: Suffixes a stored reference image may carry. Not a decode check -- PIL sniffs
+#: magic bytes and does not care about the name -- but the name is what the image
+#: route derives its content type from, so an unconstrained suffix is a way to serve
+#: chosen bytes under a chosen type from this server's own origin.
+IMAGE_SUFFIXES: frozenset[str] = frozenset({".png", ".jpg", ".jpeg", ".webp"})
+
+#: The type each of those is served as. Declared rather than guessed, so a file that
+#: predates the allowlist is still served inertly.
+IMAGE_MEDIA_TYPES: dict[str, str] = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+}
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -883,8 +898,22 @@ class PlaygroundStore:
         return name
 
     def context_path(self, suffix: str) -> Path:
-        """Where an uploaded reference image goes. Named for what it is."""
-        return self.images_dir / f"ctx-{uuid.uuid4().hex}{suffix or '.png'}"
+        """Where an uploaded reference image goes. Named for what it is.
+
+        The suffix is normalised, not trusted: it arrives from a client-supplied
+        filename, and it is what `GET /playground/images/{filename}` derives a
+        content type from. Left alone, an upload named `x.html` becomes a file this
+        server hands back as `text/html` from its own origin -- a script with the
+        dashboard's cookies. An unrecognised suffix becomes `.png`, which costs
+        nothing: the decoder reads magic bytes, not names.
+
+        Normalised here rather than refused at the route because this is the one
+        place every caller passes through -- the upload route and MCP's
+        `resolve_reference` both land here.
+        """
+        normalised = suffix.lower()
+        safe = normalised if normalised in IMAGE_SUFFIXES else ".png"
+        return self.images_dir / f"ctx-{uuid.uuid4().hex}{safe}"
 
     def unlink(self, filenames: list[str]) -> None:
         for name in filenames:

@@ -24,11 +24,7 @@ import shutil
 from pathlib import Path
 
 from qds.errors import APIError
-
-#: Suffixes a reference may carry. Not a security control -- the bytes are
-#: verified by decoding them -- but a legible refusal before a decode that would
-#: fail anyway, and a bound on what lands in the store.
-_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+from qds.playground import IMAGE_SUFFIXES
 
 
 def dimensions(source) -> tuple[int, int]:
@@ -64,26 +60,32 @@ def thumbnail_jpeg(source: Path, *, max_side: int, quality: int) -> tuple[bytes,
     return buffer.getvalue(), original
 
 
-def _contained(path: Path, roots: list[str]) -> bool:
-    """Whether `path` resolves inside one of `roots`.
+def _resolved_within(path: Path, roots: list[str]) -> Path | None:
+    """The file `path` resolves to, when that lands inside one of `roots`.
 
     Both sides resolved, so a symlink is followed *before* the comparison. A
     containment check against an unresolved path answers a question about the
     name rather than about the file, and a symlink is exactly how a model would
     make those two differ.
+
+    It returns the resolved target rather than a bool because checking one path
+    and then reading another is what makes a containment check advisory: every
+    step after this one -- the suffix, the size, the decode, the copy -- must
+    operate on the file that was actually judged, or a symlink swapped in after
+    the check decides what gets published.
     """
     try:
         target = path.resolve(strict=True)
     except (OSError, RuntimeError):
-        return False
+        return None
     for root in roots:
         try:
             resolved_root = Path(root).resolve(strict=True)
         except (OSError, RuntimeError):
             continue
         if target == resolved_root or resolved_root in target.parents:
-            return True
-    return False
+            return target
+    return None
 
 
 def resolve_reference(
@@ -148,6 +150,10 @@ def _from_the_filesystem(deps, *, raw: str) -> Path:
     would put it behind an HTTP route that a default loopback install serves
     without a credential -- so this is a confidentiality boundary, not a
     convenience check, and it fails closed on an empty configuration.
+
+    Every check below, and the path returned for copying, is the *resolved*
+    file. Judging one path and reading another leaves a window in which a
+    symlink swapped in after the check chooses what gets published.
     """
     roots = deps.settings.mcp.image_roots
     if not roots:
@@ -167,7 +173,8 @@ def _from_the_filesystem(deps, *, raw: str) -> Path:
             param="reference_path",
             code="invalid_reference_path",
         )
-    if not _contained(path, roots):
+    resolved = _resolved_within(path, roots)
+    if resolved is None:
         raise APIError(
             f"reference_path {raw!r} is outside every directory in "
             f"mcp.image_roots, so this server will not read it.",
@@ -175,16 +182,18 @@ def _from_the_filesystem(deps, *, raw: str) -> Path:
             param="reference_path",
             code="reference_path_denied",
         )
-    if path.suffix.lower() not in _IMAGE_SUFFIXES:
+    # The resolved suffix, deliberately: a symlink named `.png` pointing at a
+    # private key is exactly the case this refuses.
+    if resolved.suffix.lower() not in IMAGE_SUFFIXES:
         raise APIError(
-            f"reference_path must name an image ({', '.join(sorted(_IMAGE_SUFFIXES))}), "
-            f"got {path.suffix or 'no suffix'!r}.",
+            f"reference_path must name an image ({', '.join(sorted(IMAGE_SUFFIXES))}), "
+            f"got {resolved.suffix or 'no suffix'!r}.",
             param="reference_path",
             code="invalid_reference_path",
         )
 
     limit = deps.settings.server.max_upload_mb * 1024 * 1024
-    if path.stat().st_size > limit:
+    if resolved.stat().st_size > limit:
         raise APIError(
             f"reference_path is larger than the {deps.settings.server.max_upload_mb:.0f} MB "
             f"this server accepts (max_upload_mb).",
@@ -198,7 +207,7 @@ def _from_the_filesystem(deps, *, raw: str) -> Path:
     from PIL import Image, UnidentifiedImageError
 
     try:
-        with Image.open(path) as probe:
+        with Image.open(resolved) as probe:
             probe.verify()
     except (UnidentifiedImageError, OSError) as exc:
         raise APIError(
@@ -206,4 +215,4 @@ def _from_the_filesystem(deps, *, raw: str) -> Path:
             param="reference_path",
             code="invalid_reference_path",
         ) from exc
-    return path
+    return resolved

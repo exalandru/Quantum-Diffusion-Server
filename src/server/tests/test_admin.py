@@ -234,13 +234,14 @@ def test_a_request_with_no_origin_is_accepted(client, configured):
     "route", ["/admin/config", "/admin/overview", "/admin/models", "/admin/logs", "/admin/jobs"]
 )
 def test_a_cross_site_read_is_refused_too(client, configured, route):
-    """The check covers reads, and the reason is `cors_origins` defaulting to `*`.
+    """The check covers reads, and does not lean on CORS to do it for them.
 
     An earlier version guarded writes only, reasoning that CORS stopped
-    cross-site reads. It does not — the wildcard is deliberate, so that an
-    OpenAI-speaking front end on another origin can call `/v1` — and it left any
-    page the user visited able to read this server's config path, its effective
-    HuggingFace home, whether a token is present, and its whole log buffer.
+    cross-site reads. It did not: `cors_origins` defaulted to `*` then, so any
+    page the user visited could read this server's config path, its effective
+    HuggingFace home, whether a token is present, and its whole log buffer. The
+    default is now empty, but this check is what the refusal rests on -- a
+    configuration setting must not be able to reopen the control plane.
     """
     response = client.get(route, headers={"Origin": "http://evil.example"})
     assert response.status_code == 403

@@ -32,7 +32,12 @@ class ServerSettings(BaseModel):
     port: int = Field(default=8765, ge=1, le=65535)
     #: When set, required as `Authorization: Bearer <key>`.
     api_key: str | None = None
-    cors_origins: list[str] = Field(default_factory=lambda: ["*"])
+    #: Origins a *browser page* may read a response from. Empty is the default and
+    #: means none: `/v1` is open on a keyless loopback install, and a wildcard there
+    #: lets any page in any tab spend this machine's GPU and read what came back.
+    #: The dashboard and the playground are same-origin, so they need no entry.
+    #: Pair a wildcard with an `api_key`, or name the origins that need one.
+    cors_origins: list[str] = Field(default_factory=list)
     #: `Host` headers this server answers to, beyond loopback and its own
     #: addresses. Empty derives them; a non-empty list is an allowlist, not an
     #: addition, so it is the way to permit a name no derivation can guess — a

@@ -742,7 +742,7 @@ resolved before the check. Point it at the one directory you meant.
 |---|---|---|
 | `host` / `port` | `127.0.0.1` / `8765` | binding |
 | `api_key` | `null` | when set, `Authorization: Bearer` is required. **Mandatory as soon as `host` is not local** |
-| `cors_origins` | `["*"]` | allowed origins |
+| `cors_origins` | `[]` | origins a **browser page on another origin** may read a response from. Empty means none, which is what a keyless `/v1` needs: the dashboard and playground are same-origin and need no entry here. Add one only for a browser client served from elsewhere, and prefer setting an `api_key` alongside a `"*"` |
 | `max_n` | `4` | bounds OpenAI's `n` (generations are sequential) |
 | `request_timeout_s` | `900` | interrupts the denoising loop past this point |
 | `image_store` / `image_ttl_s` | `images` / `3600` | directory and lifetime of images served as `url` |
@@ -821,9 +821,7 @@ The shipped file, in full:
     "host": "127.0.0.1",
     "port": 8765,
     "api_key": null,
-    "cors_origins": [
-      "*"
-    ],
+    "cors_origins": [],
     "max_n": 4,
     "request_timeout_s": 2400,
     "image_store": "images",

@@ -732,6 +732,34 @@ def test_a_generation_interrupted_by_a_restart_becomes_failed(settings):
         assert next(e for e in listed if e["id"] == session_id)["generating"] is False
 
 
+def test_an_upload_cannot_choose_the_type_it_is_served_as(client):
+    """A reference image is stored under a suffix this server picked.
+
+    The filename comes from the client, and the image route derives its content
+    type from the stored name. Left alone, an upload called `payload.html` came
+    back as `text/html` from this server's own origin -- a script holding the
+    dashboard's cookies, one click away in the viewer's file link. The name is
+    normalised on the way in and the type is declared on the way out; this pins
+    both, and `nosniff` so a browser cannot overrule the second.
+    """
+    session_id = new_session(client)
+    accepted = submit(
+        client,
+        session_id,
+        model="qwen-image-2512",
+        files={"image": ("payload.html", b"<script>alert(1)</script>", "text/html")},
+    )
+    assert accepted.status_code == 202
+
+    context = accepted.json()["contextImage"]
+    assert context.endswith(".png")
+
+    served = client.get(context)
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "image/png"
+    assert served.headers["x-content-type-options"] == "nosniff"
+
+
 # ── Deletion ───────────────────────────────────────────────────────────────
 
 

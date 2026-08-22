@@ -74,7 +74,7 @@ struct ServerConfig {
                 "host": "127.0.0.1",
                 "port": 8765,
                 "api_key": NSNull(),
-                "cors_origins": ["*"],
+                "cors_origins": [String](),
                 "max_n": 4,
                 // 50 steps on a 32B model far exceed the original 900s.
                 "request_timeout_s": 2400,

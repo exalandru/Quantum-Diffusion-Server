@@ -188,6 +188,36 @@ def test_the_bridge_never_carries_the_admin_token(monkeypatch, tmp_path):
     )
 
 
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("http://127.0.0.1:8765/mcp", "k"),
+        ("http://127.0.0.1:9000/mcp", "k"),
+        ("http://localhost:9000/mcp", "k"),
+        ("http://[::1]:9000/mcp", "k"),
+        ("http://attacker.example/mcp", None),
+        ("http://192.168.1.19:8765/mcp", None),
+    ],
+)
+def test_the_key_goes_only_to_this_machine(url, expected):
+    """`--url` must not turn a local credential into an outbound one.
+
+    The header is set on the client before anything about the target is known,
+    so a typo or a pasted line of configuration was enough to post this
+    machine's data-plane key to a stranger, in cleartext. Loopback stays
+    allowed: reaching a second install on another port is what the flag is for.
+    """
+    from qds.mcp_cli import key_for
+
+    assert key_for(url, "http://127.0.0.1:8765/mcp", "k") == expected
+
+
+def test_no_configured_key_stays_no_key():
+    from qds.mcp_cli import key_for
+
+    assert key_for("http://attacker.example/mcp", "http://127.0.0.1:8765/mcp", None) is None
+
+
 def test_qds_mcp_is_registered_and_imports_lazily():
     """Registration without cost: `qds --help` must not load the SDK."""
     import subprocess

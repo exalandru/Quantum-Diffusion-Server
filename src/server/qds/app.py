@@ -43,7 +43,7 @@ from qds.idle import IdleUnloader
 from qds.jobs import JobManager
 from qds.logbuffer import LogBuffer
 from qds.logs import SERVER_LOGGER, setup_logging
-from qds.playground import PlaygroundRunner, PlaygroundStore
+from qds.playground import IMAGE_MEDIA_TYPES, PlaygroundRunner, PlaygroundStore
 from qds.pna import PrivateNetworkImages
 from qds.registry import ModelSpec, edit_enabled, parse_size
 from qds.rewrite.catalogue import MAX_PROMPT_CHARS
@@ -60,6 +60,13 @@ from qds.store import ImageStore
 from qds.upscale import catalogue as upscale_catalogue
 
 logger = logging.getLogger(SERVER_LOGGER)
+
+#: One decode bound for the process. Pillow only *warns* at its own default and
+#: raises at twice it, so a 25 MB upload that decompresses to hundreds of
+#: megapixels is otherwise accepted and allocated. Set to the render bound rather
+#: than a new number: 8192x8192 is the largest image this server will produce, so
+#: it is the largest one it ever has cause to read back.
+Image.MAX_IMAGE_PIXELS = upscale_catalogue.MAX_RENDER_PIXELS
 
 MAX_SEED = 2**32 - 1
 #: Value used when `/v1/images/edits` falls back to img2img without the client
@@ -170,6 +177,40 @@ def _restart_unavailable() -> None:
         error_type="server_error",
         code="restart_unavailable",
     )
+
+
+#: Sent on every HTML document this server serves. The dashboard loads its script
+#: and style as separate files, so `'self'` is the whole allowance; `'unsafe-inline'`
+#: is needed for styles alone, because the playground sets inline `style` attributes
+#: for the preview blur. It also contains anything that is served as a document and
+#: should not have been -- the second lock on the stored-upload path, after
+#: `context_path` normalises the name and the image route declares the type.
+CSP = (
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; "
+    "base-uri 'none'; frame-ancestors 'none'"
+)
+
+
+def install_security_headers(app: FastAPI) -> None:
+    """Add the headers that bound what a response is allowed to become.
+
+    Registered last, therefore outermost, so it also covers the `StaticFiles`
+    mounts -- which are ASGI apps a route dependency cannot reach.
+
+    `nosniff` is what stops a byte stream being re-read as a document by a
+    browser that disagrees with the declared type. `setdefault` throughout: a
+    route that has already made a narrower promise keeps it.
+    """
+
+    @app.middleware("http")
+    async def security_headers(request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        if response.headers.get("content-type", "").startswith("text/html"):
+            response.headers.setdefault("Content-Security-Policy", CSP)
+            response.headers.setdefault("X-Frame-Options", "DENY")
+        return response
 
 
 def install_host_guard(app: FastAPI, settings: Settings) -> None:
@@ -317,6 +358,14 @@ def create_app(
         )
         if not settings.server.api_key and not settings.server.is_loopback:  # pragma: no cover
             logger.warning("Server exposed without an API key")
+        if "*" in settings.server.cors_origins and not settings.server.api_key:
+            # Not a `RuntimeIssue`: that refuses to serve, and an operator who
+            # deliberately configured a wildcard should not be locked out by an
+            # upgrade that changed the default under them.
+            logger.warning(
+                "cors_origins allows every origin and no api_key is set: any page in "
+                "any browser tab can drive this server's data plane and read the results."
+            )
         # A mounted application's lifespan is never run by Starlette, and the
         # MCP transport's task group is created here or not at all — without
         # this the first request fails with "Task group is not initialized".
@@ -365,6 +414,9 @@ def create_app(
     # `/playground/images/` alone -- see `qds/pna.py` for why it is not the
     # `allow_private_network` flag, which would grant the same to `/v1`.
     app.add_middleware(PrivateNetworkImages)
+    # Last, therefore outermost: it must see every response, including the ones
+    # the static mounts produce and the ones the middlewares above short-circuit.
+    install_security_headers(app)
     install_exception_handlers(app)
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
     # Playground images are *not* a mount: a session can be locked, and a file
@@ -1464,7 +1516,19 @@ def create_app(
         path = playground.images_dir / filename
         if not path.is_file():
             raise no_image(filename)
-        return FileResponse(path, headers={"Cache-Control": "private, no-store"})
+        # Declared, never guessed. Starlette's `FileResponse` falls back to
+        # `mimetypes.guess_type(path)`, which turns a stored `.html` into an
+        # inline document served from this server's own origin -- with the
+        # dashboard's cookies. `context_path` no longer mints such a name; this
+        # is what makes one that predates it inert anyway.
+        return FileResponse(
+            path,
+            media_type=IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+            headers={
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     # ── Admin recovery ─────────────────────────────────────────────────────
     #
@@ -1735,6 +1799,9 @@ def create_recovery_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    # The recovery app serves the same login form as the real one, so it gets the
+    # same containment: a weaker recovery mode is a way in, not a fallback.
+    install_security_headers(app)
     install_exception_handlers(app)
 
     sessions = SessionStore()

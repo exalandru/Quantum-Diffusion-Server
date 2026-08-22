@@ -35,6 +35,23 @@ def default_url() -> tuple[str, str | None]:
     return f"http://{host}:{settings.server.port}/mcp", settings.server.api_key
 
 
+def key_for(url: str, derived_url: str, api_key: str | None) -> str | None:
+    """The key, and only when the URL names this machine's own server.
+
+    `--url` exists to reach a server on a non-default port or a second install,
+    not to hand this machine's data-plane credential to an arbitrary host over
+    plain HTTP -- which a typo or a pasted line of configuration is enough to do,
+    because the header is set on the client before anything about the target is
+    known. Loopback is accepted because that is what the flag is legitimately for.
+    """
+    if api_key is None or url == derived_url:
+        return api_key
+    from urllib.parse import urlsplit
+
+    host = (urlsplit(url).hostname or "").lower()
+    return api_key if host in {"127.0.0.1", "::1", "localhost"} else None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="qds mcp",
@@ -64,8 +81,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from qds.mcp.bridge import Unreachable, describe_failure, relay, warn
 
+    presented = key_for(url, derived_url, api_key)
+    if api_key is not None and presented is None:
+        warn(
+            "--url names a host that is not this machine; the configured api_key "
+            "was not sent."
+        )
+
     try:
-        anyio.run(lambda: relay(url, api_key=api_key))
+        anyio.run(lambda: relay(url, api_key=presented))
     except Unreachable as exc:
         warn(describe_failure(url, str(exc)))
         return 1

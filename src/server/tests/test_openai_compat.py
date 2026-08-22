@@ -274,17 +274,49 @@ def test_oversized_upload_is_rejected(tmp_path, engine):
 # ── Transport : CORS, auth, health ─────────────────────────────────────────
 
 
-def test_cors_preflight_is_allowed(client):
+def test_a_cross_origin_preflight_is_refused_by_default(client):
+    """The default configuration names no origin, so no page may read `/v1`.
+
+    `/v1` is open on a keyless loopback install and carries no `deny_cross_site`
+    -- a chat client with an `Origin` of its own has to keep working. The wildcard
+    that used to be the default was therefore the whole of what let a page in any
+    tab spend this machine's GPU and read the image back.
+    """
     response = client.options(
         "/v1/images/generations",
         headers={
-            "Origin": "http://localhost:3000",
+            "Origin": "http://evil.example",
             "Access-Control-Request-Method": "POST",
             "Access-Control-Request-Headers": "content-type,authorization",
         },
     )
+    assert response.status_code == 400
+    assert "access-control-allow-origin" not in response.headers
+
+
+def test_a_configured_origin_is_still_allowed(tmp_path, engine):
+    """Naming an origin remains the way to let a browser client in."""
+    settings = Settings.model_validate(
+        {
+            "server": {
+                "image_store": str(tmp_path / "images"),
+                "log_file": None,
+                "cors_origins": ["http://localhost:3000"],
+            },
+            "default_model": "flux2-klein",
+        }
+    )
+    with make_client(create_app(settings, engine)) as client:
+        response = client.options(
+            "/v1/images/generations",
+            headers={
+                "Origin": "http://localhost:3000",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type,authorization",
+            },
+        )
     assert response.status_code == 200
-    assert response.headers["access-control-allow-origin"] == "*"
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
 def secured_app(tmp_path, engine, api_key: str):

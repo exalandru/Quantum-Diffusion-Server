@@ -54,11 +54,12 @@ class MCPGuard:
     when no key is configured.
 
     The cross-site check is the playground's, not `/v1`'s, because MCP writes
-    what the playground writes: durable sessions, images on disk, GPU time. With
-    `cors_origins` defaulting to `["*"]` and a loopback install having no API
-    key, without it any page in any tab could spend this machine's GPU and leave
-    records in someone's playground. It fires only when `Origin` is present, so
-    a chat client -- which sends none -- is unaffected.
+    what the playground writes: durable sessions, images on disk, GPU time. A
+    loopback install has no API key, so without this any page in any tab could
+    spend this machine's GPU and leave records in someone's playground -- and it
+    holds independently of `cors_origins`, so widening that for `/v1`'s sake
+    cannot reopen this. It fires only when `Origin` is present, so a chat client
+    -- which sends none -- is unaffected.
     """
 
     def __init__(
@@ -73,11 +74,16 @@ class MCPGuard:
         self._deny_cross_site = deny_cross_site
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        # Lifespan and websocket scopes carry no headers to judge. The transport
-        # is HTTP-only, so anything else is passed through to fail on its own
-        # terms rather than being refused by a guard that cannot read it.
-        if scope["type"] != "http":
+        # Lifespan is the transport's own business and carries nothing to judge.
+        # Anything else -- a websocket, which this transport does not serve today
+        # -- has no headers this guard can read, and a guard that cannot judge a
+        # connection must not admit it. Passing it through would be an
+        # unauthenticated path the moment the SDK grows one.
+        if scope["type"] == "lifespan":
             await self._app(scope, receive, send)
+            return
+        if scope["type"] != "http":
+            await send({"type": "websocket.close", "code": 1008})
             return
 
         headers = Headers(scope=scope)

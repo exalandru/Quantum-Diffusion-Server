@@ -26,8 +26,30 @@ WHEEL="$(ls "$ROOT/dist/server/qds-$VERSION-py3-none-any.whl" 2>/dev/null || tru
   exit 1
 }
 
-UV="$(command -v uv || true)"
-[ -n "$UV" ] || { echo "uv is not on PATH; it is what installs the server."; exit 1; }
+# Pinned and verified, not whatever happens to be on the maintainer's PATH. This
+# binary is copied into every shipped bundle and runs on the user's machine with
+# network access at first launch, so "the build host's uv" is a supply chain.
+# aarch64 only, deliberately: MLX requires Apple Silicon, so there is no other
+# architecture this app runs on.
+UV_VERSION="0.11.32"
+UV_SHA256="ed336d0ba49db8ef89b2b41fffa372ce63bd032f22a56f001c265891aec32829"
+UV_ARCHIVE="uv-aarch64-apple-darwin.tar.gz"
+UV_URL="https://github.com/astral-sh/uv/releases/download/$UV_VERSION/$UV_ARCHIVE"
+
+UV_CACHE="$ROOT/dist/uv/$UV_VERSION"
+mkdir -p "$UV_CACHE"
+if [ ! -x "$UV_CACHE/uv" ]; then
+  echo "==> fetching uv $UV_VERSION"
+  curl -fsSL -o "$UV_CACHE/$UV_ARCHIVE" "$UV_URL"
+  echo "$UV_SHA256  $UV_CACHE/$UV_ARCHIVE" | shasum -a 256 -c - >/dev/null || {
+    echo "uv $UV_VERSION failed its digest check; refusing to bundle it."
+    rm -f "$UV_CACHE/$UV_ARCHIVE"
+    exit 1
+  }
+  tar -xzf "$UV_CACHE/$UV_ARCHIVE" -C "$UV_CACHE" --strip-components 1
+  [ -x "$UV_CACHE/uv" ] || { echo "the uv archive did not contain a uv binary."; exit 1; }
+fi
+UV="$UV_CACHE/uv"
 
 echo "==> building QDS $VERSION"
 swift build --package-path "$MENUBAR_DIR" -c release --disable-sandbox
@@ -38,8 +60,8 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$MENUBAR_DIR/.build/release/QDS" "$APP/Contents/MacOS/QDS"
 cp "$MENUBAR_DIR/Resources/icon.icns" "$APP/Contents/Resources/icon.icns"
 cp "$WHEEL" "$APP/Contents/Resources/"
-# The universal binary uv already is; copied rather than linked so the bundle is
-# self-contained on a machine that has no uv of its own.
+# Copied rather than linked so the bundle is self-contained on a machine that has
+# no uv of its own.
 cp "$UV" "$APP/Contents/Resources/uv"
 chmod +x "$APP/Contents/Resources/uv"
 

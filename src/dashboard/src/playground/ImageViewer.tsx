@@ -5,9 +5,9 @@ import { Modal } from "../modal";
  *
  * Built on the app's one dialog (`Modal`), so Escape, the backdrop click and the
  * focus round-trip are the same here as in the catalogue's dialogs rather than a
- * second implementation of the same three behaviours. The link to the file stays,
- * because "open the PNG itself" is still a thing you sometimes want — it is just
- * no longer what a click on the picture does.
+ * second implementation of the same three behaviours. Keeping the file itself
+ * reachable stays worthwhile, so the link remains — as a download rather than a
+ * new tab, because the URL carries the session's unlock token.
  */
 export function ImageViewer({
   url,
@@ -28,8 +28,11 @@ export function ImageViewer({
       {/* The stats sit with the file link, not beside the title: a prompt is as
           long as it likes, and the two were competing for one line. */}
       <div className="pg-viewer-foot">
-        <a className="pg-viewer-link" href={url} target="_blank" rel="noreferrer">
-          Open the file
+        {/* A download, not a navigation: the URL carries the session unlock token
+            as `?t=`, and opening it in a tab writes that token into the address
+            bar and the browser's history. A download creates no history entry. */}
+        <a className="pg-viewer-link" href={url} download rel="noreferrer">
+          Download the file
         </a>
         {detail && <span className="pg-viewer-stats">{detail}</span>}
       </div>

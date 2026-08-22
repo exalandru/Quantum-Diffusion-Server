@@ -3,9 +3,7 @@
     "host": "127.0.0.1",
     "port": 8765,
     "api_key": null,
-    "cors_origins": [
-      "*"
-    ],
+    "cors_origins": [],
     "max_n": 4,
     "request_timeout_s": 2400,
     "image_store": "images",

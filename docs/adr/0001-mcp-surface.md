@@ -201,6 +201,12 @@ defaulting to `["*"]` and a loopback install having no API key, without it a pag
 in any tab could spend the GPU and write durable state. It fires only when
 `Origin` is present, so chat clients — which send none — are unaffected.
 
+> **Amendment (2026-08-22).** `cors_origins` now defaults to `[]` rather than
+> `["*"]`, so the premise above no longer describes a shipped default. The
+> decision is unchanged and the reasoning is why: the refusal is enforced by
+> `MCPGuard`, not by CORS, so an operator who widens `cors_origins` for `/v1`'s
+> sake still cannot reopen `/mcp`.
+
 **Blocking tools hold a connection for up to ten minutes.** A SIGTERM mid-call
 drops it (`shutdown_grace_s` is 10s); the generation row survives, and
 `mark_interrupted()` makes it visible as failed after restart.

@@ -25,13 +25,14 @@ the API key; both cover the case where there is not one.
 
 **The Origin check covers reads, not only writes.** An earlier version of this
 module checked writes only, on the reasoning that CORS already stopped a
-cross-site *read*. It does not: `server.cors_origins` defaults to `["*"]` — on
-purpose, so an OpenAI-speaking front end on another origin can call `/v1` — and
-that default let any page the user happened to visit read this server's
+cross-site *read*. It did not: `server.cors_origins` defaulted to `["*"]` then,
+and that let any page the user happened to visit read this server's
 configuration path, its effective HuggingFace home, whether a token is present,
-and its entire log buffer. `/v1` stays deliberately open because being callable
-from another origin is what it is for; `/admin` is for the dashboard this server
-serves itself, so same-origin is the whole of its audience.
+and its entire log buffer. The default is empty now, but the lesson stands and
+is why the check does not lean on it: `cors_origins` is a setting, and a setting
+an operator widens for `/v1`'s sake must not silently reopen `/admin`, which is
+for the dashboard this server serves itself and has same-origin as its whole
+audience.
 """
 
 from __future__ import annotations

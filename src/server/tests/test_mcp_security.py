@@ -103,9 +103,9 @@ def test_the_host_guard_still_runs_in_front_of_mcp(tmp_path):
 
 
 def test_a_cross_site_origin_is_refused(tmp_path):
-    """MCP writes durable playground state and spends the GPU. With
-    `cors_origins` defaulting to `["*"]` and no key on loopback, without this a
-    page in any tab could do both."""
+    """MCP writes durable playground state and spends the GPU, and on loopback it
+    takes no key. This origin check is what keeps a page in any tab from doing
+    both -- independent of `cors_origins`, so configuring one cannot reopen it."""
     with make_client(app_with(tmp_path)) as client:
         refused = post(client, Origin="http://evil.example")
     assert refused.status_code == 403
@@ -356,3 +356,37 @@ def test_the_redirect_does_not_let_a_cross_site_request_past(tmp_path):
         )
     assert refused.status_code == 403
     assert refused.json()["error"]["code"] == "cross_site_denied"
+
+
+def test_a_websocket_scope_is_closed_rather_than_handed_to_the_transport():
+    """A scope the guard cannot read is a scope it must not admit.
+
+    The transport serves no websocket today, so this is not a live hole -- it is
+    the reason the pass-through was easy to write and easy to miss. A guard whose
+    authorization is a property of *HTTP headers* has nothing to check on a
+    websocket, so forwarding one would be an unauthenticated path the moment the
+    SDK grew a handler for it.
+    """
+    import anyio
+
+    from qds.mcp.asgi import MCPGuard
+
+    reached = False
+
+    async def transport(scope, receive, send):  # pragma: no cover - must not run
+        nonlocal reached
+        reached = True
+
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    async def receive():  # pragma: no cover - never awaited
+        return {"type": "websocket.connect"}
+
+    guard = MCPGuard(transport, authorize=lambda *_: True)
+    anyio.run(lambda: guard({"type": "websocket", "path": "/mcp"}, receive, send))
+
+    assert sent == [{"type": "websocket.close", "code": 1008}]
+    assert reached is False

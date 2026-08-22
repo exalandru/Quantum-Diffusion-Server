@@ -67,6 +67,73 @@ def test_blank_image_roots_are_dropped_rather_than_becoming_a_root(tmp_path):
     assert settings.mcp.image_roots == [str(tmp_path)]
 
 
+def _deps_with_roots(tmp_path, *roots):
+    from types import SimpleNamespace
+
+    settings = Settings.model_validate(
+        {"mcp": {"image_roots": [str(root) for root in roots]}}
+    )
+    return SimpleNamespace(settings=settings)
+
+
+def test_a_symlink_out_of_every_root_is_refused_by_its_target(tmp_path):
+    """Containment is decided on the file, and every later step reads that file.
+
+    Resolving the link to decide containment and then reading the *unresolved*
+    path is what makes the check advisory: the name that was judged and the name
+    that is opened are allowed to stop being the same file. Publishing the answer
+    into the playground store puts it behind a route a keyless loopback install
+    serves without a credential, so this refusal is a confidentiality boundary.
+    """
+    from qds.errors import APIError
+    from qds.mcp import images
+
+    root = tmp_path / "root"
+    root.mkdir()
+    secret = tmp_path / "outside" / "secret.png"
+    secret.parent.mkdir()
+    secret.write_bytes(b"not really an image")
+    link = root / "innocent.png"
+    link.symlink_to(secret)
+
+    with pytest.raises(APIError) as refused:
+        images._from_the_filesystem(_deps_with_roots(tmp_path, root), raw=str(link))
+    assert refused.value.code == "reference_path_denied"
+
+
+def test_a_symlink_inside_a_root_is_judged_by_its_target_s_suffix(tmp_path):
+    """A link named `.png` pointing at something else is that something else."""
+    from qds.errors import APIError
+    from qds.mcp import images
+
+    root = tmp_path / "root"
+    root.mkdir()
+    target = root / "key.pem"
+    target.write_bytes(b"-----BEGIN PRIVATE KEY-----")
+    link = root / "innocent.png"
+    link.symlink_to(target)
+
+    with pytest.raises(APIError) as refused:
+        images._from_the_filesystem(_deps_with_roots(tmp_path, root), raw=str(link))
+    assert refused.value.code == "invalid_reference_path"
+
+
+def test_a_readable_image_resolves_to_the_path_that_will_be_read(tmp_path):
+    """The accepted case returns the resolved file, not the name asked for."""
+    from qds.mcp import images
+    from tests.conftest import tiny_png
+
+    root = tmp_path / "root"
+    root.mkdir()
+    real = root / "real.png"
+    real.write_bytes(tiny_png())
+    link = root / "alias.png"
+    link.symlink_to(real)
+
+    resolved = images._from_the_filesystem(_deps_with_roots(tmp_path, root), raw=str(link))
+    assert resolved == real.resolve()
+
+
 def test_there_is_no_second_ceiling_on_n():
     """`server.max_n` is the one authority, enforced by `check_n` on every
     plane. Two numbers for one rule is how the lower one silently wins."""
