@@ -1,9 +1,9 @@
 # Quantum Diffusion Server
 
+![QDS Playground](assets/app-playground-main.png)
+
 A Midjourney-like image generation experience that runs entirely on your Mac: no account, no per-image cost, no prompt or image ever leaving the machine.
 QDS gives you a prompt-and-browse **playground**, an **OpenAI-compatible API**, and an **MCP server** so chat models can generate images for you, all backed by the same local diffusion models.
-
-![QDS Playground](assets/app-playground-main.png)
 
 ## What is QDS?
 
