@@ -4,13 +4,18 @@
 // choices, provenance — is exercised as real backend-shaped data, never
 // re-invented in the frontend.
 //
-// `localStorage` is where the API key lives. jsdom provides one, but it is
-// shared across tests in a file, so it is cleared between them: a key stored by
-// one test must not silently authenticate the next.
+// `sessionStorage` is the one piece of browser storage the dashboard uses: it
+// holds the playground's per-tab unlock tokens. jsdom provides one, but it is
+// shared across tests in a file, so it is cleared between them — a token stored
+// by one test must not silently unlock the next.
+//
+// Nothing clears `localStorage`, because nothing writes it: the API key was
+// removed from browser storage in the Tauri->web migration (see the
+// "Authentication" note in `api.ts`). Touching it here would also break on
+// Node >=22, whose own `localStorage` global shadows jsdom's and reads back
+// `undefined` unless the process was started with `--localstorage-file`.
 import { afterEach } from "vitest";
 
 afterEach(() => {
-  window.localStorage.clear();
-  // Playground unlock tokens live here, per tab; per test, in other words.
   window.sessionStorage.clear();
 });
