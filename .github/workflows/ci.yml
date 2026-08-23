@@ -1,0 +1,54 @@
+name: CI
+
+# Runs the same gates as `make test` + `make lint`, so a broken suite cannot
+# ship undetected.
+#
+# Runner choice — limitation, recorded deliberately:
+# The `server` job runs on macOS rather than Linux because the server test
+# suite executes MLX ops, and MLX has no Linux build (no `libmlx.so`); the
+# imports fail outright on `ubuntu-latest`. On a macOS runner without a Metal
+# device those same tests would fail for lack of a GPU. That is a known
+# limitation of the runner environment, not of the code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  server:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: uv sync --project src/server
+      - name: Ruff
+        run: uv run --project src/server ruff check src/server
+      - name: Pytest
+        run: uv run --project src/server python -m pytest src/server/tests -x -q
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/dashboard/package-lock.json
+      - name: Install dependencies
+        run: npm ci --prefix src/dashboard
+      - name: Typecheck
+        run: npm --prefix src/dashboard run typecheck
+      - name: Vitest
+        run: npm --prefix src/dashboard test
+
+  menubar:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift test
+        run: swift test --package-path src/menubar

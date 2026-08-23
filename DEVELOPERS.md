@@ -18,6 +18,9 @@ make clean
 
 Run `make help` for the complete list.
 
+CI runs the same gates (`.github/workflows/ci.yml`) on every push to `main`
+and every pull request.
+
 `make build` does everything: the wheel, the app, and the disk image.
 
 ```sh
