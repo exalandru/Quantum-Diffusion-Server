@@ -8,7 +8,6 @@
  * interface followed it — including the cases where following it means offering
  * nothing at all.
  */
-import { invoke } from "@tauri-apps/api/core";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,9 +15,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Models } from "./panels/Models";
 import type { JobView } from "./job";
 import { catalogue, components, disk, job, model, overview } from "./test-fixtures";
+import { type FakeServer, fakeServer } from "./test-server";
 import type { JobStatus, ModelStatus } from "./types";
 
-const mockInvoke = vi.mocked(invoke);
+let server: FakeServer;
 const onConfigChanged = vi.fn(async () => {});
 
 function idleJobs(patch: Partial<JobView> = {}): JobView {
@@ -38,15 +38,11 @@ function show(
   config: unknown = {},
   state = overview(),
 ) {
-  mockInvoke.mockImplementation(async (command: string) => {
-    if (command === "models_status") return catalogue(models);
-    if (command === "local_model_forget") return { ok: true };
-    throw new Error(`unexpected command ${command}`);
-  });
+  server.on("GET /admin/models", () => catalogue(models));
+  server.on("POST /admin/import/forget", () => ({ ok: true }));
   return render(
     <Models
       state={state}
-      client={null}
       config={config}
       jobs={jobs}
       onConfigChanged={onConfigChanged}
@@ -60,6 +56,19 @@ async function row(name: string) {
   const element = heading.closest("li");
   if (!element) throw new Error(`no row for ${name}`);
   return within(element);
+}
+
+/**
+ * Show the gated half, then scope to one of its rows.
+ *
+ * The catalogue is two tabs and Open is first, so a gated repository is
+ * deliberately not on screen until it is asked for — see "catalogue tabs". A
+ * test about gated models therefore has to open that half rather than assume it.
+ */
+async function gatedRow(name: string) {
+  const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
+  await userEvent.click(within(tabs).getAllByRole("tab")[1]!);
+  return row(name);
 }
 
 /** Open one of the row's dialogs and return a scope over it. */
@@ -76,8 +85,25 @@ function namesIn(list: HTMLElement): string[] {
     .map((heading) => heading.textContent ?? "");
 }
 
-beforeEach(() => mockInvoke.mockReset());
-afterEach(() => vi.restoreAllMocks());
+/** How many times the catalogue has actually been asked for. */
+function catalogueReads(): number {
+  return server.requests.filter((seen) => seen.path === "/admin/models").length;
+}
+
+/** The write `PUT /admin/config` carried, or undefined if there was none. */
+function configWrites(): unknown[] {
+  return server.requests
+    .filter((seen) => seen.method === "PUT" && seen.path === "/admin/config")
+    .map((seen) => seen.body);
+}
+
+beforeEach(() => {
+  server = fakeServer();
+});
+afterEach(() => {
+  server.restore();
+  vi.restoreAllMocks();
+});
 
 describe("what may be offered", () => {
   it("never offers a HuggingFace download for an imported local model", async () => {
@@ -204,14 +230,10 @@ describe("a configuration the server would refuse", () => {
   };
 
   function showWith(models: ModelStatus[], warnings = [warning]) {
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue(models, warnings);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue(models, warnings));
     return render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -240,14 +262,10 @@ describe("a configuration the server would refuse", () => {
 
   it("still shows a catalogue that genuinely could not be read", async () => {
     // The other channel is untouched: an unreadable file is not a warning.
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") throw new Error("server-config.json is not valid JSON");
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.fail("GET /admin/models", 500, "server-config.json is not valid JSON");
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -265,15 +283,11 @@ describe("a configuration the server would refuse", () => {
     const refusal =
       '"z-image-turbo" is currently the default model. Choose another default model in ' +
       "Configuration before disabling it.";
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue([model()], []);
-      if (command === "config_write") throw new Error(refusal);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue([model()], []));
+    server.fail("PUT /admin/config", 400, refusal);
     render(
       <Models
         state={overview()}
-        client={null}
         config={{ default_model: "z-image-turbo", models: {} }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -346,26 +360,19 @@ describe("when a conversion finishes", () => {
 
   /** Renders with a catalogue that changes when the backend is asked again. */
   function showChanging(before: ModelStatus[], after: ModelStatus[], job_: JobStatus) {
-    const reads: string[] = [];
     let current = before;
-    mockInvoke.mockImplementation(async (command: string) => {
-      reads.push(command);
-      if (command === "models_status") return catalogue(current);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue(current));
     const { view, settle } = settlable(job_);
     const onChanged = vi.fn(async () => {});
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={view}
         onConfigChanged={onChanged}
       />,
     );
     return {
-      reads,
       onChanged,
       settle: async (settled: JobStatus) => {
         current = after;
@@ -378,13 +385,13 @@ describe("when a conversion finishes", () => {
     // The defect this slice exists for: the settle handler only refreshed for
     // `kind === "fetch"`, so a finished conversion left every fact about it
     // unasked-for until the panel was remounted.
-    const { reads, onChanged, settle } = showChanging([converted()], [converted()], done(4));
+    const { onChanged, settle } = showChanging([converted()], [converted()], done(4));
     await screen.findByText("z-image-turbo");
-    const before = reads.filter((command) => command === "models_status").length;
+    const before = catalogueReads();
 
     await settle(done(4));
 
-    expect(reads.filter((command) => command === "models_status").length).toBe(before + 1);
+    expect(catalogueReads()).toBe(before + 1);
     // And the configuration, which is where the supervisor recorded the
     // selection — the catalogue alone would leave `App` holding the old one.
     expect(onChanged).toHaveBeenCalled();
@@ -458,7 +465,11 @@ describe("when a conversion finishes", () => {
 
     await settle(done(4));
 
-    expect(screen.getByText("4-bit variant ready and selected.")).toBeTruthy();
+    // Two facts in one sentence, and the second is the one a running server
+    // makes necessary: the variant is chosen, and this process is not using it
+    // until it is restarted.
+    expect(screen.getByText(/4-bit variant ready and selected\./)).toBeTruthy();
+    expect(screen.getByText(/Restart the server to generate with it\./)).toBeTruthy();
   });
 
   it("says a partial run is not a variant, and never claims one is selected", async () => {
@@ -480,22 +491,20 @@ describe("when a conversion finishes", () => {
       response_formats: ["url"],
       models: { "z-image-turbo": { active_variant: null } },
     };
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status")
-        return catalogue([
-          converted({
-            active_variant: 4,
-            variants: [
-              { bits: 4, path: "/a", strategy: null, legacy: false, size_bytes: 5_900_000_000 },
-            ],
-          }),
-        ]);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () =>
+      catalogue([
+        converted({
+          active_variant: 4,
+          variants: [
+            { bits: 4, path: "/a", strategy: null, legacy: false, size_bytes: 5_900_000_000 },
+          ],
+        }),
+      ]),
+    );
+    server.on("GET /v1/capabilities", () => capabilities);
     render(
       <Models
-        state={overview({ server: { running: true, port: 8765, lastExit: null } })}
-        client={{ capabilities: async () => capabilities } as never}
+        state={overview()}
         config={{ models: { "z-image-turbo": { enabled: true } } }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -504,12 +513,8 @@ describe("when a conversion finishes", () => {
 
     const it_ = await row("z-image-turbo");
     await waitFor(() => expect(it_.getByText("restart required")).toBeTruthy());
-    // No server command was issued by any of this.
-    expect(
-      (mockInvoke.mock.calls as unknown[][]).some(
-        (call) => typeof call[0] === "string" && String(call[0]).startsWith("server_"),
-      ),
-    ).toBe(false);
+    // Nothing here restarted anything: the disagreement is reported, not acted on.
+    expect(server.requests.some((seen) => seen.path === "/admin/restart")).toBe(false);
   });
 
   it("says nothing about restarting once the running server agrees", async () => {
@@ -519,14 +524,11 @@ describe("when a conversion finishes", () => {
       response_formats: ["url"],
       models: { "z-image-turbo": { active_variant: 4 } },
     };
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue([converted({ active_variant: 4 })]);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue([converted({ active_variant: 4 })]));
+    server.on("GET /v1/capabilities", () => capabilities);
     render(
       <Models
-        state={overview({ server: { running: true, port: 8765, lastExit: null } })}
-        client={{ capabilities: async () => capabilities } as never}
+        state={overview()}
         config={{ models: { "z-image-turbo": { enabled: true } } }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -567,7 +569,7 @@ describe("when a conversion finishes", () => {
   });
 
   it("keeps a failed conversion's reason on screen, and refreshes nothing", async () => {
-    const { reads, settle } = showChanging(
+    const { settle } = showChanging(
       [converted()],
       [converted()],
       job({
@@ -579,7 +581,7 @@ describe("when a conversion finishes", () => {
       }),
     );
     await screen.findByText("z-image-turbo");
-    const before = reads.filter((command) => command === "models_status").length;
+    const before = catalogueReads();
 
     await settle(
       job({ state: "failed", kind: "prequantize", target: "z-image-turbo @ 4-bit", message: "the disk is full", finishedAtMs: 1000 }),
@@ -587,7 +589,7 @@ describe("when a conversion finishes", () => {
 
     expect(screen.getByText(/the disk is full/)).toBeTruthy();
     // Nothing changed on disk, so nothing was re-read.
-    expect(reads.filter((command) => command === "models_status").length).toBe(before);
+    expect(catalogueReads()).toBe(before);
   });
 });
 
@@ -667,6 +669,9 @@ describe("quantization", () => {
         prequantize_choices: [3, 4, 6],
         prequantize_strategy: "qds_memory_bounded",
         prequantize_components: components("transformer", "text_encoder", "vae"),
+        // What it loads at when the config asks for nothing. A fixture value,
+        // not the catalogue's.
+        catalogue_quantize: 8,
         note: null,
       },
       ...patch,
@@ -709,18 +714,16 @@ describe("quantization", () => {
 
   it("writes the runtime setting as its own key, touching no saved variant", async () => {
     const writes: unknown[] = [];
-    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "models_status") return catalogue([both({ variants: [], active_variant: null })]);
-      if (command === "config_write") {
-        writes.push((args as { value?: unknown } | undefined)?.value);
-        return null;
-      }
-      throw new Error(`unexpected command ${command}`);
+    server.on("GET /admin/models", () =>
+      catalogue([both({ variants: [], active_variant: null })]),
+    );
+    server.on("PUT /admin/config", ({ body }) => {
+      writes.push(body);
+      return { ok: true, restartRequired: false, issues: [] };
     });
     render(
       <Models
         state={overview()}
-        client={null}
         config={{ models: {} }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -802,6 +805,8 @@ describe("quantization", () => {
           prequantize_choices: [],
           prequantize_strategy: null,
           prequantize_components: [],
+          // The artifact's precision is what it is; the catalogue asks for nothing.
+          catalogue_quantize: null,
           note: "Loaded from a pre-quantized artifact.",
         },
       }),
@@ -834,23 +839,24 @@ describe("feedback", () => {
     const refusal =
       "This model is the current default model. Choose another default model in the " +
       "Configuration tab before removing this one from the library.";
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status")
-        return catalogue([
-          model({
-            key: "local-abc",
-            display_name: "My local model",
-            provenance: "imported_local",
-            can_download: false,
-          }),
-        ]);
-      if (command === "local_model_forget") return { ok: false, code: "is_default_model", reason: refusal };
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () =>
+      catalogue([
+        model({
+          key: "local-abc",
+          display_name: "My local model",
+          provenance: "imported_local",
+          can_download: false,
+        }),
+      ]),
+    );
+    server.on("POST /admin/import/forget", () => ({
+      ok: false,
+      code: "is_default_model",
+      reason: refusal,
+    }));
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -867,14 +873,10 @@ describe("feedback", () => {
   });
 
   it("explains an unreadable catalogue instead of showing an empty one", async () => {
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") throw new Error("server-config.json is not valid JSON");
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.fail("GET /admin/models", 500, "server-config.json is not valid JSON");
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -982,18 +984,14 @@ describe("the enabled switch", () => {
   /** A backend whose `config_write` we can inspect. */
   function withConfig(models: ModelStatus[], config: unknown) {
     const writes: unknown[] = [];
-    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "models_status") return catalogue(models);
-      if (command === "config_write") {
-        writes.push((args as { value?: unknown } | undefined)?.value);
-        return null;
-      }
-      throw new Error(`unexpected command ${command}`);
+    server.on("GET /admin/models", () => catalogue(models));
+    server.on("PUT /admin/config", ({ body }) => {
+      writes.push(body);
+      return { ok: true, restartRequired: false, issues: [] };
     });
     render(
       <Models
         state={overview()}
-        client={null}
         config={config}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1038,15 +1036,11 @@ describe("the enabled switch", () => {
       response_formats: ["url"],
       models: {},
     };
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue([model()]);
-      throw new Error(`unexpected command ${command}`);
-    });
-    const client = { capabilities: async () => capabilities } as never;
+    server.on("GET /admin/models", () => catalogue([model()]));
+    server.on("GET /v1/capabilities", () => capabilities);
     render(
       <Models
-        state={overview({ server: { running: true, port: 8765, lastExit: null } })}
-        client={client}
+        state={overview()}
         config={{ models: { "z-image-turbo": { enabled: true } } }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1064,15 +1058,11 @@ describe("the enabled switch", () => {
       response_formats: ["url"],
       models: { "z-image-turbo": { active_variant: null } },
     };
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue([model()]);
-      throw new Error(`unexpected command ${command}`);
-    });
-    const client = { capabilities: async () => capabilities } as never;
+    server.on("GET /admin/models", () => catalogue([model()]));
+    server.on("GET /v1/capabilities", () => capabilities);
     render(
       <Models
-        state={overview({ server: { running: true, port: 8765, lastExit: null } })}
-        client={client}
+        state={overview()}
         config={{ models: { "z-image-turbo": { enabled: true } } }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1144,18 +1134,14 @@ describe("per-model settings", () => {
 
   it("applies the whole draft in one write", async () => {
     const writes: unknown[] = [];
-    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "models_status") return catalogue([model()]);
-      if (command === "config_write") {
-        writes.push((args as { value?: unknown } | undefined)?.value);
-        return null;
-      }
-      throw new Error(`unexpected command ${command}`);
+    server.on("GET /admin/models", () => catalogue([model()]));
+    server.on("PUT /admin/config", ({ body }) => {
+      writes.push(body);
+      return { ok: true, restartRequired: false, issues: [] };
     });
     render(
       <Models
         state={overview()}
-        client={null}
         config={{ models: {} }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1177,25 +1163,29 @@ describe("per-model settings", () => {
 describe("locating a built-in", () => {
   /** A backend that answers `local_model_locate` and records config writes. */
   function locateBackend(verdict: Record<string, unknown>, models = [model({ availability: "missing" })]) {
-    const calls: { command: string; args?: unknown }[] = [];
-    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-      calls.push({ command, args });
-      if (command === "models_status") return catalogue(models);
-      if (command === "pick_directory") return "/Volumes/Big/models--mlx-community--Z-Image-bf16";
-      if (command === "local_model_locate") return verdict;
-      if (command === "config_write") return null;
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue(models));
+    server.on("POST /admin/import/locate", () => verdict);
+    server.on("PUT /admin/config", () => ({ ok: true, restartRequired: false, issues: [] }));
     render(
       <Models
         state={overview()}
-        client={null}
         config={{ models: {} }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
       />,
     );
-    return calls;
+  }
+
+  /**
+   * Answer the path prompt that replaced the native folder chooser.
+   *
+   * A web page cannot open one, so the folder is typed and the server is what
+   * inspects it (see `PathPrompt`). Nothing is bound by this: the verdict comes
+   * back first and still has to be confirmed.
+   */
+  async function answerPrompt(path: string) {
+    await userEvent.type(await screen.findByLabelText("Full path"), path);
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
   }
 
   const ok = {
@@ -1218,29 +1208,30 @@ describe("locating a built-in", () => {
   });
 
   it("binds the chosen folder through the model's own config override", async () => {
-    const calls = locateBackend(ok);
+    locateBackend(ok);
     const it_ = await row("z-image-turbo");
     await userEvent.click(it_.getByRole("button", { name: "Locate…" }));
+    await answerPrompt(ok.path);
 
     // Checked, and confirmed by the user — never bound straight from the picker.
     await waitFor(() => expect(screen.getByRole("button", { name: "Use this folder" })).toBeTruthy());
-    expect(calls.some((c) => c.command === "config_write")).toBe(false);
+    expect(configWrites()).toHaveLength(0);
 
     await userEvent.click(screen.getByRole("button", { name: "Use this folder" }));
-    await waitFor(() => expect(calls.some((c) => c.command === "config_write")).toBe(true));
+    await waitFor(() => expect(configWrites()).toHaveLength(1));
 
-    const write = calls.find((c) => c.command === "config_write")!.args as {
-      value: Record<string, any>;
-    };
-    expect(write.value.models["z-image-turbo"].model_path).toBe(ok.path);
+    // The document the panel sent, as the request body carried it.
+    const write = configWrites()[0] as Record<string, any>;
+    expect(write.models["z-image-turbo"].model_path).toBe(ok.path);
     // The catalogue identity is untouched: no new entry, no renaming.
-    expect(Object.keys(write.value.models)).toEqual(["z-image-turbo"]);
+    expect(Object.keys(write.models)).toEqual(["z-image-turbo"]);
   });
 
   it("says so when the repository identity is proven", async () => {
     locateBackend(ok);
     const it_ = await row("z-image-turbo");
     await userEvent.click(it_.getByRole("button", { name: "Locate…" }));
+    await answerPrompt(ok.path);
     expect(await screen.findByText(/its identity is confirmed/)).toBeTruthy();
   });
 
@@ -1250,6 +1241,7 @@ describe("locating a built-in", () => {
     locateBackend({ ...ok, detected_repo: null, repo_verified: false });
     const it_ = await row("z-image-turbo");
     await userEvent.click(it_.getByRole("button", { name: "Locate…" }));
+    await answerPrompt(ok.path);
     expect(await screen.findByText(/but not that it is the exact repository/)).toBeTruthy();
     expect(screen.queryByText(/identity is confirmed/)).toBeNull();
   });
@@ -1263,6 +1255,7 @@ describe("locating a built-in", () => {
     });
     const it_ = await row("z-image-turbo");
     await userEvent.click(it_.getByRole("button", { name: "Locate…" }));
+    await answerPrompt(ok.path);
     await waitFor(() =>
       expect(screen.getByText(/but 'flux2-klein' is 'flux2'/)).toBeTruthy(),
     );
@@ -1272,17 +1265,14 @@ describe("locating a built-in", () => {
   it("offers Reset location once a built-in reads from a local folder, and no Install", async () => {
     // `can_download` false is what removes Install: the backend decides, and a
     // located built-in is no longer a download target.
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status")
-        return catalogue([
-          model({ availability: "present", local: true, can_download: false, repo: "/Volumes/Big/z" }),
-        ]);
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () =>
+      catalogue([
+        model({ availability: "present", local: true, can_download: false, repo: "/Volumes/Big/z" }),
+      ]),
+    );
     render(
       <Models
         state={overview()}
-        client={null}
         config={{ models: { "z-image-turbo": { model_path: "/Volumes/Big/z" } } }}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1317,27 +1307,21 @@ describe("public API identity", () => {
   });
 
   it("defaults the API name from the display name, and stops once edited", async () => {
-    mockInvoke.mockImplementation(async (command: string) => {
-      if (command === "models_status") return catalogue([]);
-      if (command === "pick_directory") return "/models/z";
-      if (command === "local_model_inspect")
-        return {
-          ok: true,
-          path: "/models/z",
-          availability: "present",
-          family: "z-image",
-          class_name: "ZImageTransformer2DModel",
-          suggested_name: "z",
-          reason: null,
-          profiles: ["z-image-turbo"],
-          suggested_api_name: "z",
-        };
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue([]));
+    server.on("POST /admin/import/inspect", () => ({
+      ok: true,
+      path: "/models/z",
+      availability: "present",
+      family: "z-image",
+      class_name: "ZImageTransformer2DModel",
+      suggested_name: "z",
+      reason: null,
+      profiles: ["z-image-turbo"],
+      suggested_api_name: "z",
+    }));
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1345,6 +1329,9 @@ describe("public API identity", () => {
     );
 
     await userEvent.click(await screen.findByRole("button", { name: /Import Local Model/ }));
+    // The folder is typed now, not chosen: a web page has no native chooser.
+    await userEvent.type(await screen.findByLabelText("Full path"), "/models/z");
+    await userEvent.click(screen.getByRole("button", { name: "Continue" }));
     const apiName = (await screen.findByLabelText("API name")) as HTMLInputElement;
     expect(apiName.value).toBe("z");
 
@@ -1475,17 +1462,11 @@ describe("components", () => {
   });
 
   it("sends exactly the components that were selected", async () => {
-    const calls: { command: string; args?: unknown }[] = [];
-    mockInvoke.mockImplementation(async (command: string, args?: unknown) => {
-      calls.push({ command, args });
-      if (command === "models_status") return catalogue([convertible()]);
-      if (command === "prequantize_run") return null;
-      throw new Error(`unexpected command ${command}`);
-    });
+    server.on("GET /admin/models", () => catalogue([convertible()]));
+    server.on("POST /admin/jobs/prequantize", () => job({ state: "running", kind: "prequantize" }));
     render(
       <Models
         state={overview()}
-        client={null}
         config={{}}
         jobs={idleJobs()}
         onConfigChanged={onConfigChanged}
@@ -1497,8 +1478,11 @@ describe("components", () => {
     await userEvent.click(dialog.getByRole("checkbox", { name: "Adapter" }));
     await userEvent.click(dialog.getByRole("button", { name: "Pre-quantize selected" }));
 
-    await waitFor(() => expect(calls.some((c) => c.command === "prequantize_run")).toBe(true));
-    const run = calls.find((c) => c.command === "prequantize_run")!.args as {
+    await waitFor(() =>
+      expect(server.requests.some((seen) => seen.path === "/admin/jobs/prequantize")).toBe(true),
+    );
+    // The request body, which is what the server is actually told to convert.
+    const run = server.requests.find((seen) => seen.path === "/admin/jobs/prequantize")!.body as {
       components: string[];
       bits: number;
     };
@@ -1625,7 +1609,7 @@ describe("disk usage", () => {
 describe("Hugging Face access", () => {
   it("does not edit the token: that is one global secret, and it lives in Configuration", async () => {
     show([model({ key: "flux2-dev", display_name: "FLUX.2-dev", gated: true })]);
-    await screen.findByText("FLUX.2-dev");
+    await gatedRow("FLUX.2-dev");
 
     expect(screen.queryByLabelText(/Hugging Face token/i)).toBeNull();
     expect(screen.queryByRole("button", { name: /save token/i })).toBeNull();
@@ -1647,10 +1631,11 @@ describe("Hugging Face access", () => {
       overview({ hfTokenPresent: false }),
     );
 
-    await screen.findByText("FLUX.2-dev");
-    expect(screen.getByText("Configuration → Hugging Face")).toBeTruthy();
+    // The caution is about the gated half wherever the reader is, so it is
+    // asserted before the tab is even opened.
+    expect(await screen.findByText("Configuration → Hugging Face")).toBeTruthy();
     // And the download button says so before it is pressed.
-    const it_ = await row("FLUX.2-dev");
+    const it_ = await gatedRow("FLUX.2-dev");
     expect(it_.getByRole("button", { name: /Install/ }).getAttribute("title")).toMatch(
       /gated.*Configuration/,
     );
@@ -1658,7 +1643,7 @@ describe("Hugging Face access", () => {
 
   it("says nothing about tokens when one is present", async () => {
     show([model({ key: "flux2-dev", display_name: "FLUX.2-dev", gated: true })]);
-    await screen.findByText("FLUX.2-dev");
+    await gatedRow("FLUX.2-dev");
     expect(screen.queryByText("Configuration → Hugging Face")).toBeNull();
   });
 });
