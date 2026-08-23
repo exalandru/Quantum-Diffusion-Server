@@ -1,0 +1,5 @@
+name: qds
+version: 1.0.0
+description: "Quantum Diffusion Server (local mflux, Apple Silicon) image generation backend. No API key; saves generated images to $HERMES_HOME/cache/images/."
+author: Quantum Diffusion Server
+kind: backend
