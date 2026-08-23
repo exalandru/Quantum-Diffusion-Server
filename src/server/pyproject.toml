@@ -44,7 +44,7 @@ dependencies = [
     # never arrives -- but *not* for the other half, and that difference is
     # worth writing down rather than discovering later: mlx-lm cost one package,
     # while this one brings cryptography, opentelemetry-api, jsonschema, httpx2,
-    # sse-starlette and mcp-types with it. See docs/adr/0001-mcp-surface.md.
+    # sse-starlette and mcp-types with it.
     #
     # Pinned `==`, like mflux: this SDK renamed its primary class between majors
     # and changed what a cancelled request returns, and both are things QDS

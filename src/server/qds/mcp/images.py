@@ -9,8 +9,8 @@ Empty roots means every such path is refused, which is the default.
 
 Nothing goes the other way. A tool result carries the image's *name and URL*,
 never its pixels: encoding a picture into a model's context was tried and
-removed (see `docs/adr/0001-mcp-surface.md`), because the person is the one who
-judges it and they have the playground and the link.
+removed, because the person is the one who judges it and they have the
+playground and the link.
 """
 
 from __future__ import annotations

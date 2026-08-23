@@ -250,7 +250,7 @@ def build_server(deps) -> Any:
         Two channels, and the absence of a third is the design.
 
         **No image block, and no `data:` URI.** Both were tried, at length, and
-        the record of that is in `docs/adr/0001-mcp-surface.md`. What they were
+        removed. What they were
         for was letting a *model* judge, or retype, the picture -- and the
         second is a task models perform badly: a base64 line has no redundancy,
         so one wrong character loses the image, and the model cannot check its

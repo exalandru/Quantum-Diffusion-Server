@@ -281,7 +281,7 @@ async def test_there_is_no_tool_for_pausing_the_queue(tmp_path):
 async def test_a_generation_names_the_file_and_sends_no_pixels(tmp_path):
     """The result is facts and a link. No image block, no `data:` URI.
 
-    Both were tried and removed (`docs/adr/0001-mcp-surface.md`). They existed
+    Both were tried and removed. They existed
     so a *model* could look at, or retype, the picture; retyping is a task
     models do badly, and bounding the retyped line to what one would reproduce
     drove the preview to about 81px on detailed output -- illegible, and paid

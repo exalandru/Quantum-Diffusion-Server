@@ -67,7 +67,6 @@ src/
 ├── server/       Python package, tests, and the built dashboard it ships
 ├── dashboard/    React sources for that interface
 └── menubar/      Swift menubar app (SwiftPM)
-docs/adr/         architecture decision records
 dist/             the wheel, the source archive, QDS.app and its DMG
 ```
 
@@ -117,6 +116,4 @@ sequentially — deliberate, since on unified memory two live models saturate
 the machine.
 
 Full config reference (`mcp` section of `server-config.json`) and rationale
-for the design in
-[`src/server/README.md#mcp`](src/server/README.md#mcp) and
-[`docs/adr/0001-mcp-surface.md`](docs/adr/0001-mcp-surface.md).
+for the design in [`src/server/README.md#mcp`](src/server/README.md#mcp).
