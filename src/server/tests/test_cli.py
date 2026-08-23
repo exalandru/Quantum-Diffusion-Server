@@ -39,6 +39,27 @@ def test_the_version_is_the_packages(capsys):
     assert capsys.readouterr().out.strip() == __version__
 
 
+def test_the_declared_version_matches_the_distributions():
+    """`__version__` and `pyproject.toml` are two hand-edited copies of one fact.
+
+    Nothing derived one from the other, so a release could ship a server
+    reporting one version while the wheel, the app bundle and `/health` carried
+    another -- `scripts/bundle-menubar.sh` reads `CFBundleShortVersionString`
+    from the pyproject, while `/health`, the OpenAPI document and the MCP
+    handshake all report `__version__`.
+    """
+    import tomllib
+    from pathlib import Path
+
+    from qds import __version__
+
+    pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    declared = tomllib.loads(pyproject.read_text(encoding="utf-8"))["project"]["version"]
+    assert declared == __version__, (
+        f"pyproject.toml says {declared!r}, qds/__init__.py says {__version__!r}"
+    )
+
+
 @pytest.mark.parametrize(
     ("command", "target"),
     [

@@ -18,18 +18,18 @@ in the body produces the same refusal one round trip later and with less to go o
 `MCPError`, which hides the message from the model -- the opposite of what a
 small model needs in order to fix its own call.
 
-The result of a generating tool is a thumbnail per image plus one text block.
-Prose with keys rather than JSON: `file: 3f2c….png` is read correctly by models
-that would mis-parse a nested object, and the thumbnail is the part they judge.
+The result of a generating tool is one text block per call plus a resource link
+per image. Prose with keys rather than JSON: `file: 3f2c….png` is read correctly
+by models that would mis-parse a nested object. No pixels are sent to the model
+-- the person judges the picture, in the playground or through the link.
 """
 
 from __future__ import annotations
 
-import base64
 from typing import Annotated, Any, Literal
 
 from mcp import types
-from mcp.server.mcpserver import Context, Image, MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from pydantic import Field
 
 from qds.errors import APIError
@@ -53,11 +53,10 @@ Sizes are given as width and height in pixels, and models have their own limits 
 call list_models when unsure, or omit them for the model's own default. Leave seed
 unset for something new; pass a previous image's seed to reproduce it.
 
-An image tool's result contains a line beginning `![`. Copy that whole line into
-your reply, character for character, **on a single line** -- do not wrap it, do
-not break it, do not indent it. It is long, and it is what shows the person the
-picture; a line break anywhere inside it, or four spaces in front of it, and
-nothing appears. Then say briefly what you made and what you can change.
+A tool result gives you each image's file name and a `full image:` URL. Say what
+you made and offer that URL as a link so the person can open it; do not try to
+embed the picture in your reply. The images also appear in the playground on this
+machine as they are made.
 
 Every image is kept in a playground session on this machine and stays there after
 the conversation ends. The person running this server can see them.
@@ -246,18 +245,22 @@ def build_server(deps) -> Any:
         return render(final)
 
     def render(record: dict) -> list:
-        """Per image: the facts in text, the picture attached, the file linked.
+        """Per image: the facts in text, the file linked. No pixels.
 
-        Three blocks, and the arrangement is what several wrong ones taught.
+        Two channels, and the absence of a third is the design.
 
-        The **image block** is the picture, and it is the only channel that asks
-        nothing of the model. It was removed once -- reasoning that the person
-        judges the image, so encoding it for the model too was paying twice --
-        which left a markdown `data:` URI as the only way it could appear. A
-        model will not take that: reproducing thousands of tokens of base64 is
-        something a small one reliably declines, and one was observed reasoning
-        "I can't directly attach the image again" while the encoding sat unused
-        in its context. Attaching the picture is the server's job.
+        **No image block, and no `data:` URI.** Both were tried, at length, and
+        the record of that is in `docs/adr/0001-mcp-surface.md`. What they were
+        for was letting a *model* judge, or retype, the picture -- and the
+        second is a task models perform badly: a base64 line has no redundancy,
+        so one wrong character loses the image, and the model cannot check its
+        own copy. Bounding that line's length to what a model would reproduce
+        drove the preview down to about 81px on detailed output, which is not
+        an image anyone can judge. Paying context twice for something illegible
+        is worse than not sending it.
+
+        The person judges the image. They have the playground, and they have
+        the link below; neither costs a token and neither can be mis-copied.
 
         The **resource link** names the file's own http URL rather than a
         private `qds://` scheme. Both are valid MCP -- a resource URI is opaque,
@@ -268,11 +271,8 @@ def build_server(deps) -> Any:
         nothing can dereference is a label.
 
         The **text** carries what a model reasons about -- which file, which
-        seed, what size -- and nothing it is asked to recite. A `link:` line and
-        a "paste this into your reply" directive were both tried; the model
-        ignored them, and instructions a model ignores are tokens spent to no
-        effect. Text first, because anything that truncates a long result drops
-        the end.
+        seed, what size -- and nothing it is asked to recite. Text first,
+        because anything that truncates a long result drops the end.
 
         The absolute filesystem path is deliberately absent, and is why the
         resource URI is the http one rather than `file://`: it would put the
@@ -307,65 +307,25 @@ def build_server(deps) -> Any:
         for index, image in enumerate(record.get("images") or [], start=1):
             filename = image["url"].rsplit("/", 1)[-1]
             path = deps.store.images_dir / filename
-            max_side = deps.settings.mcp.thumbnail_px
-            thumb = None
+            url = f"{deps.base_url}{image['url']}"
             try:
                 width, height = image_tools.dimensions(path)
-                if max_side:
-                    thumb, _ = image_tools.preview_jpeg(
-                        path,
-                        max_side=max_side,
-                        quality=deps.settings.mcp.thumbnail_quality,
-                        max_chars=deps.settings.mcp.preview_max_chars,
-                    )
             except (OSError, ValueError):
-                # The record is the deliverable; a thumbnail is a view of it.
-                # Losing the view must not lose the file's name.
-                lines.append(f"image {index}  file: {filename}  (preview unavailable)")
-                continue
-
-            url = f"{deps.base_url}{image['url']}"
-            # The picture, ready to paste, on its own line and flush left.
-            #
-            # Both of those are load-bearing. Markdown treats four or more
-            # leading spaces as a code block, so an indented `![...]` renders as
-            # literal text rather than an image -- and every other line here is
-            # indented, so a model copying the shape would have copied that too.
-            # And it must stay one line: a newline anywhere inside `(...)` ends
-            # the image and leaves `![alt](` and `)` stranded as prose, which is
-            # exactly what was observed.
-            #
-            # `data:` rather than the server's URL because a chat client's
-            # `img-src` allows `https:` and `data:` but not `http:`, so a link
-            # to this server is refused before any request is made.
-            lines.append(f"image {index}  file: {filename}  seed: {image['seed']}  size: {width}x{height}")
-            if thumb is not None:
-                data = base64.b64encode(thumb).decode("ascii")
-                lines.append(f"![{_alt_text(record)}](data:image/jpeg;base64,{data})")
+                # The record is the deliverable; its dimensions are a detail of
+                # it. Losing them must not lose the file's name or its link.
+                size = None
+                lines.append(f"image {index}  file: {filename}  (size unavailable)")
+            else:
+                size = f"{width}x{height}"
+                lines.append(f"image {index}  file: {filename}  seed: {image['seed']}  size: {size}")
             lines.append(f"full image: {url}")
-            if thumb is not None:
-                # The block a client actually renders. It was removed once, on
-                # the reasoning that the person judges the image and the model
-                # only needs to be told what it made -- which left the markdown
-                # line as the only way the picture could appear. A real model
-                # will not take it: reproducing a few thousand tokens of base64
-                # is something a small model reliably declines to do, and one
-                # was observed reasoning "I can't directly attach the image
-                # again" while the encoding sat in its context. So the block is
-                # back, because it is the only channel that needs nothing from
-                # the model at all.
-                preview = Image(data=thumb, format="jpeg").to_image_content()
-                # The audience is not decoration: a client deciding what to put
-                # in front of a person is told, rather than left to guess.
-                preview.annotations = types.Annotations(audience=["user", "assistant"], priority=1.0)
-                blocks.append(preview)
             blocks.append(
                 types.ResourceLink(
                     type="resource_link",
                     uri=url,
                     name=filename,
-                    title=f"{width}x{height} image, seed {image['seed']}",
-                    mimeType="image/png",
+                    title=f"{size} image, seed {image['seed']}" if size else f"image, seed {image['seed']}",
+                    mime_type="image/png",
                     size=path.stat().st_size if path.is_file() else None,
                     annotations=types.Annotations(audience=["user"], priority=0.8),
                 )
@@ -374,25 +334,9 @@ def build_server(deps) -> Any:
             lines.append(f"prompt used: {record['rewrittenPrompt']}")
         if record.get("rewriteError"):
             lines.append(f"note: enhancing failed ({record['rewriteError']}); your prompt was used.")
-        # Text first, thumbnails after. Anything that truncates a long result
-        # drops what is at the end, and the end must not be the markdown line
-        # the reply depends on: a thumbnail is a view of the deliverable, while
-        # that line is the only way the deliverable reaches the person.
+        # Text first: anything that truncates a long result drops what is at the
+        # end, and the text is what tells the model which file it made.
         return ["\n".join(lines)] + blocks
-
-    def _alt_text(record: dict) -> str:
-        """Alt text for the markdown image: the prompt, made safe to sit in one.
-
-        Markdown has no escaping inside `![...]`, so a `]` in the prompt ends
-        the alt text early and the rest becomes stray characters -- the model
-        copies it verbatim and the image silently fails. A newline breaks the
-        line outright. Both are replaced rather than escaped, and the result is
-        bounded: alt text is a label, not a caption.
-        """
-        text = (record.get("prompt") or "image").replace("\n", " ").replace("\r", " ")
-        text = text.replace("[", "(").replace("]", ")")
-        text = " ".join(text.split())
-        return (text[:77] + "...") if len(text) > 80 else (text or "image")
 
     # ── Generation ─────────────────────────────────────────────────────────
 

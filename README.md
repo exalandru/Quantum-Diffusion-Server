@@ -132,6 +132,8 @@ The model gets `generate_image`, `refine_image`, `vary_image`, `upscale_image` a
 
 ## Using it with Hermes
 
+![Hermes](assets/hermes-chat.png)
+
 QDS is natively compatible with [Hermes](https://claude-code.nousresearch.com): two plugins ship in this repository, no MCP adapter in between. Ask for an image in the chat and your own Mac makes it.
 
 Two ways in, install either or both:

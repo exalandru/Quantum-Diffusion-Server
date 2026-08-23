@@ -554,63 +554,44 @@ the model, while a tool is always reachable by it.
 
 ### What a tool call returns
 
-Three blocks per image, **text first** — anything that truncates a long result
-drops what is at the end.
+**Text first**, then one resource link per image — anything that truncates a long
+result drops what is at the end.
 
-1. The **text** — the facts, then a line beginning `![` carrying the preview as
-   a `data:` URI, flush left and on one line, then `full image:` with the URL.
-2. The **image** — the same JPEG as a content block, annotated for the `user`
-   audience. This is what a client renders on its own, without the model.
-3. A **resource link** to the file's own http URL.
+1. The **text** — the facts (file name, seed, dimensions), and a `full image:`
+   line carrying the URL, one per image.
+2. A **resource link** per image, pointing at the file's own http URL and
+   annotated for the `user` audience.
 
-**Only the model can put a picture in a reply** — no MCP block reaches the
-assistant's message body — and it can only do so as markdown. Two forms were
-tried and only one works:
+**No pixels are sent to the model.** No image content block, no `data:` URI. Both
+existed once and both are gone; the reasoning is worth keeping, because it is
+what a reader will otherwise try to add back.
 
-- `![](http://127.0.0.1:8765/…)` — refused. A chat client's webview allows
-  `img-src` of `https:` and `data:` but not `http:`, so it is rejected *before
-  any request is made*. That is why the server's access log stayed empty while
-  the tile stayed broken, and why every server-side measurement said the URL was
-  fine. It was, for everything that does not pass through `img-src`.
-- `![](data:image/jpeg;base64,…)` — renders, and models do reproduce it, though
-  not all of them and not at any length.
+They were there so a *model* could look at the picture, or retype it into its
+reply — the only way an image reaches a chat client's message body, since no MCP
+block lands there. Retyping base64 is close to the worst task a language model
+can be given: zero redundancy, so one wrong character invalidates the image; no
+way for it to check its own output; and long high-entropy runs invite repetition
+loops. Bounding that line to a length models would actually reproduce (1 300
+characters) forced the preview down to **about 81px** on detailed output — mush,
+not a picture anyone can judge — while costing the same context twice, once in
+the retyped line and once in the image block.
 
-Two formatting rules make the difference between an image and stray prose, and
-both were observed failing in a real client:
+So the trade was: pay thousands of tokens per image for something illegible that
+a model may or may not copy correctly. Removed. **The person judges the image**,
+in the playground or by opening the link, and neither costs a token nor can be
+mis-copied.
 
-- **Flush left.** Markdown treats four or more leading spaces as a code block,
-  and every other row in the block is indented — so the `![` row is not.
-- **One line.** A newline anywhere inside `(...)` ends the image and strands
-  `![alt](` and `)` as text.
+What replaced it has to actually work, and that is now the tested property: each
+image contributes a name in the text, a `full image:` URL beside it, a
+`resource_link` block, and a resource that resolves to the full-resolution PNG.
 
-The alt text is the prompt with `[`, `]` and newlines removed: markdown has no
-escaping inside `![...]`, and a stray `]` makes the image fail silently.
+The server's instructions tell the model to offer that URL as a link and not to
+try to embed the picture.
 
-### The preview is bounded by its encoding, not its size
-
-`mcp.preview_max_chars` (default 1300) is the setting that decides whether the
-picture appears. `mcp.thumbnail_px` is only an upper bound: the encoder walks
-quality and then dimension down until the base64 fits the budget.
-
-Dimensions bound the wrong quantity. Measured across ten real generations at
-256px/quality 70, the encoding ran from **1 400 to 19 600 characters** — a factor
-of fourteen, because cost follows the detail surviving the downscale, not the
-pixel count. A fixed size holds for a gradient sky and fails on a forest.
-
-The budget's default comes from a client: one model reproduced 1 308 characters
-into its reply; larger encodings were declined, and one sent a model into a
-retry loop that exhausted its context window. Reproducing base64 is close to the
-worst task a language model can be given — zero redundancy, so one wrong
-character invalidates the image; about 2.5 characters per token; no way to check
-its own output; and long high-entropy runs invite repetition loops.
-
-At that budget a detailed image previews around 60–110px. That is the honest
-cost of the guarantee, and the right trade: a small picture that reaches the
-person beats a large one that does not. **Raise `preview_max_chars`, not
-`thumbnail_px`**, if your model copies more — the failure is a cliff, not a
-slope, and it is silent.
-
-`thumbnail_px: 0` omits the preview entirely.
+*(Historical note: `mcp.thumbnail_px`, `mcp.thumbnail_quality` and
+`mcp.preview_max_chars` sized this mechanism. They are gone. An existing
+`server-config.json` that still lists them keeps loading — unknown keys are
+ignored — but they no longer do anything.)*
 
 ### Why an image link works from a chat client at all
 
@@ -641,35 +622,31 @@ its token even so, a name no row holds is a 404, and `no-store` keeps a relocked
 session out of the cache. A preflight only says the request may be *made*; every
 check still runs on the GET that follows.
 
-### The preview is a context budget
+### What a result costs a model
 
-`mcp.thumbnail_px` sizes the JPEG embedded in the `markdown:` line, and its cost
-follows how much detail survives the downscale — not how big the source file is.
-Measured on real 2880×1600 generations:
+A result is facts and URLs, so its size follows the *number* of images, not their
+detail: a four-image call is a few hundred characters. That is the point of
+removing the pixels.
 
-| `thumbnail_px` / `thumbnail_quality` | median tokens | worst seen |
+The mechanism it replaced was measured on real 2880×1600 generations, and the
+numbers are kept because they are the argument:
+
+| what was sent | median tokens | worst seen |
 |---|---|---|
-| 512 / 82 (the first default, and wrong) | 16 800 | 22 100 |
-| 320 / 70 | 5 800 | 7 300 |
-| **256 / 70 (the default)** | **4 000** | 4 900 |
-| 192 / 60 | 2 200 | 2 600 |
+| 512px preview / quality 82 (the first default, and wrong) | 16 800 | 22 100 |
+| 256px / 70 (the last default) | 4 000 | 4 900 |
+| **nothing (today)** | **~0** | ~0 |
 
 The original 512/82 was validated against a flat-colour test image, came out at
 3 KB, and looked free. It was not: on an 8B model with an 8k window it *is* the
-context.
+context. Shrinking it to fit made it illegible instead. Neither is a good place
+to be, which is why there is no preview now.
 
-Set `thumbnail_px: 0` to omit the block entirely. That is the right setting for
-a text-only model, where the thumbnail is pure cost — and there is no way for
-the server to detect one: MCP's `ClientCapabilities` says nothing about whether
-the client or its model can read an image. Switching it off removes a view, not
-a fact: the file, its real size, the resource link and the markdown line all
-remain.
-
-Full resolution is named three ways and carried none of them. The absolute
-filesystem path is deliberately not among them: it used to be, and it put the
-operator's home directory — their username with it — into a model's context on
-every generation, to save a lookup the file name and the playground already
-answer.
+Full resolution is named two ways: the `full image:` URL in the text and the
+`resource_link` block. The absolute filesystem path is deliberately not among
+them: it used to be, and it put the operator's home directory — their username
+with it — into a model's context on every generation, to save a lookup the file
+name and the playground already answer.
 
 ### Waiting, and the ceiling
 
@@ -720,15 +697,14 @@ Under `mcp` in `server-config.json`. Like `rewrite`, it is not reachable through
 | Key | Default | Note |
 |---|---|---|
 | `enabled` | `true` | `false` removes the route entirely |
-| `thumbnail_px` | `512` | long side of the image in a tool result |
-| `thumbnail_quality` | `82` | JPEG quality for it |
 | `tool_timeout_s` | `600` | when a blocking call gives back an id instead |
 | `poll_interval_s` | `0.5` | how often the generation row is re-read while waiting |
 | `image_roots` | `[]` | absolute directories a model-chosen `reference_path` may read from |
 | `allow_destructive` | `false` | offer `delete_image` and `delete_group` |
 
 There is deliberately no `mcp.max_n`: `server.max_n` is the one authority, and it
-already applies here.
+already applies here. There is no thumbnail setting either — a tool result sends
+no pixels, so there is nothing to size.
 
 **`image_roots` is a containment boundary, not a convenience.** `reference_path`
 is an argument the *model* fills in, and a model is untrusted — what it asks for

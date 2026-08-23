@@ -306,21 +306,6 @@ class MCPSettings(BaseModel):
     """
 
     enabled: bool = True
-    #: Upper bound on the preview's long side, in pixels. `0` omits the preview
-    #: entirely.
-    #:
-    #: An upper bound, not the operative one: `preview_max_chars` decides the
-    #: real size, and the encoder walks quality and dimension down until the
-    #: encoding fits. On detailed output the result lands well under this --
-    #: 60px is common at the shipped budget. That is what guaranteeing the
-    #: encoding costs, and it is the right trade: a small picture that reaches
-    #: the person beats a large one that does not.
-    #:
-    #: Raise `preview_max_chars` to get a bigger preview, not this.
-    thumbnail_px: int = Field(default=256, ge=0, le=2048)
-    #: Starting JPEG quality. The encoder lowers it before shrinking, because a
-    #: smaller image at readable quality beats a larger one at forty.
-    thumbnail_quality: int = Field(default=70, ge=40, le=95)
     #: How long a generation tool waits before returning the generation id
     #: instead of the images. Not a failure when it elapses -- the work is
     #: queued and durable, and `wait_for_generation` resumes it.
@@ -329,24 +314,6 @@ class MCPSettings(BaseModel):
     #: has to be told to call another tool, and a small model asked to do that
     #: mid-conversation frequently does not. Ten minutes covers a cold model
     #: load plus an n=4 run on the shipped default.
-    #: Hard bound on the base64 length of the preview, in characters.
-    #:
-    #: This is the setting that decides whether the picture appears in a reply,
-    #: and it bounds the right quantity. Dimensions do not: measured across ten
-    #: real generations at 256px, the encoding ran from 1 400 to 19 600
-    #: characters -- a factor of fourteen -- because cost follows detail, not
-    #: pixels. A fixed size holds for a gradient sky and fails on a forest.
-    #:
-    #: The number comes from a client: one model reproduced 1 308 characters
-    #: into its reply, and larger encodings were declined or sent it into a
-    #: retry loop that exhausted its context. Reproducing base64 is close to the
-    #: worst task a model can be given -- zero redundancy, so one wrong
-    #: character invalidates the image; about 2.5 characters per token; and no
-    #: way for it to check its own output.
-    #:
-    #: Raise it for a model known to copy more. It costs output tokens, and it
-    #: fails as a cliff rather than a slope.
-    preview_max_chars: int = Field(default=1300, ge=256, le=65536)
     tool_timeout_s: float = Field(default=600.0, gt=0)
     #: How often that wait re-reads the generation row. Reading a row, not the
     #: engine: the row is authoritative for *this* job, and the engine's
@@ -363,19 +330,6 @@ class MCPSettings(BaseModel):
     #: default: deletion in the playground is a click a human makes with the
     #: image in front of them, and a tool has no equivalent of that confirmation.
     allow_destructive: bool = False
-
-    @field_validator("thumbnail_px")
-    @classmethod
-    def _thumbnail_is_off_or_useful(cls, value: int) -> int:
-        # 0 is "omit it"; anything positive has to be big enough to be worth
-        # the tokens it costs. A 32px thumbnail is unreadable to a person and
-        # useless to a model, while still spending context.
-        if value != 0 and value < 64:
-            raise ValueError(
-                f"mcp.thumbnail_px is {value}: use 0 to omit the thumbnail, or at "
-                f"least 64 for one worth the context it costs."
-            )
-        return value
 
     @field_validator("image_roots")
     @classmethod

@@ -1,25 +1,20 @@
-"""Thumbnails, and the trust boundary for an image a model names.
+"""The trust boundary for an image a model names.
 
-Two jobs, in one module because they are the two ends of the same wire: what
-comes *in* when a model points at a picture, and what goes *out* when a tool
-answers with one.
+`reference_image` names a file this server produced, and is resolved the way
+`playground_upscale` resolves its source: a row must match before any path is
+built, which *is* the traversal guard -- there is no string sanitising to get
+wrong. `reference_path` names a file on the machine, is chosen by a model rather
+than by a person, and is refused unless it resolves inside a configured root.
+Empty roots means every such path is refused, which is the default.
 
-**In** is the boundary. `reference_image` names a file this server produced, and
-is resolved the way `playground_upscale` resolves its source: a row must match
-before any path is built, which *is* the traversal guard -- there is no string
-sanitising to get wrong. `reference_path` names a file on the machine, is chosen
-by a model rather than by a person, and is refused unless it resolves inside a
-configured root. Empty roots means every such path is refused, which is the
-default.
-
-**Out** is a context budget. A generated PNG is megabytes; a model's context is
-not. The thumbnail is what the model sees and judges; `qds://images/{filename}`
-is where full resolution lives.
+Nothing goes the other way. A tool result carries the image's *name and URL*,
+never its pixels: encoding a picture into a model's context was tried and
+removed (see `docs/adr/0001-mcp-surface.md`), because the person is the one who
+judges it and they have the playground and the link.
 """
 
 from __future__ import annotations
 
-import io
 import shutil
 from pathlib import Path
 
@@ -30,76 +25,13 @@ from qds.playground import IMAGE_SUFFIXES
 def dimensions(source) -> tuple[int, int]:
     """The image's real size, without decoding its pixels.
 
-    Separate from `thumbnail_jpeg` because the size is reported even when no
-    thumbnail is made -- `mcp.thumbnail_px: 0` omits the block but must not omit
-    the fact. Pillow reads this from the header.
+    Reported in the text block so a model knows what it made -- and read from
+    the header, so it costs a stat rather than a decode.
     """
     from PIL import Image
 
     with Image.open(source) as image:
         return image.size
-
-
-def thumbnail_jpeg(source: Path, *, max_side: int, quality: int) -> tuple[bytes, tuple[int, int]]:
-    """A downscaled JPEG of `source`, and the *original's* size.
-
-    Returns both because the caller reports the real dimensions in text while
-    showing the small one: a model told "1280x720" that is looking at 512x288 is
-    being told the truth about the file it can fetch, which is what it would act
-    on. JPEG, not PNG, for the same reason the engine's previews are -- this is
-    a transient view, not the deliverable.
-    """
-    from PIL import Image
-
-    with Image.open(source) as image:
-        original = image.size
-        thumb = image.convert("RGB")
-        thumb.thumbnail((max_side, max_side))
-        buffer = io.BytesIO()
-        thumb.save(buffer, format="JPEG", quality=quality)
-    return buffer.getvalue(), original
-
-
-def preview_jpeg(source, *, max_side: int, quality: int, max_chars: int) -> tuple[bytes, tuple[int, int]]:
-    """A JPEG whose base64 fits `max_chars`, and the *original's* size.
-
-    Bounding the pixels does not bound the encoding. Measured across ten real
-    generations at 256px/q70, the base64 ran from 1 400 to 19 600 characters --
-    a factor of fourteen, driven entirely by how much detail survives the
-    downscale. Any fixed dimension is therefore a bound on the wrong quantity:
-    it holds for a gradient sky and fails on a forest.
-
-    That matters because this encoding is one a *model* retypes into its reply,
-    which is the only way a picture reaches a chat client's message body. Past
-    some length a model stops reproducing it -- one exhausted its context window
-    trying -- so the length is the constraint, and it is bounded directly.
-
-    Quality first, then dimension: a smaller image at readable quality beats a
-    larger one at forty. The floor is 48px, below which there is nothing worth
-    looking at; if even that overruns, it is returned anyway, because a preview
-    slightly over budget beats no preview at all.
-    """
-    import base64
-
-    from PIL import Image
-
-    with Image.open(source) as image:
-        original = image.size
-        rgb = image.convert("RGB")
-
-    side = max(48, max_side)
-    while True:
-        for q in (quality, max(40, quality - 15), 35, 28):
-            thumb = rgb.copy()
-            thumb.thumbnail((side, side))
-            buffer = io.BytesIO()
-            thumb.save(buffer, format="JPEG", quality=q, optimize=True)
-            data = buffer.getvalue()
-            if len(base64.b64encode(data)) <= max_chars:
-                return data, original
-        if side <= 48:
-            return data, original
-        side = max(48, side * 3 // 4)
 
 
 def _resolved_within(path: Path, roots: list[str]) -> Path | None:

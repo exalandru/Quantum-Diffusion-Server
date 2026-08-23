@@ -138,12 +138,24 @@ def test_there_is_no_second_ceiling_on_n():
     assert not hasattr(Settings().mcp, "max_n")
 
 
-def test_the_thumbnail_bound_is_a_context_budget_not_a_free_number():
-    """It sizes what enters a model's context, so it is bounded on both sides."""
-    with pytest.raises(ValueError):
-        Settings.model_validate({"mcp": {"thumbnail_px": 8192}})
-    with pytest.raises(ValueError):
-        Settings.model_validate({"mcp": {"thumbnail_px": 8}})
+def test_no_pixel_budget_settings_survive_the_removal():
+    """`thumbnail_px`, `thumbnail_quality` and `preview_max_chars` sized a
+    picture sent into a model's context. Nothing sends one now, so the settings
+    are gone rather than left as knobs that move nothing.
+
+    Pydantic ignores unknown keys, so an existing `server-config.json` carrying
+    them still loads -- which is why removal was safe, and why their absence
+    has to be asserted rather than assumed.
+    """
+    mcp = Settings().mcp
+    assert not hasattr(mcp, "thumbnail_px")
+    assert not hasattr(mcp, "thumbnail_quality")
+    assert not hasattr(mcp, "preview_max_chars")
+    # An old config file does not break the server.
+    stale = Settings.model_validate(
+        {"mcp": {"thumbnail_px": 256, "thumbnail_quality": 70, "preview_max_chars": 1300}}
+    )
+    assert stale.mcp.enabled is True
 
 
 def test_mcp_settings_are_not_reachable_through_the_environment(monkeypatch):
@@ -266,15 +278,15 @@ async def test_there_is_no_tool_for_pausing_the_queue(tmp_path):
 # --------------------------------------------------------------------------
 
 
-async def test_a_generation_attaches_the_picture_and_names_the_file(tmp_path):
-    """The image block is what a client renders, and it needs nothing from the
-    model to do it.
+async def test_a_generation_names_the_file_and_sends_no_pixels(tmp_path):
+    """The result is facts and a link. No image block, no `data:` URI.
 
-    It was removed once, on the reasoning that only the person judges the
-    picture -- which left a markdown `data:` URI as the sole way it could
-    appear. A real model will not reproduce thousands of tokens of base64: one
-    was observed reasoning "I can't directly attach the image again" while the
-    encoding sat unused in its context. Attaching it is the server's job.
+    Both were tried and removed (`docs/adr/0001-mcp-surface.md`). They existed
+    so a *model* could look at, or retype, the picture; retyping is a task
+    models do badly, and bounding the retyped line to what one would reproduce
+    drove the preview to about 81px on detailed output -- illegible, and paid
+    for twice in context. The person judges the image, in the playground or
+    through the link.
     """
     from .mcp_support import filenames_of, images_of, mcp_session, text_of
 
@@ -282,11 +294,12 @@ async def test_a_generation_attaches_the_picture_and_names_the_file(tmp_path):
         result = await client.call_tool("generate_image", {"prompt": "a red cube on grass"})
 
     assert result.is_error is False
-    assert len(images_of(result)) == 1
-    assert images_of(result)[0].mime_type == "image/jpeg"
+    assert images_of(result) == [], "no pixels are sent to the model"
     body = text_of(result)
+    assert "data:image" not in body, "no base64 for the model to retype"
+    assert "![" not in body, "no markdown image line either"
     assert "status: completed" in body
-    assert filenames_of(result)[0].endswith(".png"), "the file named is the PNG, not the preview"
+    assert filenames_of(result)[0].endswith(".png")
     assert engine.jobs, "the job reached the engine"
 
 
@@ -333,32 +346,41 @@ async def test_the_result_never_carries_the_operators_filesystem_path(tmp_path):
     assert "file://" not in body, "which is why the resource URI is the http one"
 
 
-async def test_the_markdown_image_is_flush_left_and_on_one_line(tmp_path):
-    """Both properties are load-bearing, and both were observed failing.
+async def test_the_link_is_the_only_route_to_the_picture(tmp_path):
+    """What replaced the image block has to actually work, on every image.
 
-    Markdown treats four or more leading spaces as a code block, so an indented
-    `![...]` renders as literal text -- and every other row in this block is
-    indented, so a model copying the shape copies that too. And it has to stay
-    one line: a newline anywhere inside `(...)` ends the image and strands
-    `![alt](` and `)` as prose, which is exactly what a real client showed.
+    The point of removing the pixels is that the link carries the whole job:
+    a name in the text, a `full image:` URL beside it, a `resource_link` block,
+    and a resource that resolves. If any one of those is missing the person has
+    no way to see what was made -- which is the failure the old mechanism had
+    while still passing its own tests.
     """
-    from .mcp_support import mcp_session, text_of
+    from .mcp_support import filenames_of, mcp_session, text_of
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
-        result = await client.call_tool("generate_image", {"prompt": "a red cube on grass"})
+        result = await client.call_tool("generate_image", {"prompt": "a cube", "n": 2})
 
-    rows = text_of(result).splitlines()
-    image_rows = [r for r in rows if r.lstrip().startswith("![")]
-    assert len(image_rows) == 1
-    row = image_rows[0]
-    assert not row.startswith(" "), "indented four spaces or more, markdown makes it a code block"
-    assert row.startswith("![a red cube on grass](data:image/jpeg;base64,")
-    assert row.endswith(")")
-    assert "\n" not in row
+        names = filenames_of(result)
+        body = text_of(result)
+        links = links_of(result)
+
+        assert len(names) == 2
+        assert len(links) == 2, "one link per image, never one for the batch"
+
+        url_rows = [r for r in body.splitlines() if r.startswith("full image:")]
+        assert len(url_rows) == 2, "each image names its own URL in the text"
+        for name, row in zip(names, url_rows, strict=True):
+            assert name in row
+            assert row.startswith("full image: http://")
+
+        # And the link resolves, which is what makes it a route and not a label.
+        for link in links:
+            payload = await client.read_resource(str(link.uri))
+            assert payload.contents[0].mime_type == "image/png"
 
 
-async def test_the_full_size_url_is_offered_beside_the_preview(tmp_path):
-    """The preview is small on purpose; the real file is one line below it."""
+async def test_the_full_size_url_is_offered_beside_the_facts(tmp_path):
+    """The URL sits one line below the file it belongs to."""
     from .mcp_support import filenames_of, mcp_session, text_of
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
@@ -369,47 +391,18 @@ async def test_the_full_size_url_is_offered_beside_the_preview(tmp_path):
     assert row.startswith("full image: http://")
 
 
-async def test_the_attached_preview_is_bounded_by_the_setting(tmp_path):
-    """One encode, and it is the size `thumbnail_px` asks for."""
-    import base64
-    import io
-
-    from PIL import Image as PILImage
-
-    from .mcp_support import images_of, mcp_session
-
-    async with mcp_session(tmp_path) as (client, _app, _engine):
-        result = await client.call_tool("generate_image", {"prompt": "a cube"})
-
-    with PILImage.open(io.BytesIO(base64.b64decode(images_of(result)[0].data))) as preview:
-        assert preview.format == "JPEG"
-        assert max(preview.size) <= Settings().mcp.thumbnail_px
-
-
-async def test_with_no_thumbnail_the_facts_and_the_link_survive(tmp_path):
-    """`thumbnail_px: 0` removes a view, never a fact."""
-    from .mcp_support import images_of, mcp_session, mcp_settings, text_of
-
-    settings = mcp_settings(tmp_path)
-    settings.mcp.thumbnail_px = 0
-    async with mcp_session(tmp_path, settings=settings) as (client, _app, _engine):
-        result = await client.call_tool("generate_image", {"prompt": "a cube"})
-
-    assert images_of(result) == []
-    assert links_of(result), "the file is still reachable"
-    assert "size: 2x2" in text_of(result), "the real dimensions survive"
-
-
-async def test_the_instructions_spell_out_the_one_line_rule(tmp_path):
-    """The two ways a model breaks this -- wrapping it, indenting it -- are the
-    two the instruction names, because neither is guessable and both fail
-    silently."""
+async def test_the_instructions_do_not_ask_the_model_to_embed_the_picture(tmp_path):
+    """The instructions used to spend five lines begging a model to retype a
+    base64 line exactly. That directive is gone with the mechanism, and its
+    absence is asserted so it cannot drift back in unnoticed."""
     from .mcp_support import mcp_session
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
         instructions = client.instructions or ""
-    assert "single line" in instructions
-    assert "indent" in instructions
+    assert "![" not in instructions
+    assert "base64" not in instructions
+    assert "character for character" not in instructions
+    assert "full image:" in instructions, "it does point at the link instead"
 
 
 async def test_the_resource_link_is_annotated_for_the_user(tmp_path):
@@ -688,53 +681,16 @@ async def test_open_session_redirects_what_follows_into_it(tmp_path):
     assert "Cathedrals" in text_of(listed)
 
 
-async def test_the_resource_serves_the_png_while_the_attached_preview_is_a_jpeg(tmp_path):
-    """The two halves of the budget: a small preview in the result, the real
-    file one `resources/read` away."""
-    import base64
-    import io
-
-    from PIL import Image as PILImage
-
-    from .mcp_support import images_of, mcp_session
+async def test_the_resource_serves_the_full_resolution_png(tmp_path):
+    """The link is the deliverable: what it resolves to is the real file, at
+    full resolution, not a view of it."""
+    from .mcp_support import mcp_session
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
         made = await client.call_tool("generate_image", {"prompt": "a cube"})
         resource = await client.read_resource(str(links_of(made)[0].uri))
 
     assert resource.contents[0].mime_type == "image/png"
-    with PILImage.open(io.BytesIO(base64.b64decode(images_of(made)[0].data))) as preview:
-        assert preview.format == "JPEG"
-
-
-# --------------------------------------------------------------------------
-# The thumbnail is a context budget.
-# --------------------------------------------------------------------------
-
-
-def test_the_preview_default_is_a_measured_context_budget():
-    """Pinned because it was got wrong by an order of magnitude once.
-
-    512/82 was validated against a flat-colour test image, came out at 3 KB and
-    looked free; real 2880x1600 generations produced 40-54 KB -- 16 000 to
-    22 000 tokens, which on an 8B model with an 8k window is the whole context.
-    Cost follows the detail surviving the downscale, not the source file's size.
-    """
-    mcp = Settings().mcp
-    assert mcp.thumbnail_px == 256
-    assert mcp.thumbnail_quality == 70
-
-
-def test_the_thumbnail_can_be_switched_off_entirely():
-    """For a text-only model it is pure cost, and MCP offers no way to detect
-    one -- `ClientCapabilities` says nothing about what the model can read."""
-    assert Settings.model_validate({"mcp": {"thumbnail_px": 0}}).mcp.thumbnail_px == 0
-
-
-def test_a_thumbnail_too_small_to_be_worth_its_tokens_is_refused():
-    """0 means "omit"; 32 means "spend context on something unreadable"."""
-    with pytest.raises(ValueError, match="omit the thumbnail"):
-        Settings.model_validate({"mcp": {"thumbnail_px": 32}})
 
 
 # --------------------------------------------------------------------------
@@ -752,66 +708,57 @@ async def test_the_text_block_comes_first(tmp_path):
 
     kinds = [getattr(block, "type", "") for block in result.content]
     assert kinds[0] == "text", kinds
-    assert set(kinds[1:]) == {"image", "resource_link"}, kinds
+    assert set(kinds[1:]) == {"resource_link"}, kinds
+
 
 
 # --------------------------------------------------------------------------
-# The preview is bounded by its encoding, not by its dimensions.
+# No pixels reach the model, on any path.
 # --------------------------------------------------------------------------
 
 
-def test_the_preview_budget_bounds_the_encoding_on_any_image():
-    """Dimensions bound the wrong quantity, and by a wide margin.
+async def test_no_tool_result_ever_carries_an_image_block(tmp_path):
+    """The guarantee, asserted across every tool that returns a picture.
 
-    Measured across ten real generations at 256px/q70, the base64 ran from
-    1 400 to 19 600 characters -- a factor of fourteen -- because cost follows
-    the detail surviving the downscale, not the pixel count. A fixed size holds
-    for a gradient sky and fails on a forest, so the encoder walks quality and
-    then dimension down until the encoding itself fits.
+    This is the witness the old design lacked. Its tests asserted that the
+    encoded preview *fit its budget* -- which a 1x1 black JPEG also satisfies --
+    so the mechanism kept passing while the preview shrank to about 81px and
+    became useless. Bounding a thing is not the same as checking it works.
 
-    The synthetic pair here is the cheap version of that spread: flat colour
-    compresses to nothing, noise does not.
+    What is checked here is the property the removal was for: nothing in a tool
+    result puts pixels into a model's context, and nothing asks the model to
+    reproduce any. A future change that reintroduces either fails here.
     """
-    import base64
-    import io
-    import random
-
-    from PIL import Image
-
-    from qds.mcp.images import preview_jpeg
-
-    flat = io.BytesIO()
-    Image.new("RGB", (1280, 720), (40, 90, 140)).save(flat, format="PNG")
-
-    random.seed(7)
-    noisy_image = Image.new("RGB", (1280, 720))
-    noisy_image.putdata(
-        [(random.randrange(256), random.randrange(256), random.randrange(256)) for _ in range(1280 * 720)]
-    )
-    noisy = io.BytesIO()
-    noisy_image.save(noisy, format="PNG")
-
-    for name, buffer in (("flat", flat), ("noisy", noisy)):
-        buffer.seek(0)
-        data, original = preview_jpeg(buffer, max_side=256, quality=70, max_chars=1300)
-        assert len(base64.b64encode(data)) <= 1300, name
-        assert original == (1280, 720), "the real size is still reported"
-
-
-def test_the_preview_budget_is_the_setting_that_decides_the_size():
-    """`thumbnail_px` is an upper bound; this is the operative one, and its
-    default is what a model was observed reproducing into its reply."""
-    assert Settings().mcp.preview_max_chars == 1300
-
-
-async def test_the_pasted_markdown_stays_within_the_budget(tmp_path):
-    """Asserted on the artefact a model would actually retype, not only on the
-    setting."""
-    from .mcp_support import mcp_session, text_of
+    from .mcp_support import images_of, mcp_session, text_of
 
     async with mcp_session(tmp_path) as (client, _app, _engine):
-        result = await client.call_tool("generate_image", {"prompt": "a cube"})
+        made = await client.call_tool("generate_image", {"prompt": "a cube"})
+        name = made.content[0].text.split("file: ")[1].split()[0]
+        refined = await client.call_tool(
+            "refine_image", {"image": name, "prompt": "bluer"}
+        )
+        varied = await client.call_tool("vary_image", {"image": name})
 
-    row = next(r for r in text_of(result).splitlines() if r.startswith("!["))
-    data = row.split("base64,")[1].rstrip(")")
-    assert len(data) <= Settings().mcp.preview_max_chars
+        for label, result in (("generate", made), ("refine", refined), ("vary", varied)):
+            assert images_of(result) == [], f"{label} sent pixels to the model"
+            body = text_of(result)
+            assert "data:image" not in body, f"{label} embedded a data URI"
+            assert "base64" not in body, f"{label} embedded an encoding"
+            assert links_of(result), f"{label} left no way to see the picture"
+
+
+async def test_the_result_stays_small_enough_to_read(tmp_path):
+    """A result is now facts and URLs, so its size is bounded by the number of
+    images rather than by their detail.
+
+    The old preview ran 1 400-19 600 characters on real generations -- the same
+    call could cost fourteen times more depending on what was drawn. Pinned as
+    a regression bound: n=4 used to be able to fill a small model's window.
+    """
+    from .mcp_support import mcp_session
+
+    async with mcp_session(tmp_path) as (client, _app, _engine):
+        result = await client.call_tool("generate_image", {"prompt": "a cube", "n": 4})
+
+    total = sum(len(getattr(b, "text", "") or "") for b in result.content)
+    assert total < 2000, f"a 4-image result grew to {total} characters"

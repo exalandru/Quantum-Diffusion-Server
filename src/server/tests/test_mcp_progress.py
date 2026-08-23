@@ -186,9 +186,10 @@ async def test_the_ceiling_returns_an_id_and_wait_for_generation_resumes(tmp_pat
 
     assert finished.is_error is False, text_of(finished)
     assert "status: completed" in text_of(finished)
-    assert [b for b in finished.content if getattr(b, "type", "") == "image"], (
-        "and the resumed call carries the picture"
+    assert [b for b in finished.content if getattr(b, "type", "") == "resource_link"], (
+        "and the resumed call carries the route to the picture"
     )
+    assert "full image: http://" in text_of(finished)
 
 
 async def test_a_cancelled_tool_call_cancels_its_generation(tmp_path):

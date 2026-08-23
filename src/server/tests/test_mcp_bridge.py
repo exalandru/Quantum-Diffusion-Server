@@ -86,7 +86,7 @@ async def test_the_relay_forwards_the_tool_list_with_its_schemas(tmp_path):
     )
 
 
-async def test_a_tool_call_through_the_relay_delivers_its_picture_and_progress(tmp_path):
+async def test_a_tool_call_through_the_relay_delivers_its_result_and_progress(tmp_path):
     """The whole point of the relay, and the half a naive one gets wrong.
 
     Requests and responses forward themselves; the notifications that travel
@@ -108,9 +108,12 @@ async def test_a_tool_call_through_the_relay_delivers_its_picture_and_progress(t
 
     assert result.is_error is False
     body = "\n".join(b.text for b in result.content if getattr(b, "type", "") == "text")
-    assert [b for b in result.content if getattr(b, "type", "") == "image"], "the picture survived"
     assert "status: completed" in body
+    assert "full image: http://" in body, "the route to the picture survived"
     assert [b for b in result.content if getattr(b, "type", "") == "resource_link"]
+    assert not [b for b in result.content if getattr(b, "type", "") == "image"], (
+        "the relay must not reintroduce pixels the upstream deliberately omits"
+    )
     assert seen, "progress notifications survived the relay"
 
 
