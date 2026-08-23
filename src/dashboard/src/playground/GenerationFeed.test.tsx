@@ -55,6 +55,20 @@ const UPSCALERS: Upscaler[] = [
 // keep new activity in view, which is not what these tests observe.
 Element.prototype.scrollIntoView = () => {};
 
+/**
+ * The item at `index`, asserted present.
+ *
+ * `noUncheckedIndexedAccess` is right in general: an array index really can
+ * miss. Each use below has already established the length it depends on, so
+ * this states that dependency once and fails at the index — naming the missing
+ * position — rather than inside a matcher three lines later.
+ */
+function nth<T>(items: T[], index: number): T {
+  const item = items[index];
+  expect(item).toBeDefined();
+  return item as T;
+}
+
 function generation(patch: Partial<PlaygroundGeneration> = {}): PlaygroundGeneration {
   const id = patch.id ?? "g1";
   return {
@@ -166,17 +180,17 @@ it("draws one lineage as one entry, whatever it was asked in", () => {
   expect(entries).toHaveLength(2);
   // Two images in the first entry, one prompt, and the count the meta line
   // claims is the whole group's.
-  expect(within(entries[0]).getAllByRole("toolbar")).toHaveLength(2);
-  expect(within(entries[0]).getByText("a fox")).toBeTruthy();
-  expect(within(entries[0]).queryByText("a fox refined")).toBeNull();
-  expect(within(entries[0]).getByText(/2 images/)).toBeTruthy();
+  expect(within(nth(entries, 0)).getAllByRole("toolbar")).toHaveLength(2);
+  expect(within(nth(entries, 0)).getByText("a fox")).toBeTruthy();
+  expect(within(nth(entries, 0)).queryByText("a fox refined")).toBeNull();
+  expect(within(nth(entries, 0)).getByText(/2 images/)).toBeTruthy();
   // The member's reference image is not the entry's: only the original request's
   // is, and this group had none.
-  expect(within(entries[0]).queryByAltText("Reference image")).toBeNull();
-  expect(within(entries[1]).getByText("a bear")).toBeTruthy();
+  expect(within(nth(entries, 0)).queryByAltText("Reference image")).toBeNull();
+  expect(within(nth(entries, 1)).getByText("a bear")).toBeTruthy();
   // The meta line names the model the way a person reads it; the API identifier
   // is what the record stores and not what this line is for.
-  const meta = entries[0].querySelector(".pg-meta");
+  const meta = nth(entries, 0).querySelector(".pg-meta");
   expect(meta?.textContent).toContain("Qwen");
   expect(meta?.textContent).not.toContain("qwen-image-2512");
 });
@@ -189,8 +203,8 @@ it("hands the group's root to both generating actions, and the clicked image to 
 
   const toolbars = screen.getAllByRole("toolbar");
   // The second image — the one produced by the refine, not the original.
-  await userEvent.click(within(toolbars[1]).getByRole("button", { name: "Refine" }));
-  await userEvent.click(within(toolbars[1]).getByRole("button", { name: "New variation" }));
+  await userEvent.click(within(nth(toolbars, 1)).getByRole("button", { name: "Refine" }));
+  await userEvent.click(within(nth(toolbars, 1)).getByRole("button", { name: "New variation" }));
 
   expect(spies.onRefine).toHaveBeenCalledWith(root, {
     url: "/playground/images/joined.png",
@@ -216,10 +230,10 @@ it("keeps the destructive action last, behind a confirmation", async () => {
   expect(tools.every((button) => button.getAttribute("title") === null)).toBe(true);
 
   const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
-  await userEvent.click(tools[3]);
+  await userEvent.click(nth(tools, 3));
   expect(spies.onDeleteImage).not.toHaveBeenCalled();
   confirm.mockReturnValue(true);
-  await userEvent.click(tools[3]);
+  await userEvent.click(nth(tools, 3));
   expect(spies.onDeleteImage).toHaveBeenCalledWith("/playground/images/root.png");
   confirm.mockRestore();
 });

@@ -22,6 +22,20 @@ import {
 
 const at = (over: Partial<Advanced>): Advanced => ({ ...DEFAULT_ADVANCED, ...over });
 
+/**
+ * The two sides of a `WxH`, as numbers.
+ *
+ * Splitting and indexing inline leaves both sides possibly-undefined, which is
+ * true of `String.split` in general but not of this string: `sizeOf` returns
+ * exactly two sides or null. Asserting the shape once here is what makes the
+ * comparisons below meaningful rather than assumed.
+ */
+function sides(size: string): [number, number] {
+  const parts = size.split("x").map(Number);
+  expect(parts).toHaveLength(2);
+  return [parts[0]!, parts[1]!];
+}
+
 describe("sizeOf", () => {
   it("sends nothing while the ratio is auto", () => {
     expect(sizeOf(DEFAULT_ADVANCED)).toBeNull();
@@ -47,13 +61,11 @@ describe("sizeOf", () => {
   it("never puts the long side second in landscape, nor first in portrait", () => {
     for (const ratio of Object.keys(RATIOS) as (keyof typeof RATIOS)[]) {
       for (const long of RESOLUTIONS) {
-        const [w, h] = sizeOf(at({ ratio, long }))!.split("x").map(Number);
+        const [w, h] = sides(sizeOf(at({ ratio, long }))!);
         expect(w).toBe(long);
         expect(w).toBeGreaterThanOrEqual(h);
 
-        const [pw, ph] = sizeOf(at({ ratio, long, orientation: "portrait" }))!
-          .split("x")
-          .map(Number);
+        const [pw, ph] = sides(sizeOf(at({ ratio, long, orientation: "portrait" }))!);
         expect(ph).toBe(long);
         expect(ph).toBeGreaterThanOrEqual(pw);
       }

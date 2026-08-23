@@ -59,6 +59,21 @@ async function row(name: string) {
 }
 
 /**
+ * The catalogue's two tabs, in order.
+ *
+ * Two is the component's invariant rather than this test's convenience:
+ * `CATALOGUE_TABS` in `Models.tsx` is a two-row table and the tablist renders
+ * exactly one control per row. Asserting the length is what makes indexing into
+ * the result safe instead of assumed.
+ */
+async function catalogueTabs(): Promise<[HTMLElement, HTMLElement]> {
+  const tablist = await screen.findByRole("tablist", { name: "Catalogue" });
+  const tabs = within(tablist).getAllByRole("tab");
+  expect(tabs).toHaveLength(2);
+  return [tabs[0]!, tabs[1]!];
+}
+
+/**
  * Show the gated half, then scope to one of its rows.
  *
  * The catalogue is two tabs and Open is first, so a gated repository is
@@ -66,8 +81,8 @@ async function row(name: string) {
  * test about gated models therefore has to open that half rather than assume it.
  */
 async function gatedRow(name: string) {
-  const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
-  await userEvent.click(within(tabs).getAllByRole("tab")[1]!);
+  const [, gated] = await catalogueTabs();
+  await userEvent.click(gated);
   return row(name);
 }
 
@@ -622,8 +637,7 @@ describe("catalogue tabs", () => {
       "My local model",
     ]);
 
-    const tabs = screen.getByRole("tablist", { name: "Catalogue" });
-    const [openTab, gatedTab] = within(tabs).getAllByRole("tab");
+    const [openTab, gatedTab] = await catalogueTabs();
     expect(openTab.getAttribute("aria-selected")).toBe("true");
     expect(gatedTab.getAttribute("aria-selected")).toBe("false");
     // Each tab counts its own half, whichever one is open.
@@ -647,8 +661,7 @@ describe("catalogue tabs", () => {
     // says zero and the panel says why there is no list.
     show([model()]);
 
-    const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
-    const gatedTab = within(tabs).getAllByRole("tab")[1];
+    const [, gatedTab] = await catalogueTabs();
     expect(gatedTab.textContent).toBe("Gated0");
 
     await userEvent.click(gatedTab);

@@ -7,9 +7,9 @@
  * changed is that only the selected half is rendered, so this pins both halves of
  * that: the selected list is there, and the other one is *not*.
  *
- * A separate file from `Models.test.tsx` on purpose: that suite still drives the
- * panel through the Tauri `invoke` bridge this app no longer has, so it cannot
- * run. Here the seam is `fetch`, which is what the panel actually uses.
+ * A separate file from `Models.test.tsx` on purpose: this one is about the tabs
+ * themselves — which half is rendered and which is not — rather than about what
+ * a row may offer. Both drive the panel over `fetch`, which is what it uses.
  */
 
 import { render, screen, within } from "@testing-library/react";
@@ -93,6 +93,22 @@ const CATALOGUE = [
   }),
 ];
 
+/**
+ * The catalogue's two tabs, in order.
+ *
+ * Two is the component's invariant rather than this test's convenience:
+ * `CATALOGUE_TABS` in `Models.tsx` is a two-row table and the tablist renders
+ * exactly one control per row. Asserting the length is what makes indexing into
+ * the result safe instead of assumed — if a third half ever appears, this fails
+ * here and says so, rather than silently reading `undefined`.
+ */
+async function catalogueTabs(): Promise<[HTMLElement, HTMLElement]> {
+  const tablist = await screen.findByRole("tablist", { name: "Catalogue" });
+  const tabs = within(tablist).getAllByRole("tab");
+  expect(tabs).toHaveLength(2);
+  return [tabs[0]!, tabs[1]!];
+}
+
 /** The model names inside one list, in document order. */
 function namesIn(list: HTMLElement): string[] {
   return within(list)
@@ -107,8 +123,7 @@ it("opens on the models that need no account, and hides the gated half", async (
   expect(namesIn(open)).toEqual(["Z-Image", "Z-Image Turbo"]);
   expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
 
-  const tabs = screen.getByRole("tablist", { name: "Catalogue" });
-  const [openTab, gatedTab] = within(tabs).getAllByRole("tab");
+  const [openTab, gatedTab] = await catalogueTabs();
   expect(openTab.getAttribute("aria-selected")).toBe("true");
   expect(gatedTab.getAttribute("aria-selected")).toBe("false");
   // Each tab counts its own half, whichever one is selected.
@@ -118,8 +133,7 @@ it("opens on the models that need no account, and hides the gated half", async (
 
 it("swaps which half is rendered when the other tab is chosen", async () => {
   show(CATALOGUE);
-  const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
-  const [openTab, gatedTab] = within(tabs).getAllByRole("tab");
+  const [openTab, gatedTab] = await catalogueTabs();
 
   await userEvent.click(gatedTab);
 
@@ -145,7 +159,8 @@ it("keeps imported local models out of both tabs", async () => {
   const imported = screen.getByRole("list", { name: "Imported local models" });
   expect(namesIn(imported)).toEqual(["My local model"]);
 
-  await userEvent.click(within(screen.getByRole("tablist", { name: "Catalogue" })).getAllByRole("tab")[1]);
+  const [, gated] = await catalogueTabs();
+  await userEvent.click(gated);
   expect(namesIn(screen.getByRole("list", { name: "Imported local models" }))).toEqual([
     "My local model",
   ]);
@@ -155,8 +170,7 @@ it("says a half is empty rather than rendering nothing", async () => {
   // A tab whose panel draws nothing at all reads as a broken view.
   show([model({ key: "z-image", display_name: "Z-Image" })]);
 
-  const tabs = await screen.findByRole("tablist", { name: "Catalogue" });
-  const gatedTab = within(tabs).getAllByRole("tab")[1];
+  const [, gatedTab] = await catalogueTabs();
   expect(gatedTab.textContent).toBe("Gated0");
 
   await userEvent.click(gatedTab);

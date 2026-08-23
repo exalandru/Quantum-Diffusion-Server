@@ -10,7 +10,13 @@ import { expect, it, vi } from "vitest";
 import { playgroundSession } from "../test-fixtures";
 import { SessionList } from "./SessionList";
 
-function renderList(sessions = [playgroundSession()], unlocked = () => false) {
+// `unlocked` is spelled out rather than inferred from the default: the prop is
+// `(id: string) => boolean`, and inferring `() => boolean` from `() => false`
+// would reject the per-session predicates the tests below pass.
+function renderList(
+  sessions = [playgroundSession()],
+  unlocked: (id: string) => boolean = () => false,
+) {
   const spies = {
     onSelect: vi.fn(),
     onNew: vi.fn(),
