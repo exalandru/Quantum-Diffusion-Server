@@ -200,6 +200,15 @@ export function PlaygroundApp() {
     });
   }, [refreshSessions]);
 
+  // `?view=plugin` — the studio alone, for an embedder that owns the controls.
+  // Hermes' plugin opens this in its preview pane: it creates the session and
+  // drives generation from the chat, so the sidebar (session switching) and the
+  // composer (prompt entry) are not just unused here, they are two places to
+  // change the same thing. Read once from the URL: which surface this is does
+  // not change under the user the way a selected session does.
+  const [embedded] = useState(
+    () => new URLSearchParams(window.location.search).get("view") === "plugin",
+  );
   useEffect(() => {
     const url = new URL(window.location.href);
     if (selected) url.searchParams.set("session", selected);
@@ -555,23 +564,26 @@ export function PlaygroundApp() {
         </button>
         {/* No tab strip here: this page has one view and one way out. The arrow
             says the button leaves rather than switches, and `?view=config` lands
-            on the screen the label names. */}
-        <a className="shell-link" href="/dashboard/?view=config" target="_blank">
-          Server Config
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M4 12h13M12.5 6.5 18 12l-5.5 5.5" />
-          </svg>
-        </a>
+            on the screen the label names. Embedded, there is no "out": the pane
+            has no browser chrome to come back from, so the link is dropped. */}
+        {!embedded && (
+          <a className="shell-link" href="/dashboard/?view=config" target="_blank">
+            Server Config
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M4 12h13M12.5 6.5 18 12l-5.5 5.5" />
+            </svg>
+          </a>
+        )}
       </header>
 
       {connectionError && (
@@ -592,28 +604,30 @@ export function PlaygroundApp() {
         </div>
       )}
 
-      <div className="pg-layout">
-        <SessionList
-          sessions={sessions}
-          selected={selected}
-          unlocked={(id) => api.unlockToken(id) !== null}
-          onSelect={setSelected}
-          onNew={() => setSelected(null)}
-          onRename={(id) => {
-            if (isLocked(id) && api.unlockToken(id) === null)
-              setDialog({ kind: "unlock", id, then: "open" });
-            else setDialog({ kind: "rename", id });
-          }}
-          onPassword={(id) => {
-            // Renaming and changing a password are proof-gated like everything
-            // else on a locked session: unlock first, then the form.
-            if (isLocked(id) && api.unlockToken(id) === null)
-              setDialog({ kind: "unlock", id, then: "open" });
-            else setDialog({ kind: "password", id });
-          }}
-          onLock={(id) => void lock(id)}
-          onDelete={(id) => void remove(id)}
-        />
+      <div className={embedded ? "pg-layout pg-layout-embedded" : "pg-layout"}>
+        {!embedded && (
+          <SessionList
+            sessions={sessions}
+            selected={selected}
+            unlocked={(id) => api.unlockToken(id) !== null}
+            onSelect={setSelected}
+            onNew={() => setSelected(null)}
+            onRename={(id) => {
+              if (isLocked(id) && api.unlockToken(id) === null)
+                setDialog({ kind: "unlock", id, then: "open" });
+              else setDialog({ kind: "rename", id });
+            }}
+            onPassword={(id) => {
+              // Renaming and changing a password are proof-gated like everything
+              // else on a locked session: unlock first, then the form.
+              if (isLocked(id) && api.unlockToken(id) === null)
+                setDialog({ kind: "unlock", id, then: "open" });
+              else setDialog({ kind: "password", id });
+            }}
+            onLock={(id) => void lock(id)}
+            onDelete={(id) => void remove(id)}
+          />
+        )}
         <section className="pg-studio">
           {selected && lockedOut === selected ? (
             <div className="pg-hero">
@@ -666,16 +680,18 @@ export function PlaygroundApp() {
               srcOf={srcOf}
             />
           )}
-          <Composer
-            models={models}
-            defaultModel={defaultModel}
-            maxN={maxN}
-            busy={sending}
-            error={submitError}
-            rewrite={rewrite}
-            presetPrompt={presetPrompt}
-            onSubmit={(draft) => void submit(draft)}
-          />
+          {!embedded && (
+            <Composer
+              models={models}
+              defaultModel={defaultModel}
+              maxN={maxN}
+              busy={sending}
+              error={submitError}
+              rewrite={rewrite}
+              presetPrompt={presetPrompt}
+              onSubmit={(draft) => void submit(draft)}
+            />
+          )}
         </section>
       </div>
 

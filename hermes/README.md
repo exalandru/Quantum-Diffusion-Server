@@ -1,84 +1,124 @@
-# Hermes ↔ QDS — `image_gen` provider
+# QDS for Hermes
 
-Local backend for Hermes' `image_generate` tool. When the Hermes model asks for
-an image, this QDS server generates it — mflux on Apple Silicon, no API key, no
-outbound network calls.
+**QDS works natively with [Hermes](https://claude-code.nousresearch.com).** Not through a
+bridge, not through a generic MCP adapter — two plugins that plug straight into
+the parts of Hermes that were built for this.
 
-Code: `hermes/image_gen/qds/` (source of truth; Hermes loads it via a symlink).
+Which means: you ask for an image in the chat, and your Mac makes it. No
+account, no per-image cost, nothing leaving the machine.
 
-## Installation
+There are two ways in. You can install one, or both — they don't overlap and
+they don't interfere.
 
-```bash
-# 1. link the plugin into Hermes' user plugins directory
-mkdir -p ~/.hermes/plugins/image_gen
-ln -sfn ./hermes/image_gen/qds ~/.hermes/plugins/image_gen/qds
+| | **Image provider** | **Playground plugin** |
+|---|---|---|
+| What it is | The engine behind Hermes' built-in image tool | A live studio beside the chat |
+| You get | An image in the conversation | A window where the image forms as it renders |
+| Best for | "Make me a picture of X" | Long renders, refining, upscaling, exploring |
+| Folder | `image_gen/qds` | `qds_playground` |
 
-# 2. enable the plugin (opt-in)
-hermes plugins enable image_gen/qds
+---
 
-# 3. make it the active backend for image_generate
-hermes config set image_gen.provider qds
-hermes config set image_gen.model anima-turbo   # optional, else the server default
-```
+## Option 1 — The image provider
 
-`hermes plugins list` should show `qds | enabled | user`.
-`hermes tools` → Image Generation lists "QDS (local)" and its installed models.
+**The simple one.** Hermes already knows how to generate images. This makes QDS
+the thing that actually does it.
 
-The QDS server must be running (`http://127.0.0.1:8765` by default):
+You ask, an image comes back in the conversation, and it's saved on your Mac.
+That's the whole experience — no new commands to learn, no new surface to
+manage. If you've ever used Hermes with a cloud image backend, this is the same
+thing, except it's your hardware.
 
-```bash
-qds serve            # or the repo's launch command
-curl -s localhost:8765/health
-```
+**Try it with:**
 
-## Usage
+> Generate an image of a red fox asleep in a snowy forest, warm evening light.
 
-- **text-to-image**: `image_generate(prompt=…, aspect_ratio=…)`
-  → `POST /v1/images/generations`.
-- **image-to-image / edit**: `image_generate(prompt=…, image_url=…)`
-  → `POST /v1/images/edits` (a single source image; extra references are
-  ignored, the QDS endpoint only takes one). The server picks `edit` vs
-  `img2img` based on the model — there is no `strength` knob on the Hermes
-  side, by design.
-- Sizes: `landscape` → `1344x768`, `square` → `1024x1024`,
-  `portrait` → `768x1344` (mflux truncates to a multiple of 16).
-- Output: always requested as `b64_json` and written to
-  `$HERMES_HOME/cache/images/qds_<model>_<timestamp>_<uuid>.png`.
-  Server URLs are never used: their store has a TTL (3600 s), a local file
-  does not expire.
+---
 
-### Model selection (first hit wins)
+## Option 2 — The playground plugin
 
-1. `QDS_IMAGE_MODEL` (env var — escape hatch for scripts/tests);
-2. the `model` kwarg forwarded by the tool (i.e. the picker's `image_gen.model`);
-3. `image_gen.qds.model` in `~/.hermes/config.yaml`;
-4. `image_gen.model` in `~/.hermes/config.yaml`;
-5. the `default_model` returned by the server.
+**The one for when you want to watch.** Ask Hermes to open the playground and
+it appears right beside the conversation, showing the image forming — blurry at
+first, sharpening step by step, exactly like the QDS playground in your browser,
+because it *is* the QDS playground.
 
-Config-derived candidates are only honoured when the server actually has that
-model: `image_gen.model` is shared with every other backend and routinely holds
-a foreign id (`gpt-image-2-medium`). `QDS_IMAGE_MODEL` is passed through as-is —
-the server is the one that rejects it, with its own message.
+The chat stays connected to that session. So you keep talking:
 
-### Server address
+> Now make it wider.
+> Try that again with a different seed.
+> Upscale that one.
 
-`QDS_BASE_URL` (default `http://127.0.0.1:8765`). Example:
+…and it all lands in the window you're already looking at.
 
-```bash
-QDS_BASE_URL=http://127.0.0.1:8770 hermes
-```
+Long renders stop being a problem. The generation belongs to the server, not to
+whoever's watching it — close the window, go do something else, come back, and
+it's exactly where it should be. A twenty-minute render is just a window you can
+look away from.
 
-## Troubleshooting
+**Try it with:**
 
-| Symptom | Cause / fix |
+> Open the QDS playground and start a cinematic wide shot of a lighthouse in a storm.
+
+---
+
+## Installing
+
+Takes about a minute. You need [QDS](../README.md) installed and running, and
+the Hermes desktop app.
+
+### 1. Copy the plugins
+
+Open the plugins folder: **Hermes → Settings → Plugins → Open plugins folder**.
+
+Copy in whichever you want, keeping the folder names exactly as they are:
+
+| Copy this folder | To |
 |---|---|
-| `image_gen.provider='qds' is set but no plugin registered that name` | plugin not enabled → `hermes plugins enable image_gen/qds`, or broken symlink → redo the `ln -sfn`. |
-| `QDS is not reachable at http://…` | server stopped, or wrong port → check `curl $QDS_BASE_URL/health`. |
-| `QDS returned HTTP 400: Unknown model: '…'` | model not installed → `curl $QDS_BASE_URL/v1/capabilities` for the real list. |
-| Models missing from `hermes tools` | server was down at scan time (dynamic catalog); restart the server then reopen `hermes tools`. |
-| First generation very slow | weights loading (krea-2-turbo ≈ 20 GB, qwen-image-2512 ≈ 55 GB). `anima-turbo` (10 steps) is the fast choice. |
-| Generation cut off on the client side | provider HTTP timeout: 1800 s. Beyond that, look at the server (`/v1/progress`). |
+| `hermes/image_gen/qds` | `plugins/image_gen/qds` |
+| `hermes/qds_playground` | `plugins/qds_playground` |
 
-The provider never raises an exception into Hermes: every failure becomes a
-`{"success": false, "error_type": …}` — unreachable server, unknown model, empty
-prompt, unreadable source image.
+The `image_gen` folder may not exist yet — create it.
+
+### 2. Restart Hermes
+
+Plugins are picked up when the app starts.
+
+### 3. Turn them on
+
+**Settings → Plugins → Agent plugins**, and flip the switch on:
+
+- `qds` — the image provider
+- `qds-playground` — the playground plugin
+
+### 4. Point image generation at QDS
+
+Only needed for the image provider. **Settings → Tools & Keys → Image
+Generation**, choose **QDS (local)**, and pick a model if you'd like a specific
+one.
+
+No API key, no sign-in. It's your machine.
+
+### That's it
+
+Ask for an image. If you installed the playground plugin, ask Hermes to open the
+playground and watch it work.
+
+---
+
+## If something's off
+
+| What you see | What it means |
+|---|---|
+| Hermes says QDS isn't reachable | The server isn't running. Start QDS from the menu bar. |
+| The plugins don't show up | Check the folder names, then restart Hermes — the folder is only read at startup. |
+| The model list looks empty | QDS was asleep when Hermes last looked. Restart the server, then reopen the settings panel. |
+| The first image takes ages | The model weights are loading. It's a one-time cost per model — the next image is fast. Small models like `anima-turbo` load in seconds. |
+| A generation won't start | The playground queue may be paused. The pane has a resume button. |
+| A session asks for a password | You locked it in the QDS playground. Unlock it there. |
+
+**Running QDS somewhere unusual?** Set `QDS_BASE_URL` (defaults to
+`http://127.0.0.1:8765`), and `QDS_API_KEY` if you gave your server a key. A
+normal local install needs neither.
+
+Neither plugin can install models, change your server config, or restart
+anything — that all stays in QDS, where it belongs.

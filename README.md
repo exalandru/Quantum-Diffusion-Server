@@ -3,7 +3,7 @@
 ![QDS Playground](assets/app-playground-main.png)
 
 A Midjourney-like image generation experience that runs entirely on your Mac: no account, no per-image cost, no prompt or image ever leaving the machine.
-QDS gives you a prompt-and-browse **playground**, an **OpenAI-compatible API**, and an **MCP server** so chat models can generate images for you, all backed by the same local diffusion models.
+QDS gives you a prompt-and-browse **playground**, an **OpenAI-compatible API**, an **MCP server**, and **native Hermes plugins** so chat models can generate images for you, all backed by the same local diffusion models.
 
 ## What is QDS?
 
@@ -13,11 +13,12 @@ A small **menubar app** installs and runs the server for you. Everything else is
 
 ![QDS Playground](assets/app-traymenu.jpg)
 
-Three ways in, one shared engine:
+Four ways in, one shared engine:
 
 - **Playground**: a prompt box, a model picker, and a history of everything you've generated.
 - **API**: the same endpoints OpenAI's `images.generate` uses at `http://127.0.0.1:8765/v1`, so any client already built for OpenAI Images (the `openai` SDK, Open WebUI, your own script) works with no adapter.
 - **MCP**: point a chat model at `/mcp` (or `qds mcp` for stdio-only clients) and let it generate, refine, and upscale images as part of a conversation.
+- **Hermes**: two native plugins, so images generate in the chat, or in a live playground beside it.
 
 Because the model stays loaded in memory between requests, generating a second and third image is noticeably faster than a fresh command-line run each time, and when you're done, the memory comes back on its own.
 
@@ -128,6 +129,21 @@ http://127.0.0.1:8765/mcp
 ```
 
 The model gets `generate_image`, `refine_image`, `vary_image`, `upscale_image` and a few others; it sees a thumbnail of what it made, and the full-resolution file lands in a playground session you can open in the browser. Full tool list and configuration in [`src/server/README.md`](src/server/README.md#mcp).
+
+## Using it with Hermes
+
+QDS is natively compatible with [Hermes](https://claude-code.nousresearch.com): two plugins ship in this repository, no MCP adapter in between. Ask for an image in the chat and your own Mac makes it.
+
+Two ways in, install either or both:
+
+- **Image provider** — QDS becomes the engine behind Hermes' built-in image generation. You ask, an image comes back in the conversation. Nothing new to learn.
+- **Playground plugin** — Hermes opens a live playground session beside the chat and you watch the image form, then steer it in plain language: *"now make it wider"*, *"upscale that one"*. Renders keep running whether or not you're watching.
+
+**Install** (desktop app): open **Settings → Plugins → Open plugins folder**, copy `hermes/image_gen/qds` to `plugins/image_gen/qds` and `hermes/qds_playground` to `plugins/qds_playground`, restart Hermes, then enable them under **Settings → Plugins → Agent plugins**. For the provider, also pick **QDS (local)** under **Settings → Tools & Keys → Image Generation**. No API key.
+
+Then try *"Generate an image of a red fox asleep in a snowy forest"*, or *"Open the QDS playground and start a cinematic wide shot of a lighthouse in a storm"*.
+
+Details, example prompts and troubleshooting in [`hermes/README.md`](hermes/README.md).
 
 ## Licence
 

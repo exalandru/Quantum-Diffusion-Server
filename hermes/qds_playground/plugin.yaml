@@ -1,0 +1,15 @@
+name: qds-playground
+version: 2.0.0
+description: "Drive the QDS playground from the chat: qds_playground opens a live session in the preview pane (?view=plugin) and attaches the chat to it, so generations are watched as they render and steered in plain language."
+author: Quantum Diffusion Server
+kind: backend
+provides_tools:
+  - qds_playground
+  - qds_models
+  - qds_sessions
+  - qds_generate
+  - qds_progress
+  - qds_wait
+  - qds_cancel
+  - qds_queue
+  - qds_upscale

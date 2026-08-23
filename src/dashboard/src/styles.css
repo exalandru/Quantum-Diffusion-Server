@@ -1594,6 +1594,12 @@ main.playground > header {
   min-height: 0;
 }
 
+/* `?view=plugin`: the studio is the only child, so the row has nothing to
+   space out and the pane is narrow — reclaim the gutter the sidebar used. */
+.pg-layout-embedded {
+  gap: 0;
+}
+
 .pg-sidebar {
   flex: 0 0 280px;
   display: flex;
