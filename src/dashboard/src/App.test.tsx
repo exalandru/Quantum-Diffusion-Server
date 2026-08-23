@@ -1,57 +1,94 @@
 /**
- * The shell: what survives navigation, what survives a failing poll, and what
- * the Setup gate says.
+ * The shell: what survives navigation, and what survives a failing poll.
  *
- * These three are the invariants the redesign was most able to break, because
- * all three are about state *outliving* a render — an action result outliving a
- * background poll (Slice 1), a Rust-owned job outliving a view switch (Slice 2),
- * and the bootstrap record outliving an interrupted install (Slice 8).
+ * Both are about state *outliving* a render — an action result outliving a
+ * background poll (Slice 1), and a server-owned job outliving a view switch
+ * (Slice 2). The shell reaches its server over `fetch` and nothing else, so
+ * that is the only seam these replace (`test-server.ts`).
  */
-import { invoke } from "@tauri-apps/api/core";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { App } from "./App";
 import { catalogue, job, model, overview } from "./test-fixtures";
-import type { BootstrapState, JobStatus, Overview } from "./types";
+import { type FakeServer, fakeServer } from "./test-server";
+import type { Capabilities, Health, JobStatus, Overview } from "./types";
 
-const mockInvoke = vi.mocked(invoke);
+let server: FakeServer;
+
+const HEALTH: Health = {
+  status: "ok",
+  version: "1.0.0",
+  default_model: "z-image-turbo",
+  models: ["z-image-turbo"],
+  loaded_model: null,
+  idle_unload_s: null,
+  memory: {},
+};
+
+// `models` is empty on purpose: the rows here come from `/admin/models`, and a
+// row whose live capabilities are unknown is a real state the panel must render
+// rather than crash on.
+const CAPABILITIES: Capabilities = {
+  default_model: "z-image-turbo",
+  max_n: 4,
+  response_formats: ["b64_json"],
+  models: {},
+  rewrite: {
+    available: false,
+    reason: "no rewriter configured",
+    downloaded: false,
+    sizeMb: null,
+    word_ceiling: 60,
+  },
+};
 
 type Backend = {
-  overview: () => Overview | Promise<Overview>;
+  overview: () => Overview;
   jobStatus?: () => JobStatus;
   forget?: () => unknown;
 };
 
+/**
+ * Every route the shell touches while it is up.
+ *
+ * Spelled out rather than defaulted: an unrouted request is a failure in
+ * `test-server.ts`, which is what makes a panel quietly calling something
+ * nobody declared visible here instead of silently absorbed.
+ */
 function backend(handlers: Backend) {
-  mockInvoke.mockImplementation(async (command: string) => {
-    switch (command) {
-      case "overview":
-        return await handlers.overview();
-      case "config_read":
-        return {};
-      case "models_status":
-        return catalogue([
-          model({
-            key: "local-abc",
-            display_name: "My local model",
-            provenance: "imported_local",
-            can_download: false,
-          }),
-        ]);
-      case "job_status":
-        return handlers.jobStatus ? handlers.jobStatus() : job();
-      case "local_model_forget":
-        return handlers.forget ? handlers.forget() : { ok: true };
-      default:
-        throw new Error(`unexpected command ${command}`);
-    }
-  });
+  server.on("GET /admin/overview", () => handlers.overview());
+  server.on("GET /health", () => HEALTH);
+  server.on("GET /admin/config", () => ({}));
+  server.on("GET /admin/logs", () => ({ entries: [], lastSeq: 0, dropped: 0 }));
+  server.on("GET /admin/jobs", () => (handlers.jobStatus ? handlers.jobStatus() : job()));
+  server.on("GET /admin/models", () =>
+    catalogue([
+      model({
+        key: "local-abc",
+        display_name: "My local model",
+        provenance: "imported_local",
+        can_download: false,
+      }),
+    ]),
+  );
+  server.on("POST /admin/import/forget", () =>
+    handlers.forget ? handlers.forget() : { ok: true },
+  );
+  server.on("GET /v1/capabilities", () => CAPABILITIES);
+  // A body that never produces a frame: the shell's panels subscribe, and this
+  // test is not about what the stream says.
+  server.on("GET /v1/progress", () => new Response(new ReadableStream({ start() {} })));
 }
 
-beforeEach(() => mockInvoke.mockReset());
-afterEach(() => vi.restoreAllMocks());
+beforeEach(() => {
+  server = fakeServer();
+});
+afterEach(() => {
+  server.restore();
+  vi.restoreAllMocks();
+});
 
 it("keeps an action's result when the background poll starts failing", async () => {
   // The bug this exists for: one shared `error`, cleared by a four-second poll,
@@ -59,11 +96,17 @@ it("keeps an action's result when the background poll starts failing", async () 
   // to hold different things at the same time.
   let healthy = true;
   backend({
-    overview: () => {
-      if (!healthy) throw new Error("data directory not found");
-      return overview();
-    },
+    overview: () => overview(),
     forget: () => ({ ok: false, reason: "This model is the current default model." }),
+  });
+  server.on("GET /admin/overview", () => {
+    if (!healthy) {
+      return new Response(
+        JSON.stringify({ error: { message: "data directory not found", type: "server_error" } }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    return overview();
   });
 
   const user = userEvent.setup();
@@ -85,10 +128,11 @@ it("keeps an action's result when the background poll starts failing", async () 
 }, 20000);
 
 it("still shows a running job after leaving Models and coming back", async () => {
-  // The job belongs to Rust and outlives the panel. Before the state was lifted
-  // out of `Models`, returning to the view showed nothing until the next poll.
+  // The job belongs to the server and outlives the panel. Before the state was
+  // lifted out of `Models`, returning to the view showed nothing until the next
+  // poll.
   backend({
-    overview: () => overview({ server: { running: true, port: 8765, lastExit: null } }),
+    overview: () => overview(),
     jobStatus: () =>
       job({ state: "running", kind: "prequantize", target: "flux2-dev", message: "converting" }),
   });
@@ -107,58 +151,6 @@ it("still shows a running job after leaving Models and coming back", async () =>
   expect(screen.getByText("flux2-dev")).toBeTruthy();
 });
 
-it.each([
-  ["uninitialized", "Install", "Install the environment"],
-  ["updateRequired", "Rebuild", "Update the environment"],
-  ["broken", "Repair", "Repair the environment"],
-] as [BootstrapState, string, string][])(
-  "shows Setup as %s with a %s action",
-  async (state, action, title) => {
-    // The distinction the old marker could not express: `broken` is an install
-    // that was interrupted, and offering "Install" there would describe the
-    // machine as fresh when it is not.
-    backend({
-      overview: () =>
-        overview({
-          bootstrap: {
-            ready: false,
-            state,
-            installedVersion: state === "uninitialized" ? null : "1.0.0",
-            appVersion: "1.0.0",
-            envPath: "/data/env",
-            failure: null,
-          },
-        }),
-    });
-
-    render(<App />);
-
-    expect(await screen.findByText(title)).toBeTruthy();
-    expect(screen.getByRole("button", { name: action })).toBeTruthy();
-    // Exclusive: no view tabs while the runtime is not ready.
-    expect(screen.queryByRole("tab", { name: /Models/ })).toBeNull();
-  },
-);
-
-it("reports what the last interrupted install said", async () => {
-  backend({
-    overview: () =>
-      overview({
-        bootstrap: {
-          ready: false,
-          state: "broken",
-          installedVersion: "1.0.0",
-          appVersion: "1.0.0",
-          envPath: "/data/env",
-          failure: "uv sync failed (code Some(1))",
-        },
-      }),
-  });
-
-  render(<App />);
-  expect(await screen.findByText(/uv sync failed/)).toBeTruthy();
-});
-
 it("does not offer per-model controls in Configuration as well as Models", async () => {
   // The duplication this removes: the same model appeared twice under two names,
   // its availability and conversion in one view and its `enabled`/quantize/steps
@@ -172,7 +164,9 @@ it("does not offer per-model controls in Configuration as well as Models", async
   await user.click(await screen.findByRole("tab", { name: /Configuration/ }));
   await screen.findByText(/Generation defaults/i);
 
-  expect(screen.queryByRole("switch")).toBeNull();
+  // Not "no switches at all": Configuration owns one of its own now, the
+  // local-network toggle. What must not be here is a *model's* switch.
+  expect(screen.queryByRole("switch", { name: /Enable/ })).toBeNull();
   expect(screen.queryByLabelText(/quantization for /i)).toBeNull();
   expect(screen.queryByLabelText(/^Steps for /)).toBeNull();
   expect(screen.queryByLabelText(/^Guidance for /)).toBeNull();
