@@ -27,8 +27,13 @@ Established against mflux 0.19.0, by inspecting each family's
 `WeightDefinition.get_components()`, its initializer's `_init_models`, and its
 variant class's annotations:
 
-* every supported family has exactly three components, each in its own
-  subdirectory, with no shared source between them;
+* **each family declares its own component list, and the converter is list-driven.**
+  Most of them have three, each in its own subdirectory with no shared source; `sd35`
+  has five, because SD 3.5 conditions on three separate text encoders. That was once
+  written here as "every supported family has exactly three components", which was a
+  true observation and a false invariant: nothing in `prequantize.convert`,
+  `artifacts` or `fetch` ever counted them — they all walk `components_for(family)` —
+  so the only thing the three-ness supported was this sentence;
 * every component's module class takes no required constructor argument (the
   overrides `flux2` and `ernie` pass come from `ModelConfig`, and have defaults);
 * `ModelSaver.save_model` writes only the components present on the object it is
@@ -54,6 +59,11 @@ from typing import Any
 #: happens while the disk is emptiest.
 TRANSFORMER = "transformer"
 TEXT_ENCODER = "text_encoder"
+#: SD 3.5's second and third text encoders. These are mflux component names, which
+#: for that family are also its repository subdirectories: `text_encoder` is CLIP-L,
+#: `text_encoder_2` is CLIP-G, `text_encoder_3` is T5-XXL.
+TEXT_ENCODER_2 = "text_encoder_2"
+TEXT_ENCODER_3 = "text_encoder_3"
 VAE = "vae"
 
 
@@ -99,11 +109,11 @@ def _component(key: str, label: str, **overrides: Any) -> ComponentSpec:
     )
 
 
-#: The shape every supported family happens to have today — which is a finding,
-#: not an assumption the code is allowed to make. Each family names its own list
-#: below, and `test_components.py` checks each against mflux separately, so a
-#: family that grows a fourth component or drops one fails a test instead of
-#: silently converting two thirds of itself.
+#: The shape most supported families have — which is a finding about them, not an
+#: assumption the code is allowed to make. Each family names its own list below, and
+#: `test_components.py` checks each against mflux separately, so a family that grows a
+#: component or drops one fails a test instead of silently converting part of itself.
+#: `sd35` is the standing proof that the list is the contract: it has five.
 def _standard() -> tuple[ComponentSpec, ...]:
     return (
         _component(TRANSFORMER, "Transformer"),
@@ -134,6 +144,22 @@ _COMPONENTS: dict[str, tuple[ComponentSpec, ...]] = {
     # QDS's own definition rather than mflux's, for a model mflux 0.19.0 does not
     # ship. Same three components, and the one this whole mechanism was built for.
     "flux2-dev": _standard(),
+    # QDS's own definition too, and the first family with more than three components:
+    # SD 3.5 conditions on three text encoders (CLIP-L, CLIP-G and T5-XXL), each in
+    # its own subdirectory, each independently convertible. Nothing in the converter
+    # needed a longer list to be taught to it — `prequantize.convert` walks whatever
+    # `components_for` returns — which is what this entry demonstrates.
+    #
+    # Order is largest-first like the others: the T5 encoder (9.5 GB bf16) outweighs
+    # everything but the large releases' transformer (16.3 GB), and CLIP-G (1.4 GB)
+    # outweighs CLIP-L (0.25 GB).
+    "sd35": (
+        _component(TRANSFORMER, "Transformer"),
+        _component(TEXT_ENCODER_3, "Text encoder (T5-XXL)"),
+        _component(TEXT_ENCODER_2, "Text encoder (CLIP-G)"),
+        _component(TEXT_ENCODER, "Text encoder (CLIP-L)"),
+        _component(VAE, "VAE"),
+    ),
 }
 
 

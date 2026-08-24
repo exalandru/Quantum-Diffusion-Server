@@ -87,24 +87,29 @@ Launch it: it lives in the menu bar, with no window and no Dock icon.
 
 ## Models
 
-| model | licence | RAM/VRAM | enabled by default | notes |
-|---|---|---|---|---|
-| `z-image-turbo` | Apache-2.0 | a few GB (8-bit) | ✅ | the default; 9 steps, fast |
-| `ernie-image-turbo` | Apache-2.0 | a few GB (8-bit) | ✅ | 8 steps, fast |
-| `z-image` | Apache-2.0 | a few GB (8-bit) | - | 20 steps, adjustable guidance |
-| `ernie-image` | Apache-2.0 | a few GB (8-bit) | - | 20 steps |
-| `qwen-image-flash` | NVIDIA Open Model | ~15 GB | - | Qwen-Image distilled to 4 steps |
-| `qwen-image-2512` | Apache-2.0 | ~55 GB | - | 20B, strong text rendering, optional editing |
-| `flux2-klein` | FLUX Non-Commercial 🔒 | ~15 GB | - | 9B distilled, 4 steps, instruction editing |
-| `flux2-dev` | FLUX Non-Commercial 🔒 | ~58 GB | - | 32B; pre-quantized variants keep peak memory bounded |
-| `anima-turbo` | CircleStone Non-Commercial | a few GB | - | 2B anime-oriented, distilled to 10 steps |
-| `anima` | CircleStone Non-Commercial | a few GB | - | undistilled Aesthetic fine-tune, 30 steps |
-| `krea-2-turbo` | Krea 2 Community 🔒 | ~20 GB | - | 12B distilled, 8 steps, adjustable guidance |
-| `fibo-lite` | CC-BY-NC-4.0 🔒 | a few GB | - | prompts are structured JSON |
-| `fibo` | CC-BY-NC-4.0 🔒 | a few GB | - | prompts are structured JSON, 50 steps |
-| `ideogram-4` | Ideogram Non-Commercial 🔒 | a few GB | - | sampler presets instead of a step count |
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
+| **Z-Image Turbo** `z-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 9 steps, fast |
+| **Ernie Turbo** `ernie-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 8 steps, fast |
+| **Z-Image** `z-image` | Apache-2.0 | a few GB (8-bit) | 20 steps, adjustable guidance |
+| **Ernie** `ernie-image` | Apache-2.0 | a few GB (8-bit) | 20 steps |
+| **Qwen Image Flash** `qwen-image-flash` | NVIDIA Open Model | ~15 GB | Qwen-Image distilled to 4 steps |
+| **Qwen Image 2512** `qwen-image-2512` | Apache-2.0 | ~55 GB | 20B, strong text rendering, optional editing |
+| **Flux 2 Klein** `flux2-klein` | FLUX Non-Commercial 🔒 | ~15 GB | 9B distilled, 4 steps, instruction editing |
+| **Flux 2 Dev** `flux2-dev` | FLUX Non-Commercial 🔒 | ~58 GB | 32B; pre-quantized variants keep peak memory bounded |
+| **Anima Turbo** `anima-turbo` | CircleStone Non-Commercial | a few GB | 2B anime-oriented, distilled to 10 steps |
+| **Anima** `anima` | CircleStone Non-Commercial | a few GB | undistilled aesthetic fine-tune, 30 steps |
+| **Stable Diffusion 3.5 Medium** `sd35-medium` | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
+| **Stable Diffusion 3.5 Large** `sd35-large` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps; pre-quantize to avoid a ~41 GB bf16 peak |
+| **Stable Diffusion 3.5 Large Turbo** `sd35-large-turbo` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8B distilled, 4 steps, guidance fixed off |
+| **Krea 2 Turbo** `krea-2-turbo` | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, adjustable guidance |
+| **FIBO Lite** `fibo-lite` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON |
+| **FIBO** `fibo` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON, 50 steps |
+| **Ideogram 4** `ideogram-4` | Ideogram Non-Commercial 🔒 | a few GB | sampler presets instead of a step count |
 
-🔒 = gated on Hugging Face: you need a token whose access has been approved. Gated and non-commercial models ship disabled, requesting access and accepting a licence is your decision, not the app's. Enable or disable models, and see exact disk usage, from the Models tab.
+The name in bold is what the Models tab shows; the code beside it is what an API request puts in `"model"`.
+
+🔒 = gated on Hugging Face: you need a token whose access has been approved. QDS ships with Z-Image Turbo and Ernie Turbo enabled and everything else switched off — requesting access and accepting a licence is your decision, not the app's. Enable or disable models, and see exact disk usage, from the Models tab.
 
 RAM/VRAM figures are approximate resident memory while generating (small 8-bit models vs. the 20B/32B entries), see [`src/server/README.md`](src/server/README.md#models) for the full capability matrix, or query the running server at `GET /v1/capabilities`.
 

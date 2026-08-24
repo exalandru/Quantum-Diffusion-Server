@@ -20,6 +20,7 @@ from qds.anima import config as anima_config
 from qds.flux2_dev import config as flux2_dev_config
 from qds.logs import SERVER_LOGGER
 from qds.qwen_flash import config as qwen_flash_config
+from qds.sd35 import config as sd35_config
 
 logger = logging.getLogger(f"{SERVER_LOGGER}.registry")
 
@@ -301,6 +302,101 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         quantize=None,
         # 512-1536 per the card, and the DiT is patched 2x2 over an 8x downscale,
         # so a side must stay a multiple of 16 — which `DIMENSION_STEP` already is.
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="sd35-medium",
+        display_name="Stable Diffusion 3.5 Medium",
+        family="sd35",
+        repo="stabilityai/stable-diffusion-3.5-medium",
+        # No factory on `ModelConfig`: mflux 0.19.0 does not know SD 3.5, and its
+        # MMDiT-X transformer and both CLIP towers are implemented in `qds/sd35/`.
+        # Resolved through `_LOCAL_MODEL_CONFIGS`.
+        model_config_name="sd35_medium",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # `num_inference_steps=40, guidance_scale=4.5`, from the card's own diffusers
+        # example. Higher than this server's usual 20-30 because Medium is 2.5B and
+        # undistilled; the card asks for 40 and a step here is cheap.
+        default_steps=40,
+        default_guidance=4.5,
+        supports_guidance=True,
+        # Real CFG, and therefore a real unconditional branch to put a negative prompt
+        # in — two transformer passes per step above guidance 1.0.
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="Stability AI Community",
+        gated=True,
+        # bf16. The whole model is ~16.3 GB and the transformer 4.94 of that, so
+        # quantizing on the way in is affordable and nothing has to be reclaimed.
+        # Pre-quantization is still offered — the family supports it — but it is a
+        # convenience here rather than the only way to run the model.
+        quantize=None,
+        # `pos_embed_max_size` is 384 latent positions, so the positional table itself
+        # bounds a side at 3072px; the card's progressive training tops out at 1440.
+        # 1536 is this server's step-aligned bound inside both.
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="sd35-large",
+        display_name="Stable Diffusion 3.5 Large",
+        family="sd35",
+        repo="stabilityai/stable-diffusion-3.5-large",
+        model_config_name="sd35_large",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # `num_inference_steps=28, guidance_scale=3.5`, from the card's example.
+        default_steps=28,
+        default_guidance=3.5,
+        supports_guidance=True,
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="Stability AI Community",
+        gated=True,
+        # 8-bit by default: ~27.6 GB at bf16, and quantizing on the fly needs the bf16
+        # and the 8-bit copy resident together — about 41 GB. That fits 64 GB and does
+        # not fit 32. A pre-quantized artifact avoids the peak entirely, which is why
+        # this row is the one the conversion path is for.
+        quantize=8,
+        # `pos_embed_max_size` is 192 latent positions here, not Medium's 384, so
+        # 192 * 2 * 8 = 3072 latent-to-pixel gives a *hard* 1536px ceiling: above it
+        # the transformer has no positional row to crop and refuses.
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="sd35-large-turbo",
+        display_name="Stable Diffusion 3.5 Large Turbo",
+        family="sd35",
+        repo="stabilityai/stable-diffusion-3.5-large-turbo",
+        model_config_name="sd35_large_turbo",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # `num_inference_steps=4, guidance_scale=0.0`, from the card. Adversarially
+        # distilled: four steps and no classifier-free guidance at all.
+        default_steps=4,
+        default_guidance=0.0,
+        # False, unlike Anima Turbo's: this is not a preference the model tolerates
+        # being overridden. Guidance above 1.0 turns on an unconditional branch the
+        # distillation removed the need for, and the result is visibly over-cooked.
+        # The catalogue reports what the model accepts, so a request naming guidance
+        # is refused with a 400 rather than quietly honoured.
+        supports_guidance=False,
+        # No unconditional branch exists at guidance 0.0, so a negative prompt would
+        # have nowhere to go. Refused rather than silently ignored.
+        supports_negative_prompt=False,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="Stability AI Community",
+        gated=True,
+        quantize=8,
         min_dimension=512,
         max_dimension=1536,
     ),
@@ -777,6 +873,11 @@ _CAPABILITIES: dict[str, QuantizationCapability] = {
     "flux2-dev": _FLUX2_DEV,
     "krea2": _SINGLE_FILE_COMPONENT,
     "anima": _ANIMA,
+    # QDS's own five-component definition, for a model mflux 0.19.0 does not ship.
+    # Converts exactly like the three-component families do: the converter walks
+    # `components.components_for(family)`, and the only thing that changes with a
+    # longer list is how many times it goes round.
+    "sd35": _GENERIC,
 }
 
 #: Edit variants are reached through their parent model, and `Flux2KleinEdit` has
@@ -998,6 +1099,9 @@ _LOCAL_MODEL_CONFIGS: dict[str, Any] = {
     "flux2_dev": flux2_dev_config.flux2_dev_model_config,
     "anima": anima_config.anima_model_config,
     "anima_turbo": anima_config.anima_turbo_model_config,
+    "sd35_medium": sd35_config.sd35_medium_model_config,
+    "sd35_large": sd35_config.sd35_large_model_config,
+    "sd35_large_turbo": sd35_config.sd35_large_turbo_model_config,
     "qwen_image_flash": qwen_flash_config.qwen_image_flash_model_config,
 }
 
@@ -1138,6 +1242,13 @@ def family_structure(family: str) -> tuple[Any, Any]:
 
         return FIBO, FIBOWeightDefinition
 
+    if family == "sd35":
+        from qds.sd35 import SD35, SD35WeightDefinition
+
+        # One definition for all three rows: they differ in transformer *shape*, which
+        # `model_config_for(spec)` supplies, not in component layout.
+        return SD35, SD35WeightDefinition
+
     raise ValueError(f"No component-wise conversion is established for family {family!r}")
 
 
@@ -1208,6 +1319,14 @@ def load_model(spec: ModelSpec, *, kind: str = "txt2img") -> Any:
             quantize=quantize,
             weight_file=anima_config.weight_file_for(model_config_name),
         )
+
+    if family == "sd35":
+        from qds.sd35 import SD35
+
+        # Which of the three releases, entirely from the row's `ModelConfig`: the
+        # repository it names and the transformer shape it carries. No extra argument,
+        # unlike Anima — SD 3.5's variants are three shapes, not three files.
+        return SD35(model_config=model_config, model_path=model_path, quantize=quantize)
 
     if family == "krea2":
         # Importing the package is also what registers `er_sde` as a scheduler —
@@ -1294,6 +1413,11 @@ def latent_creator_for(family: str) -> Any | None:
         from qds.anima.latent_creator import AnimaLatentCreator
 
         return AnimaLatentCreator
+
+    if family == "sd35":
+        from qds.sd35.latent_creator import SD35LatentCreator
+
+        return SD35LatentCreator
 
     if family == "z-image":
         from mflux.models.z_image.latent_creator.z_image_latent_creator import ZImageLatentCreator

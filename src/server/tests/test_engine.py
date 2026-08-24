@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
 import time
 
 import pytest
@@ -23,11 +22,6 @@ from qds.registry import BASE_SPECS_BY_KEY
 #: What the double uses when no step count is passed, standing in for the step
 #: count a sampler preset would supply.
 _PRESET_FALLBACK_STEPS = 20
-
-#: Re-read rather than imported from `conftest`: see the comment there. These
-#: tests import MLX inside the function body, so only they need skipping — the
-#: rest of the file runs without a Metal device.
-NO_MLX = os.environ.get("QDS_CI_NO_MLX") == "1"
 
 
 class FakeGenerated:
@@ -600,7 +594,6 @@ class _VaeOnlyModel:
         self.vae = vae
 
 
-@pytest.mark.skipif(NO_MLX, reason="MLX requires a Metal device; not available in CI")
 @pytest.mark.parametrize("vae_class", [_PackedVae, _PlainVae])
 def test_the_real_renderer_produces_a_bounded_jpeg(vae_class):
     """The one path the other preview tests monkeypatch away.
@@ -672,8 +665,6 @@ class FakeUpscaler:
 @pytest.fixture
 def upscalers(monkeypatch):
     """Replace weight loading, and record every instance built."""
-    if NO_MLX:
-        pytest.skip("MLX requires a Metal device; not available in CI")
     from qds.upscale import weights as weights_module
 
     built: list[FakeUpscaler] = []
@@ -954,8 +945,6 @@ def rewriters(monkeypatch):
     `built` is what proves the slot is being filled at all; the engine's own
     `loaded_rewriter` is what proves it gets emptied.
     """
-    if NO_MLX:
-        pytest.skip("MLX requires a Metal device; not available in CI")
     from qds.rewrite import weights as rewrite_weights
 
     class Built(list):

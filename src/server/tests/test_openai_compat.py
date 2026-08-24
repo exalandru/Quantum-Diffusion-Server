@@ -41,6 +41,9 @@ def test_model_list_is_conformant(client):
         "krea-2-turbo",
         "qwen-image-2512",
         "qwen-image-flash",
+        "sd35-large",
+        "sd35-large-turbo",
+        "sd35-medium",
         "z-image",
         "z-image-turbo",
     }

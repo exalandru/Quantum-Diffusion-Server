@@ -20,20 +20,6 @@ from qds.engine import GenerationJob
 from qds.env import ENV_PREFIX, LEGACY_ENV_PREFIX
 from qds.settings import Settings
 
-#: MLX needs a Metal device. On a virtualised macOS CI runner there is none, and
-#: `import mlx.core` hangs or crashes there (ml-explore/mlx#3148), which stalls
-#: collection before a single test runs. `QDS_CI_NO_MLX=1` drops the files that
-#: need MLX. The name deliberately carries neither the `QDS_SERVER_` nor the
-#: `MFLUX_SERVER_` prefix: `_neutral_environment` strips those before every test,
-#: and this flag has to survive — it is read here, at collection time.
-NO_MLX = os.environ.get("QDS_CI_NO_MLX") == "1"
-
-#: Whole files, not just their MLX imports: they also import `qds` submodules
-#: that pull in MLX at module level.
-collect_ignore = (
-    ["test_anima.py", "test_upscale.py", "test_flux2_dev.py"] if NO_MLX else []
-)
-
 
 @pytest.fixture(autouse=True)
 def _neutral_environment(monkeypatch):

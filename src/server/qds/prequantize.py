@@ -195,10 +195,20 @@ def single_component_definition(definition, name: str, *, with_tokenizers: bool)
 
         @staticmethod
         def get_download_patterns():
-            patterns = [
-                f"{component.hf_subdir}/*.safetensors",
-                f"{component.hf_subdir}/*.json",
-            ]
+            # The component's own file list when it declares one, and a glob over its
+            # subdirectory otherwise. The distinction matters where a subdirectory
+            # holds more than one copy of the same weights: SD 3.5's `text_encoder_3/`
+            # ships a bf16 pair of shards beside an fp16 pair, so the glob would fetch
+            # 19 GB to convert 9.5 of them. No three-component family names files, so
+            # this narrows nothing that used to be fetched for them.
+            if component.weight_files:
+                patterns = [f"{component.hf_subdir}/{name}" for name in component.weight_files]
+                patterns.append(f"{component.hf_subdir}/*.json")
+            else:
+                patterns = [
+                    f"{component.hf_subdir}/*.safetensors",
+                    f"{component.hf_subdir}/*.json",
+                ]
             for tokenizer in tokenizers:
                 patterns.extend(tokenizer.download_patterns or [f"{tokenizer.hf_subdir}/**"])
             return patterns
@@ -228,12 +238,21 @@ def tokenizers_present(dest: Path, definition) -> bool:
 def _quantization_units(module) -> list:
     """Submodules to quantize separately, to bound the memory peak.
 
-    `transformer_blocks` / `single_transformer_blocks` for the transformer,
-    `layers` for the text encoder. The VAE has none: it is small enough for the
-    global pass.
+    `transformer_blocks` / `single_transformer_blocks` for the transformer, `layers`
+    for the text encoder, `t5_blocks` for mflux's T5-XXL tower — the one SD 3.5 reuses
+    for its third encoder, whose 24 blocks are 9.5 GB at bf16 and so are exactly the
+    kind of thing this splitting exists for. The VAE has none under any of these
+    names: it is small enough for the global pass.
+
+    Names, not types, because a family's blocks are whatever its own module calls
+    them. A module with none of these attributes is quantized in one pass by the head
+    sweep in `_quantize_incrementally`, which is correct but not memory-bounded — so a
+    large component whose block list is under some other name must be added here.
+    `qds/sd35/clip.py` takes the other route and exposes its encoder layers as
+    `layers`, which this already finds.
     """
     units: list = []
-    for attr in ("transformer_blocks", "single_transformer_blocks", "layers"):
+    for attr in ("transformer_blocks", "single_transformer_blocks", "layers", "t5_blocks"):
         units.extend(getattr(module, attr, None) or [])
     return units
 

@@ -66,6 +66,12 @@ CLASS_NAME_TO_FAMILY: dict[str, str] = {
     # diffusers `transformer/` shards) through its own variant selector, so a
     # local diffusers-format directory is a real thing to accept.
     "Krea2Transformer2DModel": "krea2",
+    # From the three `stabilityai/stable-diffusion-3.5-*` repositories'
+    # `transformer/config.json`, read once gated access was granted. All three declare
+    # the same class: what tells Medium from Large is `num_layers` (24 vs 38), which a
+    # directory does declare but which this table deliberately does not read — identity
+    # is the family, and the row a directory is bound to is a separate question.
+    "SD3Transformer2DModel": "sd35",
 }
 
 #: Detected families a catalogue family will accept, beyond its own name.

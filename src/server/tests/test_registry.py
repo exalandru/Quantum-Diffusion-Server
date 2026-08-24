@@ -19,7 +19,7 @@ from qds.registry import (
 from qds.settings import ModelOverride, Settings, load_settings
 
 
-def test_the_catalogue_exposes_fourteen_models():
+def test_the_catalogue_exposes_seventeen_models():
     registry = build_registry({})
     assert set(registry) == {
         "anima",
@@ -34,6 +34,9 @@ def test_the_catalogue_exposes_fourteen_models():
         "krea-2-turbo",
         "qwen-image-2512",
         "qwen-image-flash",
+        "sd35-large",
+        "sd35-large-turbo",
+        "sd35-medium",
         "z-image",
         "z-image-turbo",
     }
@@ -528,3 +531,78 @@ def test_ideogram_keeps_the_step_count_of_its_preset():
     spec = BASE_SPECS_BY_KEY["ideogram-4"]
     assert spec.default_steps == 20
     assert spec.preset == "V4_DEFAULT_20"
+
+
+def test_the_three_stable_diffusion_35_rows_report_what_the_models_accept():
+    """Defaults are the cards' own, and the distilled row refuses what it cannot use."""
+    registry = build_registry({})
+
+    medium = registry["sd35-medium"]
+    large = registry["sd35-large"]
+    turbo = registry["sd35-large-turbo"]
+
+    for spec in (medium, large, turbo):
+        assert spec.family == "sd35"
+        assert spec.gated is True
+        assert spec.license == "Stability AI Community"
+        assert spec.scheduler == "flow_match_euler_discrete"
+        assert spec.supports_image_to_image is True
+        assert spec.edit is None
+        assert spec.prompt_formats == ("text",)
+        # `pos_embed_max_size` bounds the large releases at 1536px structurally; the
+        # same ceiling is applied to Medium, whose card trains to 1440.
+        assert (spec.min_dimension, spec.max_dimension) == (512, 1536)
+
+    # From each card's own diffusers example, not from mflux's blanket defaults.
+    assert (medium.default_steps, medium.default_guidance) == (40, 4.5)
+    assert (large.default_steps, large.default_guidance) == (28, 3.5)
+    assert (turbo.default_steps, turbo.default_guidance) == (4, 0.0)
+
+    # Medium and Large run real classifier-free guidance, so a negative prompt has an
+    # unconditional branch to go in. Large Turbo is adversarially distilled to run at
+    # guidance 0.0: there is no such branch, so both are refused rather than ignored.
+    assert medium.supports_guidance is True and medium.supports_negative_prompt is True
+    assert large.supports_guidance is True and large.supports_negative_prompt is True
+    assert turbo.supports_guidance is False and turbo.supports_negative_prompt is False
+
+    # bf16 for Medium (~16 GB whole), 8-bit for the large pair: their bf16 peak while
+    # quantizing on the way in is ~41 GB, which fits 64 GB and not 32.
+    assert medium.quantize is None
+    assert large.quantize == 8 and turbo.quantize == 8
+
+
+def test_stable_diffusion_35_ships_disabled_like_every_other_gated_model():
+    registry = build_registry({})
+    for key in ("sd35-medium", "sd35-large", "sd35-large-turbo"):
+        assert BASE_SPECS_BY_KEY[key].gated is True
+        # Enabled-by-default is the shipped config's decision, and it says no.
+        assert registry[key].enabled is True  # the bare catalogue enables everything
+    settings = load_settings(Path(__file__).resolve().parent.parent / "server-config.json")
+    shipped = settings.registry()
+    assert not [key for key in shipped if key.startswith("sd35")]
+
+
+def test_stable_diffusion_35_publishes_the_generic_quantization_capability():
+    """Keyed by family, so all three rows get it — and all five components with it."""
+    from qds import components
+    from qds.registry import STRATEGY_QDS_MEMORY_BOUNDED, capability_for
+
+    capability = capability_for("sd35")
+    assert capability.supports_quantization is True
+    assert capability.supports_prequantize is True
+    assert capability.prequantize_strategy == STRATEGY_QDS_MEMORY_BOUNDED
+    assert len(components.components_for("sd35")) == 5
+
+
+def test_stable_diffusion_35_needs_no_engine_special_case():
+    """A standard family: `latent_creator_for` answers, and nothing else is bespoke."""
+    from qds.registry import latent_creator_for
+
+    creator = latent_creator_for("sd35")
+    assert creator is not None
+    assert hasattr(creator, "unpack_latents")
+    # Previews carry plain `[1, 16, h/8, w/8]` latents; unpacking is the identity.
+    import mlx.core as mx
+
+    latents = mx.zeros((1, 16, 8, 8))
+    assert creator.unpack_latents(latents, 64, 64) is latents

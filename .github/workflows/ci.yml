@@ -1,17 +1,13 @@
 name: CI
 
-# Runs the same gates as `make test` + `make lint`, so a broken suite cannot
-# ship undetected.
+# Static gates for the server, plus the full dashboard and menubar suites.
 #
-# Runner choice — limitation, recorded deliberately:
-# The `server` job runs on macOS rather than Linux because the server test
-# suite executes MLX ops, and MLX has no Linux build (no `libmlx.so`); the
-# imports fail outright on `ubuntu-latest`. The macOS runners are virtualised
-# and have no Metal device, where `import mlx.core` itself hangs or crashes
-# (ml-explore/mlx#3148) — it used to stall pytest collection for the whole job.
-# `QDS_CI_NO_MLX=1` therefore drops the MLX-specific tests here; they still run
-# in full on a dev machine, where Metal is available. That is a known
-# limitation of the runner environment, not of the code.
+# The server suite is NOT run here, deliberately. It exercises MLX, which needs
+# a Metal device: there is no Linux build (no `libmlx.so`, so `ubuntu-latest`
+# fails at import), and the virtualised macOS runners expose no GPU, where
+# `import mlx.core` hangs rather than failing (ml-explore/mlx#3148). Running it
+# here stalls the job until it times out. The suite is run on a dev machine,
+# where Metal is available: `make test`. CI keeps the server honest with ruff.
 
 on:
   push:
@@ -20,20 +16,14 @@ on:
 
 jobs:
   server:
-    runs-on: macos-latest
-    env:
-      QDS_CI_NO_MLX: "1"
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.13"
-      - name: Install dependencies
-        run: uv sync --project src/server
       - name: Ruff
-        run: uv run --project src/server ruff check src/server
-      - name: Pytest
-        run: uv run --project src/server python -m pytest src/server/tests -x -q
+        run: uvx ruff check src/server
 
   dashboard:
     runs-on: ubuntu-latest

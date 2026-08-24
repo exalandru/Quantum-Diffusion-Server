@@ -127,3 +127,30 @@ def test_every_mapped_family_has_a_slice5_capability():
         capability = capability_for(family)
         assert capability.note is None or capability.supports_quantization is not None
         assert any(spec.family == family for spec in BASE_SPECS_BY_KEY.values()), family
+
+
+def test_a_stable_diffusion_35_directory_is_identified(tmp_path):
+    """`SD3Transformer2DModel` is what all three releases' `transformer/config.json` says.
+
+    Identity is the family, not the row: Medium and the two large releases declare
+    the same class and are told apart by `num_layers`, which this table deliberately
+    does not read. Which catalogue row a directory binds to is a separate question,
+    answered by `compatible_profiles`.
+    """
+    source = make_source(
+        tmp_path / "sd35",
+        class_name="SD3Transformer2DModel",
+        components=("transformer", "vae", "text_encoder", "text_encoder_2", "text_encoder_3"),
+    )
+    verdict = inspect(str(source))
+    assert verdict.ok
+    assert verdict.family == "sd35"
+    assert verdict.class_name == "SD3Transformer2DModel"
+    assert CLASS_NAME_TO_FAMILY["SD3Transformer2DModel"] == "sd35"
+
+    profiles = compatible_profiles(verdict.family)
+    assert set(profiles) == {
+        "sd35-medium",
+        "sd35-large",
+        "sd35-large-turbo",
+    }

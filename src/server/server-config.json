@@ -100,6 +100,30 @@
       "default_guidance": null,
       "quantize": null
     },
+    "sd35-medium": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": null
+    },
+    "sd35-large": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": 8
+    },
+    "sd35-large-turbo": {
+      "enabled": false,
+      "model_path": null,
+      "default_size": null,
+      "default_steps": null,
+      "default_guidance": null,
+      "quantize": 8
+    },
     "krea-2-turbo": {
       "enabled": false,
       "model_path": null,

@@ -24,7 +24,7 @@ qds serve
 
 mflux is a project dependency — no need for a separate `uv tool install mflux`. Weights already present in the HuggingFace cache are reused as-is.
 
-Nothing else is required to generate: the two models enabled by default are ungated and Apache-2.0. Five of the ten catalogue entries *are* gated (`black-forest-labs/*`, `briaai/*`, `ideogram-ai/*`) and need a HuggingFace token with approved access (`hf auth login`) — they ship disabled for that reason. `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
+Nothing else is required to generate: the two models enabled by default are ungated and Apache-2.0. Nine of the seventeen catalogue entries *are* gated (`black-forest-labs/*`, `stabilityai/*`, `krea/*`, `briaai/*`, `ideogram-ai/*`) and need a HuggingFace token with approved access (`hf auth login`) — they ship disabled for that reason. `flux2-dev` additionally requires a conversion step, see [FLUX.2-dev](#flux2-dev--32b-in-8-bit).
 
 ## The `qds` command
 
@@ -93,21 +93,25 @@ What it costs is the figure in the table above, read the other way: ~16 s of rel
 
 ## Models
 
-| key | repo | licence | gated | on | steps | guidance | prompt | negative | img2img | editing |
-|---|---|---|---|---|---|---|---|---|---|---|
-| `z-image-turbo` *(default)* | `mlx-community/Z-Image-Turbo-bf16` | Apache-2.0 | — | ✅ | 9 | forced to 0 | text | ✅ | ✅ | ❌ |
-| `ernie-image-turbo` | `baidu/ERNIE-Image-Turbo` | Apache-2.0 | — | ✅ | 8 | fixed at 1.0 | text | ❌ | ✅ | ❌ |
-| `z-image` | `mlx-community/Z-Image-bf16` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
-| `ernie-image` | `baidu/ERNIE-Image` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | ❌ |
-| `qwen-image-flash` | `nvidia/Qwen-Image-Flash` | **NVIDIA Open Model** | — | ❌ | 4 | 1.0 *(adjustable)* | text | ✅ | ✅ | ❌ |
-| `qwen-image-2512` | `Qwen/Qwen-Image-2512` | Apache-2.0 | — | ❌ | 50 | 4.0 | text | ✅ | ✅ | opt-in |
-| `flux2-klein` | `black-forest-labs/FLUX.2-klein-9B` | **FLUX Non-Commercial** | 🔒 | ❌ | 4 | fixed at 1.0 | text | ❌ | ✅ | ✅ |
-| `flux2-dev` | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | ❌ | 50 | 4.0 | text | ❌ | ✅ | ❌ |
-| `anima-turbo` | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | ❌ | 10 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
-| `anima` *(aesthetic)* | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | ❌ | 30 | 4.5 | text | ✅ | ✅ | ❌ |
-| `krea-2-turbo` | `krea/Krea-2-Turbo` | **Krea 2 Community** | 🔒 | ❌ | 8 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
-| `fibo-lite` | `briaai/Fibo-lite` | **CC-BY-NC-4.0** | 🔒 | ❌ | 8 | fixed at 1.0 | **json** | ❌ | ✅ | ❌ |
-| `fibo` | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | ❌ | 50 | 5.0 | **json** | ✅ | ✅ | ❌ |
+| model | repo | licence | gated | steps | guidance | prompt | negative | img2img | editing |
+|---|---|---|---|---|---|---|---|---|---|
+| **Z-Image Turbo** (`z-image-turbo`) | `mlx-community/Z-Image-Turbo-bf16` | Apache-2.0 | — | 9 | forced to 0 | text | ✅ | ✅ | ❌ |
+| **Ernie Turbo** (`ernie-image-turbo`) | `baidu/ERNIE-Image-Turbo` | Apache-2.0 | — | 8 | fixed at 1.0 | text | ❌ | ✅ | ❌ |
+| **Z-Image** (`z-image`) | `mlx-community/Z-Image-bf16` | Apache-2.0 | — | 50 | 4.0 | text | ✅ | ✅ | ❌ |
+| **Ernie** (`ernie-image`) | `baidu/ERNIE-Image` | Apache-2.0 | — | 50 | 4.0 | text | ✅ | ✅ | ❌ |
+| **Qwen Image Flash** (`qwen-image-flash`) | `nvidia/Qwen-Image-Flash` | **NVIDIA Open Model** | — | 4 | 1.0 *(adjustable)* | text | ✅ | ✅ | ❌ |
+| **Qwen Image 2512** (`qwen-image-2512`) | `Qwen/Qwen-Image-2512` | Apache-2.0 | — | 50 | 4.0 | text | ✅ | ✅ | opt-in |
+| **Flux 2 Klein** (`flux2-klein`) | `black-forest-labs/FLUX.2-klein-9B` | **FLUX Non-Commercial** | 🔒 | 4 | fixed at 1.0 | text | ❌ | ✅ | ✅ |
+| **Flux 2 Dev** (`flux2-dev`) | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | 50 | 4.0 | text | ❌ | ✅ | ❌ |
+| **Anima Turbo** (`anima-turbo`) | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | 10 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
+| **Anima** (`anima`) | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | 30 | 4.5 | text | ✅ | ✅ | ❌ |
+| **Stable Diffusion 3.5 Medium** (`sd35-medium`) | `stabilityai/stable-diffusion-3.5-medium` | **Stability AI Community** | 🔒 | 40 | 4.5 | text | ✅ | ✅ | ❌ |
+| **Stable Diffusion 3.5 Large** (`sd35-large`) | `stabilityai/stable-diffusion-3.5-large` | **Stability AI Community** | 🔒 | 28 | 3.5 | text | ✅ | ✅ | ❌ |
+| **Stable Diffusion 3.5 Large Turbo** (`sd35-large-turbo`) | `stabilityai/stable-diffusion-3.5-large-turbo` | **Stability AI Community** | 🔒 | 4 | fixed at 0.0 | text | ❌ | ✅ | ❌ |
+| **Krea 2 Turbo** (`krea-2-turbo`) | `krea/Krea-2-Turbo` | **Krea 2 Community** | 🔒 | 8 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
+| **FIBO Lite** (`fibo-lite`) | `briaai/Fibo-lite` | **CC-BY-NC-4.0** | 🔒 | 8 | fixed at 1.0 | **json** | ❌ | ✅ | ❌ |
+| **FIBO** (`fibo`) | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | 50 | 5.0 | **json** | ✅ | ✅ | ❌ |
+| **Ideogram 4** (`ideogram-4`) | `ideogram-ai/ideogram-4-fp8` | **Ideogram 4 Non-Commercial** | 🔒 | 20 *(preset)* | preset | text + json | ❌ | ❌ | ❌ |
 
 The step and guidance columns are each model's own published defaults, taken
 from its card rather than from mflux — which applies blanket values (20 steps,
@@ -118,7 +122,6 @@ gives a range, the column shows what this server picks: `z-image` publishes
 They are defaults, not requirements. Every one is overridable per model in
 `server-config.json`, and the five 50-step rows are where that is worth doing
 if a generation costs more time than it is worth to you.
-| `ideogram-4` | `ideogram-ai/ideogram-4-fp8` | **Ideogram 4 Non-Commercial** | 🔒 | ❌ | 20 *(preset)* | preset | text + json | ❌ | ❌ | ❌ |
 
 **The two models on by default are Apache-2.0 and ungated**, which is the point: a fresh install generates with no HuggingFace token, no access request, and no licence to accept. Everything else ships off — the gated and non-commercial ones because obtaining access is your decision, the rest because a 20-step base model is not a good first impression. Turn any of them on in the config, or in the app's Configuration tab.
 

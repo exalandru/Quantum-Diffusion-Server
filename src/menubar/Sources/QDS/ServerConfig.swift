@@ -104,6 +104,14 @@ struct ServerConfig {
                 // accepting the licence is still the user's decision.
                 "anima": ["enabled": false],
                 "anima-turbo": ["enabled": false],
+                // Gated, and free commercially only under Stability's $1M annual
+                // revenue threshold — so they ship off, like every other model whose
+                // licence the server cannot evaluate for the user. The two large
+                // releases carry a bit depth: ~27.6 GB at bf16, and quantizing them
+                // on the way in needs both copies resident.
+                "sd35-medium": ["enabled": false],
+                "sd35-large": ["enabled": false, "quantize": 8],
+                "sd35-large-turbo": ["enabled": false, "quantize": 8],
                 // Gated, and free commercially only under Krea's revenue and
                 // seat thresholds — so it ships off, like the other models
                 // whose licence the server cannot evaluate for the user.
