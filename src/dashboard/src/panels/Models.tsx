@@ -6,11 +6,11 @@ import { messageOf } from "../api";
 import { ActionNote, useActions } from "../actions";
 import { describeJob, describeOutcome, type JobView } from "../job";
 import { Modal } from "../modal";
+import { SizeBadge } from "./models/SizeBadge";
+import { Switch } from "./models/Switch";
 import {
   ACTION,
-  formatBytes,
   componentStates,
-  describeEntry,
   OPEN_TAB,
   CATALOGUE_TABS,
   lastChoice,
@@ -20,7 +20,6 @@ import type { CatalogueTab, RowProps } from "./models/shared";
 import type {
   Capabilities,
   ConfigWarning,
-  DiskReport,
   ImportVerdict,
   JobStatus,
   ModelCapabilities,
@@ -638,37 +637,6 @@ function CatalogueGroup({
 }
 
 /**
- * A real switch.
- *
- * `role="switch"` with `aria-checked` rather than a styled checkbox or, as
- * before, an ON/OFF pill that looked interactive and was not: the state has to be
- * in the accessibility tree, not only in the pixels.
- */
-function Switch({
-  checked,
-  label,
-  disabled,
-  onChange,
-}: {
-  checked: boolean;
-  label: string;
-  disabled?: boolean;
-  onChange: (next: boolean) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      className="switch"
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-    />
-  );
-}
-
-/**
  * One model, read top to bottom: what it is, what state its weights are in,
  * where it comes from, and what can be done to it.
  *
@@ -978,71 +946,6 @@ function ModelRow({
         />
       )}
     </li>
-  );
-}
-
-/**
- * How much disk this model is using, and what for.
- *
- * A `<details>` rather than a tooltip, for one reason: a tooltip is reachable
- * only with a pointer, and this is the only place the breakdown exists. The
- * summary is a real button to a keyboard and to a screen reader, and the
- * disclosure below it is the same information a hover would have shown.
- *
- * Nothing is estimated. A representation whose size nobody measured is left out
- * rather than derived from the source size and a bit depth, and a model whose
- * weights are not on this machine has no disk usage to report at all — its
- * catalogue size is what a download would cost, which is a different question
- * and is labelled as one.
- */
-function SizeBadge({
-  disk,
-  activeVariant,
-}: {
-  disk: DiskReport;
-  activeVariant: number | null;
-}) {
-  const active = formatBytes(disk.active_bytes);
-  if (!active) return null;
-  const total = formatBytes(disk.total_bytes);
-  // One representation and nothing else on disk: the breakdown would repeat the
-  // badge back at the reader.
-  const worthExpanding = disk.breakdown.length > 1;
-
-  const label = activeVariant === null ? "active" : `active · ${activeVariant}-bit`;
-  if (!worthExpanding) {
-    return (
-      <span className="pill" title={`${active} on disk`}>
-        {active}
-      </span>
-    );
-  }
-
-  return (
-    <details className="size-pop">
-      <summary className="pill" title="What this model occupies on disk">
-        {active} <span className="size-pop-hint">{label}</span>
-      </summary>
-      <div className="size-pop-body" role="group" aria-label="Disk usage">
-        <dl className="size-breakdown">
-          {disk.breakdown.map((entry) => (
-            <div key={entry.path} className="size-line">
-              <dt>
-                {describeEntry(entry)}
-                {entry.kind === "variant" && entry.bits === activeVariant && (
-                  <span className="pill pill-accent">active</span>
-                )}
-              </dt>
-              <dd>{formatBytes(entry.bytes) ?? "-"}</dd>
-            </div>
-          ))}
-          <div className="size-line size-total">
-            <dt>Total</dt>
-            <dd>{total ?? "-"}</dd>
-          </div>
-        </dl>
-      </div>
-    </details>
   );
 }
 
