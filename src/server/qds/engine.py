@@ -239,6 +239,11 @@ class RewriteJob:
     #: Seeds the sampler. The same prompt and seed give the same rewrite --
     #: useful, but not what makes a generation reproducible: that comes from
     #: `generations.rewritten_prompt` being recorded and replayed.
+    #:
+    #: The default is a debugging convenience, not the shipped behaviour:
+    #: `Admission.build_rewrite_job` draws a fresh seed per rewrite, because a
+    #: fixed one made every enhancement of the same prompt byte-identical. Only
+    #: `rewrite_cli` still relies on the default, where determinism is the point.
     seed: int = 0
 
 

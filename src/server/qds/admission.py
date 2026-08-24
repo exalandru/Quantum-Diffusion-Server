@@ -224,6 +224,19 @@ class Admission:
         settings object is the one the app was built with, so this reflects a
         configuration reload, and a runner holding a job built minutes earlier
         would not.
+
+        The seed is drawn here, per rewrite, and that is a behaviour change with
+        a measured cause. `RewriteJob.seed` defaults to 0 and nothing was passing
+        one, so every rewrite of the same prompt was byte-identical -- confirmed
+        in a playground database where one prompt enhanced six times produced six
+        identical expansions. Measured across the evaluation set, 13 of 31
+        prompts change defect status between seeds, so a fixed seed does not mean
+        "the best expansion", it means "the same one, good or bad, forever".
+
+        No setting and no control for it, deliberately: the user toggles Enhance
+        and it works. Reproducing a *generation* does not go through here at all
+        -- it replays `generations.rewritten_prompt` on the carried path in
+        `check_rewrite`, which never calls the rewriter.
         """
         spec = self.settings.rewriter()
         if spec is None:
@@ -239,6 +252,7 @@ class Admission:
             max_new_tokens=rewrite.max_new_tokens,
             temperature=rewrite.temperature,
             timeout_s=rewrite.timeout_s,
+            seed=random.randint(0, MAX_SEED),
         )
 
     # ── Admission ──────────────────────────────────────────────────────────
