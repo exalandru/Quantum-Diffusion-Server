@@ -6,8 +6,11 @@ name: CI
 # Runner choice — limitation, recorded deliberately:
 # The `server` job runs on macOS rather than Linux because the server test
 # suite executes MLX ops, and MLX has no Linux build (no `libmlx.so`); the
-# imports fail outright on `ubuntu-latest`. On a macOS runner without a Metal
-# device those same tests would fail for lack of a GPU. That is a known
+# imports fail outright on `ubuntu-latest`. The macOS runners are virtualised
+# and have no Metal device, where `import mlx.core` itself hangs or crashes
+# (ml-explore/mlx#3148) — it used to stall pytest collection for the whole job.
+# `QDS_CI_NO_MLX=1` therefore drops the MLX-specific tests here; they still run
+# in full on a dev machine, where Metal is available. That is a known
 # limitation of the runner environment, not of the code.
 
 on:
@@ -18,6 +21,8 @@ on:
 jobs:
   server:
     runs-on: macos-latest
+    env:
+      QDS_CI_NO_MLX: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
