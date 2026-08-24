@@ -89,23 +89,48 @@ Launch it: it lives in the menu bar, with no window and no Dock icon.
 
 | model | licence | RAM/VRAM | notes |
 |---|---|---|---|
-| **Z-Image Turbo** `z-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 9 steps, fast |
-| **Ernie Turbo** `ernie-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 8 steps, fast |
-| **Z-Image** `z-image` | Apache-2.0 | a few GB (8-bit) | 20 steps, adjustable guidance |
-| **Ernie** `ernie-image` | Apache-2.0 | a few GB (8-bit) | 20 steps |
 | **Qwen Image Flash** `qwen-image-flash` | NVIDIA Open Model | ~15 GB | Qwen-Image distilled to 4 steps |
 | **Qwen Image 2512** `qwen-image-2512` | Apache-2.0 | ~55 GB | 20B, strong text rendering, optional editing |
-| **Flux 2 Klein** `flux2-klein` | FLUX Non-Commercial 🔒 | ~15 GB | 9B distilled, 4 steps, instruction editing |
-| **Flux 2 Dev** `flux2-dev` | FLUX Non-Commercial 🔒 | ~58 GB | 32B; pre-quantized variants keep peak memory bounded |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
+| **Krea 2 Turbo** `krea-2-turbo` | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, adjustable guidance |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
 | **Anima Turbo** `anima-turbo` | CircleStone Non-Commercial | a few GB | 2B anime-oriented, distilled to 10 steps |
 | **Anima** `anima` | CircleStone Non-Commercial | a few GB | undistilled aesthetic fine-tune, 30 steps |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
 | **Stable Diffusion 3.5 Large Turbo** `sd35-large-turbo` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8B distilled, 4 steps, guidance fixed off |
 | **Stable Diffusion 3.5 Large** `sd35-large` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps; pre-quantize to avoid a ~41 GB bf16 peak |
 | **Stable Diffusion 3.5 Medium** `sd35-medium` | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
-| **Krea 2 Turbo** `krea-2-turbo` | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, adjustable guidance |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
+| **Flux 2 Klein** `flux2-klein` | FLUX Non-Commercial 🔒 | ~15 GB | 9B distilled, 4 steps, instruction editing |
+| **Flux 2 Dev** `flux2-dev` | FLUX Non-Commercial 🔒 | ~58 GB | 32B; pre-quantized variants keep peak memory bounded |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
+| **Z-Image Turbo** `z-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 9 steps, fast |
+| **Z-Image** `z-image` | Apache-2.0 | a few GB (8-bit) | 20 steps, adjustable guidance |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
 | **FIBO Lite** `fibo-lite` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON |
 | **FIBO** `fibo` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON, 50 steps |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
+| **Ernie Turbo** `ernie-image-turbo` | Apache-2.0 | a few GB (8-bit) | on out of the box; 8 steps, fast |
+| **Ernie** `ernie-image` | Apache-2.0 | a few GB (8-bit) | 20 steps |
+
+| model | licence | RAM/VRAM | notes |
+|---|---|---|---|
 | **Ideogram 4** `ideogram-4` | Ideogram Non-Commercial 🔒 | a few GB | sampler presets instead of a step count |
+
 
 The name in bold is what the Models tab shows; the code beside it is what an API request puts in `"model"`.
 
