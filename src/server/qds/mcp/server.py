@@ -579,7 +579,7 @@ def build_server(deps) -> Any:
             )
         source = _replayable(image)
         session = session_for(ctx, source["session_id"])
-        # Admission, the render budget and the copy all belong to the closure
+        # Admission, the render budget and the copy all belong to the method
         # the HTTP route uses. This tool chooses a default upscaler and nothing
         # more; every refusal below it is the same refusal a browser would get.
         record = deps.submit_upscale(

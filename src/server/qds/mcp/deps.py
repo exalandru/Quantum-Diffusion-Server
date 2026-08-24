@@ -1,16 +1,16 @@
 """What the MCP tools are handed, instead of what they could reach for.
 
-Every validator here already exists as a closure inside `create_app`, and this
-bundle exists so that MCP calls *those* rather than its own. That is INV-1, and
-it is the difference between a second plane and a second set of rules: a check
-added to `playground_generate` tomorrow reaches MCP for free, because there is
-one implementation, not two that look alike.
+Every validator here is a bound method of the one `qds.admission.Admission`
+that `create_app` built, so MCP calls *those* rather than its own. That is
+INV-1, and it is the difference between a second plane and a second set of
+rules: a check added to `Admission` tomorrow reaches MCP for free, because
+there is one implementation, not two that look alike.
 
 The pattern is `PlaygroundRunner`'s. It takes `resolve_spec`, `resolve_upscaler`
 and `build_rewrite_job` for the reason its own docstring gives -- it is handed
 how to look things up rather than reaching into a catalogue itself -- and this
-is the same arrangement one layer out. Nothing moves out of `create_app`; `/v1`
-is untouched.
+is the same arrangement one layer out. Nothing is reimplemented here; `/v1` and
+the playground consult the same object.
 
 Values, not a `Request` or an app: the tools run on a mounted application that
 never sees FastAPI's dependency machinery, so anything they need must be here at
@@ -47,7 +47,7 @@ class MCPDeps:
     check_n: Callable[[int], None]
     seeds_for: Callable[[int | None, int], list[int]]
 
-    #: Admit, copy and enqueue an upscale -- the very closure
+    #: Admit, copy and enqueue an upscale -- the very method
     #: `POST /playground/api/sessions/{id}/upscales` calls. The render-budget
     #: arithmetic and the "only this session's images" rule live there, once.
     submit_upscale: Callable[..., dict]

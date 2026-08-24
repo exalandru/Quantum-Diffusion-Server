@@ -1,10 +1,18 @@
-"""OpenAI-Images-compatible HTTP API.
+"""The application assembler.
 
-Standard endpoints: `/v1/models`, `/v1/models/{id}`, `/v1/images/generations`,
-`/v1/images/edits`. Local extensions: `/health`, `/v1/capabilities`,
-`/v1/progress`, `/v1/cancel`, `/v1/unload`, plus the `steps`, `seed`,
-`guidance`, `negative_prompt` and `strength` request fields — extra fields that
-the OpenAI SDKs simply ignore.
+`create_app` builds the collaborators an application is made of — settings,
+engine, image store, playground store, sessions, authentication and the shared
+`Admission` — then mounts the planes over them:
+
+* `qds.v1_routes` — `/health` and the OpenAI-compatible `/v1` plane;
+* `qds.playground_routes` — `/playground/api` and the playground's images;
+* `qds.admin` — the control plane and the session router;
+* `qds.mcp` — a mounted ASGI application at `/mcp`.
+
+What stays here is what belongs to the application rather than to a plane: the
+middleware that bounds every response, the dashboard mounts, the lifespan, and
+`create_recovery_app` — the deliberately minimal server a broken configuration
+gets instead.
 """
 
 from __future__ import annotations
@@ -17,21 +25,17 @@ import tempfile
 from collections.abc import Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
-from fastapi import APIRouter, Depends, FastAPI, Header, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
 
 from qds import __version__, admin, credential, logbuffer, playground_lock
 from qds import settings as settings_module
-from qds.admission import (
-    Admission,
-    _capabilities,
-)
+from qds.admission import Admission, _capabilities
 from qds.auth import build_authorizer, build_dependencies
 from qds.engine import ModelEngine
 from qds.errors import APIError, error_payload, install_exception_handlers
@@ -63,48 +67,6 @@ logger = logging.getLogger(SERVER_LOGGER)
 #: than a new number: 8192x8192 is the largest image this server will produce, so
 #: it is the largest one it ever has cause to read back.
 Image.MAX_IMAGE_PIXELS = upscale_catalogue.MAX_RENDER_PIXELS
-
-
-#: An unlock token, as the playground sends it. Module-level on purpose: with
-#: postponed annotations FastAPI resolves names in the module namespace, so a
-#: local alias inside `create_app` would be read as a required body field.
-SessionToken = Annotated[str | None, Header(alias=playground_lock.UNLOCK_HEADER)]
-
-
-class RenameRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    #: `None` or blank clears the title back to "first prompt".
-    title: str | None = Field(default=None, max_length=1000)
-
-
-class QueueStateRequest(BaseModel):
-    """Hold or release the playground queue."""
-
-    model_config = ConfigDict(extra="forbid")
-    paused: bool
-
-
-class SessionPasswordRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    password: str
-
-
-class UpscaleRequest(BaseModel):
-    """Enlarge an image the session already owns.
-
-    No image bytes: `image` names a file the server wrote and can attribute.
-    `model` and `scale` are checked against the catalogue in the route rather
-    than by an enum here, so the error names the valid values.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    #: Filename of a *generated* image, as served by `/playground/images/`.
-    image: str = Field(max_length=255)
-    model: str = Field(max_length=64)
-    scale: int
-    #: Feed entry to join. Defaults to the source's, so an upscale grows the
-    #: entry its image came from rather than starting a new one.
-    group: str | None = Field(default=None, max_length=64)
 
 
 def _restart_unavailable() -> None:
@@ -372,7 +334,7 @@ def create_app(
     app.mount("/images", StaticFiles(directory=store.directory), name="images")
     # Playground images are *not* a mount: a session can be locked, and a file
     # must then not be served without the session's unlock token. See the
-    # `/playground/images/{filename}` route below.
+    # `/playground/images/{filename}` route in `qds/playground_routes.py`.
 
     # ── Authentication ─────────────────────────────────────────────────────
     #
