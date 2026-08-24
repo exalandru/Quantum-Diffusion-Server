@@ -11,8 +11,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from qds.app import create_app, progress_events
+from qds.app import create_app
 from qds.settings import Settings, load_settings
+from qds.v1_routes import progress_events
 from tests.conftest import make_client, tiny_png, wait_until
 
 
