@@ -62,6 +62,10 @@ export function model(patch: Partial<ModelStatus> = {}): ModelStatus {
     api_name: "z-image-turbo",
     base_profile_key: null,
     family: "z-image",
+    // Unlabelled by default, so a test that is about a row says nothing about
+    // releases: the panel renders these as one plain list. The tests that *are*
+    // about grouping set it themselves.
+    group_label: null,
     can_download: true,
     size_gb: 12.5,
     files: 9,

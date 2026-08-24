@@ -105,9 +105,9 @@ What it costs is the figure in the table above, read the other way: ~16 s of rel
 | **Flux 2 Dev** (`flux2-dev`) | local 8-bit artifact | **FLUX Non-Commercial** | 🔒 | 50 | 4.0 | text | ❌ | ✅ | ❌ |
 | **Anima Turbo** (`anima-turbo`) | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | 10 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
 | **Anima** (`anima`) | `circlestone-labs/Anima` | **CircleStone Non-Commercial** | — | 30 | 4.5 | text | ✅ | ✅ | ❌ |
-| **Stable Diffusion 3.5 Medium** (`sd35-medium`) | `stabilityai/stable-diffusion-3.5-medium` | **Stability AI Community** | 🔒 | 40 | 4.5 | text | ✅ | ✅ | ❌ |
-| **Stable Diffusion 3.5 Large** (`sd35-large`) | `stabilityai/stable-diffusion-3.5-large` | **Stability AI Community** | 🔒 | 28 | 3.5 | text | ✅ | ✅ | ❌ |
 | **Stable Diffusion 3.5 Large Turbo** (`sd35-large-turbo`) | `stabilityai/stable-diffusion-3.5-large-turbo` | **Stability AI Community** | 🔒 | 4 | fixed at 0.0 | text | ❌ | ✅ | ❌ |
+| **Stable Diffusion 3.5 Large** (`sd35-large`) | `stabilityai/stable-diffusion-3.5-large` | **Stability AI Community** | 🔒 | 28 | 3.5 | text | ✅ | ✅ | ❌ |
+| **Stable Diffusion 3.5 Medium** (`sd35-medium`) | `stabilityai/stable-diffusion-3.5-medium` | **Stability AI Community** | 🔒 | 40 | 4.5 | text | ✅ | ✅ | ❌ |
 | **Krea 2 Turbo** (`krea-2-turbo`) | `krea/Krea-2-Turbo` | **Krea 2 Community** | 🔒 | 8 | 1.0 *(adjustable)* | text | ✅ *(above 1.0)* | ✅ | ❌ |
 | **FIBO Lite** (`fibo-lite`) | `briaai/Fibo-lite` | **CC-BY-NC-4.0** | 🔒 | 8 | fixed at 1.0 | **json** | ❌ | ✅ | ❌ |
 | **FIBO** (`fibo`) | `briaai/FIBO` | **CC-BY-NC-4.0** | 🔒 | 50 | 5.0 | **json** | ✅ | ✅ | ❌ |

@@ -99,9 +99,9 @@ Launch it: it lives in the menu bar, with no window and no Dock icon.
 | **Flux 2 Dev** `flux2-dev` | FLUX Non-Commercial 🔒 | ~58 GB | 32B; pre-quantized variants keep peak memory bounded |
 | **Anima Turbo** `anima-turbo` | CircleStone Non-Commercial | a few GB | 2B anime-oriented, distilled to 10 steps |
 | **Anima** `anima` | CircleStone Non-Commercial | a few GB | undistilled aesthetic fine-tune, 30 steps |
-| **Stable Diffusion 3.5 Medium** `sd35-medium` | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
-| **Stable Diffusion 3.5 Large** `sd35-large` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps; pre-quantize to avoid a ~41 GB bf16 peak |
 | **Stable Diffusion 3.5 Large Turbo** `sd35-large-turbo` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8B distilled, 4 steps, guidance fixed off |
+| **Stable Diffusion 3.5 Large** `sd35-large` | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps; pre-quantize to avoid a ~41 GB bf16 peak |
+| **Stable Diffusion 3.5 Medium** `sd35-medium` | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
 | **Krea 2 Turbo** `krea-2-turbo` | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, adjustable guidance |
 | **FIBO Lite** `fibo-lite` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON |
 | **FIBO** `fibo` | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON, 50 steps |

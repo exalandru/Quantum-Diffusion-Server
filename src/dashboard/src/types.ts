@@ -437,6 +437,9 @@ export type ModelStatus = {
   api_name: string;
   base_profile_key: string | null;
   family: string | null;
+  /** The release this row is read under, for the catalogue's sections. Never
+      the architecture `family`, and `null` for an imported model. */
+  group_label: string | null;
   /** The single authority for offering Install/Resume. */
   can_download: boolean;
   size_gb: number;

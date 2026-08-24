@@ -326,6 +326,11 @@ def cache_status() -> list[dict[str, Any]]:
                 "api_name": spec.public_name,
                 "base_profile_key": spec.base_profile_key,
                 "family": spec.family,
+                # How the catalogue is read, and only that: an imported row
+                # carries `None` because Local models is an ungrouped list, and a
+                # label inherited from its base profile would file it under a
+                # release it is not part of.
+                "group_label": spec.group_label,
                 # The single authority for offering Install/Resume.
                 "can_download": can_download,
                 "size_gb": info.get("size_gb", 0.0),

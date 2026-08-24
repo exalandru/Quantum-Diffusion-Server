@@ -941,6 +941,19 @@ select {
   margin-top: 10px;
 }
 
+/* One release — Anima's two checkpoints, Stable Diffusion 3.5's three — inside
+   the fieldset the settings form already groups by. `.settings-group` carries
+   the whole look (sunken fill, border, legend on the rim); this only says what
+   differs here, which is the rhythm between boxes and that the list inside no
+   longer needs its own top gap. */
+.catalogue-family {
+  margin-top: var(--s3);
+}
+
+.catalogue-family .models {
+  margin-top: 0;
+}
+
 /* Pushed right, so the switches line up down the list whatever each name
    happens to measure — and `flex: 0 0 auto` is what makes a long name shrink
    instead of pushing the switch off a narrow window. */

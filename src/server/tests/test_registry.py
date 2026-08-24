@@ -7,6 +7,7 @@ import pytest
 
 from qds.errors import APIError
 from qds.registry import (
+    BASE_SPECS,
     BASE_SPECS_BY_KEY,
     build_registry,
     edit_enabled,
@@ -40,6 +41,105 @@ def test_the_catalogue_exposes_seventeen_models():
         "z-image",
         "z-image-turbo",
     }
+
+
+def test_every_built_in_declares_the_release_it_is_read_under():
+    """A row with no `group_label` would have no section to render in."""
+    missing = [spec.key for spec in BASE_SPECS if not spec.group_label]
+    assert missing == []
+
+
+def test_each_release_is_one_contiguous_run_of_the_catalogue():
+    """Grouping reads the catalogue in order; it never reorders it.
+
+    The dashboard groups adjacent rows and keeps what the backend published. A
+    release split into two runs would therefore render as two sections with the
+    same legend — so contiguity here is what makes one section per release a
+    property of the data rather than of the renderer.
+    """
+    runs = []
+    for spec in BASE_SPECS:
+        if not runs or runs[-1] != spec.group_label:
+            runs.append(spec.group_label)
+    assert len(runs) == len(set(runs))
+
+
+def test_a_release_never_straddles_the_open_gated_split():
+    """The two tabs each render whole sections, so a split release would break one.
+
+    `gated` decides which tab a row is listed in. If one release held both a
+    gated and an ungated model, its section would appear cut in half on each
+    tab, with a legend claiming more than the tab shows.
+    """
+    tabs: dict[str, set[bool]] = {}
+    for spec in BASE_SPECS:
+        tabs.setdefault(spec.group_label or spec.key, set()).add(spec.gated)
+    straddling = sorted(label for label, gates in tabs.items() if len(gates) > 1)
+    assert straddling == []
+
+
+def test_each_release_lists_its_lightest_model_first():
+    """Order is the catalogue's own, and this is the intent it encodes.
+
+    A pinned expectation rather than a derived one, deliberately: nothing
+    measurable ranks these. Repository size is unknown until a model is
+    downloaded, and the ordering wanted here is generation cost — the distilled,
+    few-step row first — which no field on the spec reports. So this states the
+    intended reading order and fails when a new row is filed in the wrong place.
+    """
+    order: dict[str, list[str]] = {}
+    for spec in BASE_SPECS:
+        order.setdefault(spec.group_label or "", []).append(spec.key)
+    assert order == {
+        "FLUX.2": ["flux2-klein", "flux2-dev"],
+        "Anima": ["anima-turbo", "anima"],
+        "Stable Diffusion 3.5": ["sd35-large-turbo", "sd35-large", "sd35-medium"],
+        "Krea 2": ["krea-2-turbo"],
+        "Qwen Image": ["qwen-image-flash", "qwen-image-2512"],
+        "Z-Image": ["z-image-turbo", "z-image"],
+        "ERNIE Image": ["ernie-image-turbo", "ernie-image"],
+        "FIBO": ["fibo-lite", "fibo"],
+        "Ideogram 4": ["ideogram-4"],
+    }
+
+
+def test_the_release_label_is_not_the_architecture_family():
+    """Two facts, and FLUX.2 is where they visibly disagree.
+
+    `family` decides quantization capability, latent creation and which profiles
+    an imported directory may bind to. `group_label` decides nothing but how the
+    list reads. klein and dev ship as one release and load as two families, so a
+    label that followed `family` would split the section.
+    """
+    klein = BASE_SPECS_BY_KEY["flux2-klein"]
+    dev = BASE_SPECS_BY_KEY["flux2-dev"]
+    assert klein.group_label == dev.group_label == "FLUX.2"
+    assert klein.family != dev.family
+
+
+def test_an_imported_model_is_filed_under_no_release():
+    """It borrows a built-in's defaults, not its identity.
+
+    `imported_spec` copies the base profile wholesale, so every field it must not
+    inherit has to be cleared explicitly. Left alone, a local Z-Image directory
+    would arrive labelled "Z-Image" and claim membership of a release it is not
+    part of — and Local models is an ungrouped list with nowhere to show it.
+    """
+    from qds.library import ImportedModel
+    from qds.registry import imported_spec
+
+    spec = imported_spec(
+        ImportedModel(
+            id="local-c1587aa663c4",
+            display_name="My Z-Image",
+            path="/models/my-z-image",
+            family="z-image",
+            base_profile_key="z-image",
+            imported_at="2026-01-01T00:00:00Z",
+        )
+    )
+    assert BASE_SPECS_BY_KEY["z-image"].group_label == "Z-Image"
+    assert spec.group_label is None
 
 
 @pytest.mark.parametrize(

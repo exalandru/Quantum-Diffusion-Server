@@ -97,6 +97,36 @@ export function lastChoice(model: ModelStatus): number {
   return choices[choices.length - 1] ?? 8;
 }
 
+/**
+ * The catalogue's rows, cut into the sections it is read in.
+ *
+ * A fold over the list in the order the backend published it, never a sort: the
+ * catalogue's order is the backend's statement of which model in a release to
+ * reach for first, and re-deriving it here would make the app the second
+ * authority on it. Adjacent rows sharing a `group_label` become one section, so
+ * a release the backend split into two runs would render as two sections rather
+ * than be silently stitched back together — `test_each_release_is_one_contiguous_run_of_the_catalogue`
+ * is what keeps that from happening.
+ *
+ * A run of rows with no label at all keeps its `null` and is rendered as the
+ * plain list it was before releases existed. That is the honest rendering of
+ * "this backend does not say", and it is not the same thing as a release of one:
+ * Krea 2 is a named release that ships a single model, while an unlabelled row
+ * would otherwise be boxed under a legend repeating its own name.
+ */
+export function releaseSections(
+  models: ModelStatus[],
+): { label: string | null; models: ModelStatus[] }[] {
+  const sections: { label: string | null; models: ModelStatus[] }[] = [];
+  for (const model of models) {
+    const label = model.group_label ?? null;
+    const last = sections[sections.length - 1];
+    if (last && last.label === label) last.models.push(model);
+    else sections.push({ label, models: [model] });
+  }
+  return sections;
+}
+
 export type RowProps = {
   model: ModelStatus;
   caps: ModelCapabilities | undefined;

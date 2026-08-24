@@ -158,7 +158,13 @@ export function ModelRow({
           actually lives. Both are the source identity. */}
       <p className="model-meta">
         <code>{model.repo}</code>
-        {model.family && (
+        {/* Only where nothing else says it. A catalogue row now sits inside a
+            fieldset legended with its release, which is the same fact in the
+            words a reader uses — "Stable Diffusion 3.5" over three rows already
+            labelled `sd35`. An imported model has no legend above it, and there
+            the detected family is the one thing that says what the directory
+            turned out to hold. */}
+        {imported && model.family && (
           <>
             <span className="sep">·</span>
             <span>{model.family}</span>

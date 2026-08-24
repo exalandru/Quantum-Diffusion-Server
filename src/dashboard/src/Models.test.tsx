@@ -95,9 +95,11 @@ async function openDialog(name: string, action: "Quantization…" | "Model setti
 
 /** The model names a list carries, in the order it carries them. */
 function namesIn(list: HTMLElement): string[] {
+  // The rows' own names, not every heading in the subtree: a catalogue half
+  // carries its own heading and one legend per release, and neither is a model.
   return within(list)
-    .getAllByRole("heading")
-    .map((heading) => heading.textContent ?? "");
+    .getAllByRole("listitem")
+    .map((item) => within(item).getAllByRole("heading")[0]?.textContent ?? "");
 }
 
 /** How many times the catalogue has actually been asked for. */
@@ -613,10 +615,15 @@ describe("catalogue tabs", () => {
     // Provenance and `gated` are backend facts; the tabs read them and reorder
     // nothing inside either list.
     show([
-      model({ key: "flux2-klein", display_name: "FLUX.2-klein", gated: true }),
-      model({ key: "z-image", display_name: "Z-Image" }),
-      model({ key: "fibo", display_name: "FIBO", gated: true }),
-      model({ key: "z-image-turbo", display_name: "Z-Image Turbo" }),
+      model({
+        key: "flux2-klein",
+        display_name: "FLUX.2-klein",
+        gated: true,
+        group_label: "FLUX.2",
+      }),
+      model({ key: "z-image", display_name: "Z-Image", group_label: "Z-Image" }),
+      model({ key: "fibo", display_name: "FIBO", gated: true, group_label: "FIBO" }),
+      model({ key: "z-image-turbo", display_name: "Z-Image Turbo", group_label: "Z-Image" }),
       model({
         key: "local-abc",
         display_name: "My local model",
@@ -626,12 +633,14 @@ describe("catalogue tabs", () => {
     ]);
 
     // What a reader meets first is what they can install right now.
-    const open = await screen.findByRole("list", { name: "Open models" });
+    const open = await screen.findByRole("region", { name: "Open models" });
     expect(namesIn(open)).toEqual(["Z-Image", "Z-Image Turbo"]);
     // The gated half is *not* on screen: that is the whole point of tabs over
     // stacked groups — five repositories you may have no access to are no longer
-    // between the reader and the ones they can use.
-    expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+    // between the reader and the ones they can use. The half is addressed as the
+    // region rather than as a list: it holds one list per release, and none of
+    // them is named after the tab, so a list query here could not fail.
+    expect(screen.queryByRole("region", { name: "Gated models" })).toBeNull();
     // The imported models are their own panel, in neither tab.
     expect(namesIn(screen.getByRole("list", { name: "Imported local models" }))).toEqual([
       "My local model",
@@ -646,11 +655,11 @@ describe("catalogue tabs", () => {
 
     await userEvent.click(gatedTab);
 
-    expect(namesIn(screen.getByRole("list", { name: "Gated models" }))).toEqual([
+    expect(namesIn(screen.getByRole("region", { name: "Gated models" }))).toEqual([
       "FLUX.2-klein",
       "FIBO",
     ]);
-    expect(screen.queryByRole("list", { name: "Open models" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Open models" })).toBeNull();
     expect(gatedTab.getAttribute("aria-selected")).toBe("true");
     // Still reachable, and still its own panel.
     expect(screen.getByRole("list", { name: "Imported local models" })).toBeTruthy();
@@ -667,7 +676,10 @@ describe("catalogue tabs", () => {
     await userEvent.click(gatedTab);
 
     expect(screen.getByText("Nothing in this half of the catalogue.")).toBeTruthy();
-    expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+    // The half is on screen and holds no list at all — a tab that rendered
+    // nothing would read as broken rather than as empty.
+    const empty = screen.getByRole("region", { name: "Gated models" });
+    expect(within(empty).queryAllByRole("list")).toEqual([]);
   });
 });
 

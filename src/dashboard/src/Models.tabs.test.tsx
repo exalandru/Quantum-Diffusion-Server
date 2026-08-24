@@ -81,10 +81,15 @@ afterEach(() => {
 });
 
 const CATALOGUE = [
-  model({ key: "flux2-klein", display_name: "FLUX.2-klein", gated: true }),
-  model({ key: "z-image", display_name: "Z-Image" }),
-  model({ key: "fibo", display_name: "FIBO", gated: true }),
-  model({ key: "z-image-turbo", display_name: "Z-Image Turbo" }),
+  model({
+    key: "flux2-klein",
+    display_name: "FLUX.2-klein",
+    gated: true,
+    group_label: "FLUX.2",
+  }),
+  model({ key: "z-image", display_name: "Z-Image", group_label: "Z-Image" }),
+  model({ key: "fibo", display_name: "FIBO", gated: true, group_label: "FIBO" }),
+  model({ key: "z-image-turbo", display_name: "Z-Image Turbo", group_label: "Z-Image" }),
   model({
     key: "local-abc",
     display_name: "My local model",
@@ -116,12 +121,34 @@ function namesIn(list: HTMLElement): string[] {
     .map((heading) => heading.textContent ?? "");
 }
 
+/**
+ * One half of the catalogue, addressed the way the tab names it.
+ *
+ * The half is the region, not a list: it holds one list per release now, and
+ * none of them is named after the tab. Querying a list called "Open models"
+ * would find nothing whether or not the half is on screen, which is a negative
+ * assertion that can no longer fail — the region is what actually appears and
+ * disappears with the selected tab.
+ */
+function half(name: "Open models" | "Gated models"): HTMLElement | null {
+  return screen.queryByRole("region", { name });
+}
+
+/** Every model name in one half, across all of its releases, in document order. */
+function namesInHalf(name: "Open models" | "Gated models"): string[] {
+  const region = half(name);
+  if (!region) throw new Error(`the ${name} half is not on screen`);
+  return within(region)
+    .getAllByRole("listitem")
+    .map((row) => within(row).getAllByRole("heading")[0]?.textContent ?? "");
+}
+
 it("opens on the models that need no account, and hides the gated half", async () => {
   show(CATALOGUE);
 
-  const open = await screen.findByRole("list", { name: "Open models" });
-  expect(namesIn(open)).toEqual(["Z-Image", "Z-Image Turbo"]);
-  expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+  await screen.findByRole("region", { name: "Open models" });
+  expect(namesInHalf("Open models")).toEqual(["Z-Image", "Z-Image Turbo"]);
+  expect(half("Gated models")).toBeNull();
 
   const [openTab, gatedTab] = await catalogueTabs();
   expect(openTab.getAttribute("aria-selected")).toBe("true");
@@ -137,22 +164,19 @@ it("swaps which half is rendered when the other tab is chosen", async () => {
 
   await userEvent.click(gatedTab);
 
-  expect(namesIn(screen.getByRole("list", { name: "Gated models" }))).toEqual([
-    "FLUX.2-klein",
-    "FIBO",
-  ]);
-  expect(screen.queryByRole("list", { name: "Open models" })).toBeNull();
+  expect(namesInHalf("Gated models")).toEqual(["FLUX.2-klein", "FIBO"]);
+  expect(half("Open models")).toBeNull();
   expect(gatedTab.getAttribute("aria-selected")).toBe("true");
   expect(openTab.getAttribute("aria-selected")).toBe("false");
 
   await userEvent.click(openTab);
-  expect(screen.getByRole("list", { name: "Open models" })).toBeTruthy();
-  expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+  expect(half("Open models")).toBeTruthy();
+  expect(half("Gated models")).toBeNull();
 });
 
 it("keeps imported local models out of both tabs", async () => {
   show(CATALOGUE);
-  await screen.findByRole("list", { name: "Open models" });
+  await screen.findByRole("region", { name: "Open models" });
 
   // Their own panel, reachable from either tab: provenance is a different
   // question from gating, and it was never one of these two halves.
@@ -176,14 +200,18 @@ it("says a half is empty rather than rendering nothing", async () => {
   await userEvent.click(gatedTab);
 
   expect(screen.getByText("Nothing in this half of the catalogue.")).toBeTruthy();
-  expect(screen.queryByRole("list", { name: "Gated models" })).toBeNull();
+  // The half itself is on screen and holds no list at all — which is the point:
+  // an empty tab that rendered nothing would read as a broken view.
+  const empty = half("Gated models");
+  expect(empty).toBeTruthy();
+  expect(within(empty!).queryAllByRole("list")).toEqual([]);
 });
 
 it("points the missing-token caution at the tab the affected rows are in", async () => {
   // The caution sits above the tablist, so it is usually read while the *open*
   // half is on screen: "these repositories" named rows that were not there.
   show(CATALOGUE, overview({ hfTokenPresent: false }));
-  await screen.findByRole("list", { name: "Open models" });
+  await screen.findByRole("region", { name: "Open models" });
 
   const caution = screen.getByText(/will refuse a download with a 401/);
   expect(caution.textContent).toContain("2 repositories in the");

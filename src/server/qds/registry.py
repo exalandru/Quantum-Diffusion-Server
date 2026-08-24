@@ -95,6 +95,14 @@ class ModelSpec:
     #: `Qwen` is what a person is shown. An imported row sets it too, its key
     #: being an opaque id.
     display_name: str | None = None
+    #: The release this model belongs to, as its publisher names it, for reading
+    #: the catalogue by. Deliberately *not* `family`: that is an architecture
+    #: key, and it decides quantization capability, latent creation and which
+    #: profiles an imported directory may bind to. The two disagree already —
+    #: FLUX.2 klein and dev are one release and two families — and collapsing
+    #: them would make a presentation choice reach into what the engine loads.
+    #: `None` for an imported model: it is listed on its own, never grouped.
+    group_label: str | None = None
     #: The public, machine-facing identifier for an imported model. `None` for a
     #: built-in, whose catalogue `key` already *is* its public name — which is
     #: exactly why an imported model may not take one.
@@ -164,6 +172,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="flux2-klein",
         display_name="Flux 2 Klein",
+        group_label="FLUX.2",
         family="flux2",
         repo="black-forest-labs/FLUX.2-klein-9B",
         model_config_name="flux2_klein_9b",
@@ -197,6 +206,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="flux2-dev",
         display_name="Flux 2 Dev",
+        group_label="FLUX.2",
         family="flux2-dev",
         repo="black-forest-labs/FLUX.2-dev",
         # No factory on `ModelConfig`: mflux 0.19.0 does not know FLUX.2-dev.
@@ -233,6 +243,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="anima-turbo",
         display_name="Anima Turbo",
+        group_label="Anima",
         family="anima",
         repo="circlestone-labs/Anima",
         # Same repository, same architecture, different checkpoint: the file is
@@ -266,6 +277,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="anima",
         display_name="Anima Aesthetic",
+        group_label="Anima",
         family="anima",
         repo="circlestone-labs/Anima",
         # No factory on `ModelConfig`: mflux 0.19.0 does not know Anima, and its
@@ -306,13 +318,75 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         max_dimension=1536,
     ),
     ModelSpec(
-        key="sd35-medium",
-        display_name="Stable Diffusion 3.5 Medium",
+        key="sd35-large-turbo",
+        display_name="Stable Diffusion 3.5 Large Turbo",
+        group_label="Stable Diffusion 3.5",
         family="sd35",
-        repo="stabilityai/stable-diffusion-3.5-medium",
+        repo="stabilityai/stable-diffusion-3.5-large-turbo",
         # No factory on `ModelConfig`: mflux 0.19.0 does not know SD 3.5, and its
         # MMDiT-X transformer and both CLIP towers are implemented in `qds/sd35/`.
-        # Resolved through `_LOCAL_MODEL_CONFIGS`.
+        # Resolved through `_LOCAL_MODEL_CONFIGS`, as all three rows below are.
+        model_config_name="sd35_large_turbo",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # `num_inference_steps=4, guidance_scale=0.0`, from the card. Adversarially
+        # distilled: four steps and no classifier-free guidance at all.
+        default_steps=4,
+        default_guidance=0.0,
+        # False, unlike Anima Turbo's: this is not a preference the model tolerates
+        # being overridden. Guidance above 1.0 turns on an unconditional branch the
+        # distillation removed the need for, and the result is visibly over-cooked.
+        # The catalogue reports what the model accepts, so a request naming guidance
+        # is refused with a 400 rather than quietly honoured.
+        supports_guidance=False,
+        # No unconditional branch exists at guidance 0.0, so a negative prompt would
+        # have nowhere to go. Refused rather than silently ignored.
+        supports_negative_prompt=False,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="Stability AI Community",
+        gated=True,
+        quantize=8,
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="sd35-large",
+        display_name="Stable Diffusion 3.5 Large",
+        group_label="Stable Diffusion 3.5",
+        family="sd35",
+        repo="stabilityai/stable-diffusion-3.5-large",
+        model_config_name="sd35_large",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        # `num_inference_steps=28, guidance_scale=3.5`, from the card's example.
+        default_steps=28,
+        default_guidance=3.5,
+        supports_guidance=True,
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="flow_match_euler_discrete",
+        license="Stability AI Community",
+        gated=True,
+        # 8-bit by default: ~27.6 GB at bf16, and quantizing on the fly needs the bf16
+        # and the 8-bit copy resident together — about 41 GB. That fits 64 GB and does
+        # not fit 32. A pre-quantized artifact avoids the peak entirely, which is why
+        # this row is the one the conversion path is for.
+        quantize=8,
+        # `pos_embed_max_size` is 192 latent positions here, not Medium's 384, so
+        # 192 * 2 * 8 = 3072 latent-to-pixel gives a *hard* 1536px ceiling: above it
+        # the transformer has no positional row to crop and refuses.
+        min_dimension=512,
+        max_dimension=1536,
+    ),
+    ModelSpec(
+        key="sd35-medium",
+        display_name="Stable Diffusion 3.5 Medium",
+        group_label="Stable Diffusion 3.5",
+        family="sd35",
+        repo="stabilityai/stable-diffusion-3.5-medium",
         model_config_name="sd35_medium",
         model_path=None,
         default_width=1024,
@@ -342,67 +416,9 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         max_dimension=1536,
     ),
     ModelSpec(
-        key="sd35-large",
-        display_name="Stable Diffusion 3.5 Large",
-        family="sd35",
-        repo="stabilityai/stable-diffusion-3.5-large",
-        model_config_name="sd35_large",
-        model_path=None,
-        default_width=1024,
-        default_height=1024,
-        # `num_inference_steps=28, guidance_scale=3.5`, from the card's example.
-        default_steps=28,
-        default_guidance=3.5,
-        supports_guidance=True,
-        supports_negative_prompt=True,
-        supports_image_to_image=True,
-        scheduler="flow_match_euler_discrete",
-        license="Stability AI Community",
-        gated=True,
-        # 8-bit by default: ~27.6 GB at bf16, and quantizing on the fly needs the bf16
-        # and the 8-bit copy resident together — about 41 GB. That fits 64 GB and does
-        # not fit 32. A pre-quantized artifact avoids the peak entirely, which is why
-        # this row is the one the conversion path is for.
-        quantize=8,
-        # `pos_embed_max_size` is 192 latent positions here, not Medium's 384, so
-        # 192 * 2 * 8 = 3072 latent-to-pixel gives a *hard* 1536px ceiling: above it
-        # the transformer has no positional row to crop and refuses.
-        min_dimension=512,
-        max_dimension=1536,
-    ),
-    ModelSpec(
-        key="sd35-large-turbo",
-        display_name="Stable Diffusion 3.5 Large Turbo",
-        family="sd35",
-        repo="stabilityai/stable-diffusion-3.5-large-turbo",
-        model_config_name="sd35_large_turbo",
-        model_path=None,
-        default_width=1024,
-        default_height=1024,
-        # `num_inference_steps=4, guidance_scale=0.0`, from the card. Adversarially
-        # distilled: four steps and no classifier-free guidance at all.
-        default_steps=4,
-        default_guidance=0.0,
-        # False, unlike Anima Turbo's: this is not a preference the model tolerates
-        # being overridden. Guidance above 1.0 turns on an unconditional branch the
-        # distillation removed the need for, and the result is visibly over-cooked.
-        # The catalogue reports what the model accepts, so a request naming guidance
-        # is refused with a 400 rather than quietly honoured.
-        supports_guidance=False,
-        # No unconditional branch exists at guidance 0.0, so a negative prompt would
-        # have nowhere to go. Refused rather than silently ignored.
-        supports_negative_prompt=False,
-        supports_image_to_image=True,
-        scheduler="flow_match_euler_discrete",
-        license="Stability AI Community",
-        gated=True,
-        quantize=8,
-        min_dimension=512,
-        max_dimension=1536,
-    ),
-    ModelSpec(
         key="krea-2-turbo",
         display_name="Krea 2 Turbo",
+        group_label="Krea 2",
         family="krea2",
         repo="krea/Krea-2-Turbo",
         # Turbo, not Raw. Krea publishes Raw as the base checkpoint to fine-tune
@@ -447,6 +463,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="qwen-image-flash",
         display_name="Qwen Image Flash",
+        group_label="Qwen Image",
         family="qwen",
         repo="nvidia/Qwen-Image-Flash",
         # Qwen-Image's architecture with Flash's noise schedule. mflux's own
@@ -476,6 +493,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="qwen-image-2512",
         display_name="Qwen",
+        group_label="Qwen Image",
         family="qwen",
         repo="Qwen/Qwen-Image-2512",
         # Definitely not ModelConfig.from_name() here: resolving by name loses
@@ -527,13 +545,34 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         ),
     ),
     ModelSpec(
+        key="z-image-turbo",
+        display_name="Z-Image Turbo",
+        group_label="Z-Image",
+        family="z-image",
+        repo="mlx-community/Z-Image-Turbo-bf16",
+        model_config_name="z_image_turbo",
+        model_path="mlx-community/Z-Image-Turbo-bf16",
+        # An mlx-community conversion, as the Z-Image row below is; the license
+        # follows Tongyi-MAI upstream for both.
+        default_width=1280,
+        default_height=720,
+        default_steps=9,
+        default_guidance=None,
+        supports_guidance=False,  # ModelConfig.supports_guidance=False → forced to 0
+        supports_negative_prompt=True,
+        supports_image_to_image=True,
+        scheduler="linear",
+        license="Apache-2.0",
+        quantize=8,
+    ),
+    ModelSpec(
         key="z-image",
         display_name="Z-Image",
+        group_label="Z-Image",
         family="z-image",
         repo="mlx-community/Z-Image-bf16",
         model_config_name="z_image",
         model_path="mlx-community/Z-Image-bf16",
-        # An mlx-community conversion; the license follows Tongyi-MAI upstream.
         default_width=1920,
         default_height=1072,
         # The only card here that publishes a *range* rather than an example:
@@ -552,18 +591,25 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         quantize=8,
     ),
     ModelSpec(
-        key="z-image-turbo",
-        display_name="Z-Image Turbo",
-        family="z-image",
-        repo="mlx-community/Z-Image-Turbo-bf16",
-        model_config_name="z_image_turbo",
-        model_path="mlx-community/Z-Image-Turbo-bf16",
-        default_width=1280,
-        default_height=720,
-        default_steps=9,
-        default_guidance=None,
-        supports_guidance=False,  # ModelConfig.supports_guidance=False → forced to 0
-        supports_negative_prompt=True,
+        key="ernie-image-turbo",
+        display_name="Ernie Turbo",
+        group_label="ERNIE Image",
+        family="ernie",
+        repo="baidu/ERNIE-Image-Turbo",
+        model_config_name="ernie_image_turbo",
+        model_path=None,
+        default_width=1024,
+        default_height=1024,
+        default_steps=8,
+        default_guidance=1.0,
+        # mflux's own ModelConfig says `supports_guidance=True`, but its CLI calls
+        # `parser.error()` on anything other than 1.0. The CLI is the behavioural
+        # truth, so we reject it here with a clear 400 instead.
+        supports_guidance=False,
+        # At guidance <= 1.0 the negative pass is skipped outright
+        # (`ernie_image.py:151`): a negative prompt would be silently inert, and
+        # advertising an inert parameter is exactly what this registry avoids.
+        supports_negative_prompt=False,
         supports_image_to_image=True,
         scheduler="linear",
         license="Apache-2.0",
@@ -572,6 +618,7 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
     ModelSpec(
         key="ernie-image",
         display_name="Ernie",
+        group_label="ERNIE Image",
         family="ernie",
         repo="baidu/ERNIE-Image",
         model_config_name="ernie_image",
@@ -598,32 +645,33 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         quantize=8,
     ),
     ModelSpec(
-        key="ernie-image-turbo",
-        display_name="Ernie Turbo",
-        family="ernie",
-        repo="baidu/ERNIE-Image-Turbo",
-        model_config_name="ernie_image_turbo",
+        key="fibo-lite",
+        display_name="FIBO Lite",
+        group_label="FIBO",
+        family="fibo",
+        repo="briaai/Fibo-lite",
+        model_config_name="fibo_lite",
         model_path=None,
         default_width=1024,
         default_height=1024,
         default_steps=8,
         default_guidance=1.0,
-        # mflux's own ModelConfig says `supports_guidance=True`, but its CLI calls
-        # `parser.error()` on anything other than 1.0. The CLI is the behavioural
-        # truth, so we reject it here with a clear 400 instead.
+        # `fibo.py:61-62` overrides guidance to 1.0 for this variant whatever we
+        # pass: distilled, conditioning-only.
         supports_guidance=False,
-        # At guidance <= 1.0 the negative pass is skipped outright
-        # (`ernie_image.py:151`): a negative prompt would be silently inert, and
-        # advertising an inert parameter is exactly what this registry avoids.
+        # Same as the other distilled models: at 1.0 the negative pass is skipped.
         supports_negative_prompt=False,
         supports_image_to_image=True,
-        scheduler="linear",
-        license="Apache-2.0",
+        scheduler="flow_match_euler_discrete",
+        license="CC-BY-NC-4.0",
+        gated=True,
+        prompt_formats=("json",),
         quantize=8,
     ),
     ModelSpec(
         key="fibo",
         display_name="FIBO",
+        group_label="FIBO",
         family="fibo",
         repo="briaai/FIBO",
         # `ModelConfig.fibo().model_name` is already `briaai/FIBO`, so no path
@@ -653,31 +701,9 @@ BASE_SPECS: tuple[ModelSpec, ...] = (
         quantize=8,
     ),
     ModelSpec(
-        key="fibo-lite",
-        display_name="FIBO Lite",
-        family="fibo",
-        repo="briaai/Fibo-lite",
-        model_config_name="fibo_lite",
-        model_path=None,
-        default_width=1024,
-        default_height=1024,
-        default_steps=8,
-        default_guidance=1.0,
-        # `fibo.py:61-62` overrides guidance to 1.0 for this variant whatever we
-        # pass: distilled, conditioning-only.
-        supports_guidance=False,
-        # Same as the other distilled models: at 1.0 the negative pass is skipped.
-        supports_negative_prompt=False,
-        supports_image_to_image=True,
-        scheduler="flow_match_euler_discrete",
-        license="CC-BY-NC-4.0",
-        gated=True,
-        prompt_formats=("json",),
-        quantize=8,
-    ),
-    ModelSpec(
         key="ideogram-4",
         display_name="Ideogram 4",
+        group_label="Ideogram 4",
         family="ideogram4",
         repo="ideogram-ai/ideogram-4-fp8",
         model_config_name="ideogram4_fp8",
@@ -1080,6 +1106,9 @@ def imported_spec(model: Any) -> ModelSpec:
         base_profile_key=model.base_profile_key,
         display_name=model.display_name,
         api_name=model.api_name or None,
+        # Not the profile's: this row is listed under Local models, which is not
+        # grouped, and it is not part of the release it borrowed its defaults from.
+        group_label=None,
         edit=None,  # an edit variant belongs to the built-in's own weights
         prequantized_variant=None,
         enabled=True,
