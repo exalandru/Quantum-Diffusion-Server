@@ -222,7 +222,7 @@ def build_server(deps) -> Any:
         if edit_enabled(spec):
             return "edit", None
         if spec.supports_image_to_image:
-            from qds.app import DEFAULT_IMAGE_STRENGTH
+            from qds.admission import DEFAULT_IMAGE_STRENGTH
 
             return "txt2img", DEFAULT_IMAGE_STRENGTH
         raise APIError(
