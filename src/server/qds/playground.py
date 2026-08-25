@@ -69,6 +69,19 @@ IMAGE_MEDIA_TYPES: dict[str, str] = {
     ".webp": "image/webp",
 }
 
+#: Longest edge of a derived thumbnail, in pixels. A gallery tile, not a viewer:
+#: the stored images measure up to 5120x2880 and average 1.9 MB, so a grid of a
+#: hundred of them is ~190 MB of PNG. 512 covers a retina tile of ~256 CSS px,
+#: which is what a waterfall grid actually paints, and lands at ~20 KB.
+THUMBNAIL_EDGE = 512
+
+#: WebP rather than JPEG: it carries an alpha channel, so a transparent PNG
+#: thumbnails without being flattened onto an invented background colour, and it
+#: was measured smaller than JPEG at the same visual quality (17 KB vs 21 KB on a
+#: 5120x2880 source) for ~6 ms more encode time.
+THUMBNAIL_MEDIA_TYPE = "image/webp"
+THUMBNAIL_SUFFIX = ".webp"
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -151,14 +164,40 @@ CREATE TABLE IF NOT EXISTS generation_images (
 """
 
 
-def _session_json(row: sqlite3.Row, *, generating: bool) -> dict[str, Any]:
+def _session_json(
+    row: sqlite3.Row, *, generating: bool, cover: str | None = None
+) -> dict[str, Any]:
+    locked = row["password"] is not None
     return {
         "id": row["id"],
         "title": row["title"],
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
         "generating": generating,
-        "locked": row["password"] is not None,
+        "locked": locked,
+        # The picture the rail draws for this project, as the *thumbnail* route:
+        # a rail tile is ~40px and the stored files average 1.9 MB.
+        #
+        # `None` for a locked project, and that is a security boundary rather
+        # than a display choice. `/playground/api/sessions` is the one playground
+        # endpoint deliberately reachable without an unlock token -- its contract
+        # is that it keeps showing the row, and only the row -- while a cover is
+        # content. Worse, the cover URL *is* the capability: the filename is a
+        # `uuid4().hex`, and the image route's traversal guard is precisely that
+        # naming a file means already holding those 122 bits. So publishing one
+        # here would not merely reveal that a locked project has pictures, it
+        # would hand out the secret that fetches one.
+        #
+        # Refused twice on purpose. `list_sessions` will not even read the
+        # filename out of SQLite for a session that has a password, and this line
+        # will not serialize one if a future caller passes it anyway. Two closed
+        # doors, because one of them is a `SELECT` a later edit could widen
+        # without noticing what it was for.
+        #
+        # Always `None` on the detail payload, which passes no cover: that
+        # response carries every image of the session already, so a cover there
+        # would be a second answer to a question its caller has not asked.
+        "cover": None if locked or cover is None else f"/playground/images/{cover}/thumb",
     }
 
 
@@ -200,6 +239,14 @@ class PlaygroundStore:
         self.directory = Path(directory)
         self.images_dir = self.directory / "images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
+        # Derived, never authoritative: every file in here can be rebuilt from
+        # `images_dir`, and a wipe costs one re-derivation per tile. It is a
+        # sibling directory rather than a suffix inside `images_dir` because that
+        # directory is what the image route serves by name -- a thumbnail living
+        # there would be a second file a row does not hold, and the route's 404
+        # rests on rows being the only names that exist.
+        self.thumbs_dir = self.directory / "thumbnails"
+        self.thumbs_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         # `check_same_thread=False`: the connection is reached both from the
         # event loop and from `TestClient`'s caller thread, and every statement
@@ -280,6 +327,10 @@ class PlaygroundStore:
             "updatedAt": now,
             "generating": False,
             "locked": False,
+            # A project born this second has produced nothing to show. Stated
+            # rather than omitted, so every session payload carries the same keys
+            # and the client has one shape to type.
+            "cover": None,
         }
 
     def rename_session(self, session_id: str, title: str | None) -> dict[str, Any] | None:
@@ -477,17 +528,47 @@ class PlaygroundStore:
         return None if row is None else row["session_id"]
 
     def list_sessions(self) -> list[dict[str, Any]]:
+        """Every project, newest first, each with the cover the rail draws.
+
+        Still one statement. The cover is a correlated scalar subquery rather
+        than a query per row: the rail is refreshed by a poll in every open tab,
+        so a per-row lookup would multiply that poll by the number of projects
+        for a picture the size of a favicon.
+
+        `s.password IS NULL` inside the subquery is the load-bearing clause. It
+        is not an optimisation and it is not there to save a join: a locked
+        session's image filename is the capability that fetches the image, and
+        this endpoint answers without an unlock token. The clause means the name
+        is never even read out of SQLite for a session that has a password, so
+        there is nothing in this function's locals to leak. `_session_json`
+        refuses it a second time on the way out.
+
+        Ordering is "the most recent image": newest generation, and within it the
+        last file it wrote. `rowid` breaks ties on `created_at` for the same
+        reason `get_session` uses it -- that column is a `time.time()` float and
+        two generations of one submission can share a value.
+        """
         with self._lock:
             rows = self._db.execute(
                 """
                 SELECT s.*, EXISTS (
                   SELECT 1 FROM generations g
                   WHERE g.session_id = s.id AND g.status IN ('queued', 'running')
-                ) AS generating
+                ) AS generating, (
+                  SELECT gi.filename
+                  FROM generation_images gi
+                  JOIN generations cg ON cg.id = gi.generation_id
+                  WHERE cg.session_id = s.id AND s.password IS NULL
+                  ORDER BY cg.created_at DESC, cg.rowid DESC, gi.position DESC
+                  LIMIT 1
+                ) AS cover
                 FROM sessions s ORDER BY s.updated_at DESC
                 """
             ).fetchall()
-        return [_session_json(row, generating=bool(row["generating"])) for row in rows]
+        return [
+            _session_json(row, generating=bool(row["generating"]), cover=row["cover"])
+            for row in rows
+        ]
 
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         """The session and its generations, oldest first, images included.
@@ -915,9 +996,65 @@ class PlaygroundStore:
         safe = normalised if normalised in IMAGE_SUFFIXES else ".png"
         return self.images_dir / f"ctx-{uuid.uuid4().hex}{safe}"
 
+    def thumbnail(self, filename: str) -> Path | None:
+        """The bounded-size copy of a stored image, derived on first request.
+
+        `None` means "there is no thumbnail and there will not be one now" --
+        the source is gone, or its bytes are not an image this build can decode.
+        The caller serves the full file instead, which is why this never raises:
+        a tile that cannot be shrunk is still a tile that can be shown, and a
+        derived artifact failing must not turn a readable image into a 500.
+
+        Derived lazily rather than at write time, and that is one mechanism
+        instead of two: the images already on disk predate thumbnails, and a
+        context upload arrives by a path no generation runs through, so an eager
+        hook would still need this function underneath as a backfill. Measured
+        cost of one derivation from a 5120x2880 PNG is ~40 ms, paid once per
+        image ever, off the event loop -- see the route that calls it.
+
+        `filename` reaches the filesystem only because the caller matched a row
+        first, exactly as `GET /playground/images/{filename}` requires: rows
+        hold only names this server minted, so no traversal gets this far.
+        """
+        target = self.thumbs_dir / f"{filename}{THUMBNAIL_SUFFIX}"
+        if target.is_file():
+            return target
+        source = self.images_dir / filename
+        if not source.is_file():
+            return None
+        from PIL import Image
+
+        # A distinct temporary name per attempt, replaced into place: two
+        # requests for the same cold tile arrive together (a grid asks for every
+        # visible one at once), and writing the final path directly would let one
+        # of them serve the half-written prefix of the other's encode.
+        staging = self.thumbs_dir / f".{uuid.uuid4().hex}{THUMBNAIL_SUFFIX}"
+        try:
+            with Image.open(source) as image:
+                # `draft` lets a JPEG decode at a reduced scale, which is free
+                # accuracy-wise here because the result is about to be resampled
+                # down anyway. It is a no-op for the PNGs this store mostly holds.
+                image.draft("RGB", (THUMBNAIL_EDGE, THUMBNAIL_EDGE))
+                image.thumbnail((THUMBNAIL_EDGE, THUMBNAIL_EDGE), Image.LANCZOS)
+                image.save(staging, "WEBP", quality=80, method=4)
+            staging.replace(target)
+        except Exception:
+            staging.unlink(missing_ok=True)
+            logger.warning("Could not derive a thumbnail for %s", filename, exc_info=True)
+            return None
+        return target
+
     def unlink(self, filenames: list[str]) -> None:
+        """Delete stored files, and the thumbnails derived from them.
+
+        The single funnel every deletion path goes through -- session, group and
+        image deletion all report their files here rather than unlinking
+        themselves -- which is what makes thumbnail reclamation one line instead
+        of a rule three call sites have to remember.
+        """
         for name in filenames:
             (self.images_dir / name).unlink(missing_ok=True)
+            (self.thumbs_dir / f"{name}{THUMBNAIL_SUFFIX}").unlink(missing_ok=True)
 
     # ── Internals ──────────────────────────────────────────────────────────
 

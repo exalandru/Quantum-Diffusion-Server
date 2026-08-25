@@ -25,6 +25,9 @@ export function playgroundSession(patch: Partial<PlaygroundSession> = {}): Playg
     updatedAt: 1_700_000_000,
     generating: false,
     locked: false,
+    // No cover by default: a project with no images is the fixture's starting
+    // point, and it is also what a locked project publishes.
+    cover: null,
     ...patch,
   };
 }

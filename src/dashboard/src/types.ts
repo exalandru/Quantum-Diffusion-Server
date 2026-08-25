@@ -190,6 +190,19 @@ export type PlaygroundSession = {
   generating: boolean;
   /** Has a password: its content is served only with an unlock token. */
   locked: boolean;
+  /**
+   * The project's most recent image, as the thumbnail route, for the rail's tile.
+   *
+   * `null` for a project with no images — and `null` for a **locked** one, which
+   * is a security boundary and not a display choice: `/playground/api/sessions`
+   * answers without an unlock token, and a cover URL carries the `uuid4`
+   * filename that *is* the capability to fetch the file. The rail falls back to
+   * its letter-and-hue landmark, which reveals nothing either way.
+   *
+   * Always `null` on the session inside a detail response: that payload already
+   * carries every image, so it publishes no cover.
+   */
+  cover: string | null;
 };
 
 /**

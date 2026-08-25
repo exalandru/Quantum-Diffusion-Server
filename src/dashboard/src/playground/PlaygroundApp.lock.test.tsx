@@ -1,11 +1,12 @@
 /**
- * A locked session, from the studio's point of view.
+ * A locked project, from the studio's point of view.
  *
- * The server answers 403 `session_locked`; what must follow is an unlock prompt
- * — not the admin login a 401 opens, and not the "could not reach the server"
- * banner — and, once the password is taken, every request for that session
- * carrying the token it was exchanged for, images included. Renaming rides
- * along: same route family, same refresh.
+ * The server answers 403 `session_locked` — the API says "session" where the
+ * interface says "project", deliberately — and what must follow is an unlock
+ * prompt, not the admin login a 401 opens and not the "could not reach the
+ * server" banner. Once the password is taken, every request for that project
+ * carries the token it was exchanged for, images included. Renaming rides along:
+ * same route family, same refresh.
  */
 
 import { act, render, screen, waitFor, within } from "@testing-library/react";
@@ -95,7 +96,7 @@ afterEach(() => {
 
 async function openLockedSession() {
   render(<PlaygroundApp />);
-  const dialog = await screen.findByRole("dialog", { name: "Unlock session" });
+  const dialog = await screen.findByRole("dialog", { name: "Unlock project" });
   return dialog;
 }
 
@@ -103,8 +104,13 @@ it("asks for the session password, not the admin one, and does not call the serv
   await openLockedSession();
   expect(screen.queryByText(/admin password/i)).toBeNull();
   expect(screen.queryByText(/could not reach the server/i)).toBeNull();
+  // `hidden: true` because the unlock dialog is a real modal now: `Modal`
+  // marks everything outside it `aria-hidden` while it is up, so the hero
+  // behind it is deliberately out of the accessibility tree. The claim being
+  // made is still the same one — the locked hero is what the studio rendered,
+  // not a server error — and it is still asked of the heading's role and name.
   expect(
-    screen.getByRole("heading", { name: "This session is locked" }),
+    screen.getByRole("heading", { name: "This project is locked", hidden: true }),
   ).toBeTruthy();
 });
 
@@ -122,7 +128,7 @@ it("keeps the prompt open on a wrong password, with the server's words", async (
   expect((await within(dialog).findByRole("alert")).textContent).toBe(
     "Wrong session password.",
   );
-  expect(screen.getByRole("dialog", { name: "Unlock session" })).toBeTruthy();
+  expect(screen.getByRole("dialog", { name: "Unlock project" })).toBeTruthy();
 });
 
 it("exchanges the password for a token and sends it from then on, images included", async () => {
@@ -175,7 +181,7 @@ it("locking forgets the token and shows the locked studio again", async () => {
   await screen.findByRole("img", { name: "a fox" });
 
   await user.click(screen.getByRole("button", { name: "Lock foxes" }));
-  await screen.findByRole("heading", { name: "This session is locked" });
+  await screen.findByRole("heading", { name: "This project is locked" });
   expect(window.sessionStorage.getItem("qds.playground.unlock.s1")).toBeNull();
   expect(screen.queryByRole("dialog")).toBeNull();
 });
@@ -200,7 +206,7 @@ it("renames through PATCH and refreshes the list", async () => {
   const user = userEvent.setup();
   render(<PlaygroundApp />);
   await user.click(await screen.findByRole("button", { name: "Rename foxes" }));
-  const dialog = screen.getByRole("dialog", { name: "Rename session" });
+  const dialog = screen.getByRole("dialog", { name: "Rename project" });
   const field = within(dialog).getByLabelText("Name");
   expect((field as HTMLInputElement).value).toBe("foxes");
   await user.clear(field);
@@ -275,7 +281,7 @@ it("unlocks before deleting a locked session, then deletes with the token", asyn
   const user = userEvent.setup();
   render(<PlaygroundApp />);
   await user.click(await screen.findByRole("button", { name: "Delete foxes" }));
-  const dialog = await screen.findByRole("dialog", { name: "Unlock session" });
+  const dialog = await screen.findByRole("dialog", { name: "Unlock project" });
   await user.type(
     within(dialog).getByLabelText("Password"),
     "correct horse battery",

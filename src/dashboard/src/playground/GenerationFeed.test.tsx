@@ -644,9 +644,33 @@ it("still closes on Escape and on a press outside", async () => {
   await userEvent.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
 
+  // A whole press, not just its first half. `useDismissable` now detects an
+  // outside press through react-aria's `useInteractOutside`, which needs the
+  // press *and* the release to land outside before it counts one — a bare
+  // `mouseDown` is an unfinished gesture. The property under test is unchanged;
+  // what it takes to perform the gesture is.
   await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
   fireEvent.mouseDown(document.body);
+  fireEvent.mouseUp(document.body);
+  fireEvent.click(document.body);
   expect(screen.queryByRole("dialog", { name: "Upscale options" })).toBeNull();
+});
+
+it("survives a text selection dragged out of the panel", async () => {
+  // The load-bearing detail `useDismissable` is written around, and until now
+  // only asserted by its own comment: selecting text inside the panel and
+  // releasing outside it is a selection, not a dismissal. The old `mousedown`
+  // rule got this by ignoring the release; react-aria gets it by requiring
+  // both ends outside. This pins the behaviour rather than the mechanism, so
+  // it discriminates either implementation losing it.
+  feed([generation({ id: "root" })], handlers());
+  await userEvent.click(screen.getByRole("button", { name: "Upscale" }));
+  const panel = screen.getByRole("dialog", { name: "Upscale options" });
+
+  fireEvent.mouseDown(panel);
+  fireEvent.mouseUp(document.body);
+  fireEvent.click(document.body);
+  expect(screen.queryByRole("dialog", { name: "Upscale options" })).not.toBeNull();
 });
 
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 
 import * as api from "../api";
 import { Locked, NotFound, Unauthorized, messageOf } from "../api";
@@ -12,8 +12,15 @@ import type {
   Upscaler,
 } from "../types";
 import { Composer, type Draft } from "./Composer";
+import { GalleryView } from "./GalleryView";
 import { GenerationFeed } from "./GenerationFeed";
-import { PasswordDialog, RenameDialog, UnlockDialog } from "./SessionDialogs";
+import { LightTableView } from "./LightTableView";
+import {
+  NewProjectDialog,
+  PasswordDialog,
+  RenameDialog,
+  UnlockDialog,
+} from "./SessionDialogs";
 import { SessionList } from "./SessionList";
 
 const IDLE: Progress = {
@@ -33,11 +40,86 @@ const IDLE: Progress = {
 const DETAIL_POLL_MS = 2000;
 const LIST_POLL_MS = 5000;
 
-/** A form open over the studio, and the session it is about. */
+/** A form open over the studio, and the project it is about. */
 type Dialog =
+  /** Not about a project yet: this one creates it. */
+  | { kind: "new" }
   | { kind: "rename"; id: string }
   | { kind: "password"; id: string }
   | { kind: "unlock"; id: string; then: "open" | "delete" };
+
+/**
+ * Whether the rail is collapsed, remembered per browser.
+ *
+ * Every read and write of it is wrapped, because which state the rail is in is a
+ * preference: losing it must degrade to the default, never throw. There are
+ * three ways the store can be unavailable — a browser with storage disabled
+ * (Safari's private mode throws on write), a quota refusal, and Node's own
+ * `localStorage` global, which shadows jsdom's under Node >= 22 and reads back
+ * `undefined` unless the process was started with `--localstorage-file` (see the
+ * note in `test-setup.ts`).
+ */
+const RAIL_KEY = "qds.playground.rail-collapsed";
+
+/**
+ * Which presentation of the project is on screen.
+ *
+ * Three: the prompt feed, the gallery wall, and the light table — one picture at
+ * a time with its facts beside it.
+ */
+type ViewMode = "prompts" | "gallery" | "table";
+
+const DEFAULT_MODE: ViewMode = "prompts";
+
+/**
+ * A stored or linked string, read as a view — or as "no preference".
+ *
+ * One function rather than a comparison at each of the three sites that need it
+ * (the URL at mount, the stored preference, and the guard below), because those
+ * three drifting apart is how a third view becomes reachable from a link but not
+ * from the store. Anything unrecognised is `null`: an unknown value must read as
+ * "no preference" and never as "some fourth view".
+ */
+const asMode = (value: string | null): ViewMode | null =>
+  value === "prompts" || value === "gallery" || value === "table" ? value : null;
+
+/**
+ * The URL parameter that carries it — `?mode=`, deliberately not `?view=`.
+ *
+ * `?view=` already names *which surface renders*: `?view=plugin` is this page
+ * without its controls, for Hermes' pane, and `?view=config` is the dashboard's
+ * own screen selector. That parameter is read once at mount and never rewritten,
+ * because the surface does not change under the user. This one is rewritten
+ * every time the user switches, and it means something only *within* the studio
+ * surface — a different question, so a different name. Overloading `view` would
+ * also make `?view=plugin&view=gallery` expressible, which is nonsense the URL
+ * should not be able to say.
+ */
+const MODE_PARAM = "mode";
+
+/**
+ * The remembered view of one project, per browser.
+ *
+ * Keyed per project, the shape `api.ts` uses for unlock tokens
+ * (`qds.playground.unlock.<id>`), because the question is the same one: a fact
+ * about *this* browser and *that* project. `localStorage` rather than the
+ * session store the tokens use, since a preference is meant to outlive the tab;
+ * the consequence, accepted explicitly, is that it does not follow the user to
+ * another machine.
+ *
+ * Every read is guarded and an unknown value reads as "no preference": which
+ * view a project opens in must never be able to stop it opening. Same three
+ * failure modes as `RAIL_KEY` above.
+ */
+const modeKey = (sessionId: string) => `qds.playground.view.${sessionId}`;
+
+function rememberedMode(sessionId: string): ViewMode | null {
+  try {
+    return asMode(window.localStorage?.getItem(modeKey(sessionId)) ?? null);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * One more image for a group, from the request that opened it.
@@ -106,6 +188,66 @@ export function PlaygroundApp() {
   // not React state, and the sidebar's lock glyphs read it.
   const [, setTokenEpoch] = useState(0);
   const tokensChanged = () => setTokenEpoch((epoch) => epoch + 1);
+
+  // Read once, on the way in: the rail's state belongs to this browser, not to
+  // the URL, and a project opened from a bookmark should find the rail as it was
+  // left. `"1"` rather than `JSON.parse`, because a corrupt value must read as
+  // "not collapsed" instead of throwing on the way to the first render.
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try {
+      return window.localStorage?.getItem(RAIL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+
+  /**
+   * Which view the studio is showing, and the link that asked for it.
+   *
+   * Two sources, in this order of authority: an explicit `?mode=` in the URL a
+   * link was followed to, then the project's remembered preference. The URL wins
+   * once and only for the project it arrived with — a shared link that says
+   * "gallery" must open in the gallery even if this browser last left that
+   * project in the feed, but it must not then re-impose itself on every other
+   * project selected afterwards. `wantedMode` is that "once": read at mount,
+   * spent on the first project that opens.
+   */
+  const [mode, setMode] = useState<ViewMode>(DEFAULT_MODE);
+  const wantedMode = useRef<ViewMode | null>(
+    asMode(new URLSearchParams(window.location.search).get(MODE_PARAM)),
+  );
+
+  /**
+   * The floating composer's height, published to the cascade.
+   *
+   * The composer is `position: absolute` over the studio now, so it reserves no
+   * room of its own and whatever scrolls under it has to reserve it instead —
+   * but its height is not a constant: an attachment, a notice or a wrapped
+   * control row all change it. Measured rather than guessed, and handed to the
+   * cascade as `--pg-dock-h` on the studio, which `.pg-feed` and `.pg-hero`
+   * each spend as bottom padding. A fixed reservation would either hide the
+   * newest image behind the glass or leave a gap under it.
+   *
+   * A callback ref rather than an effect: the dock exists only on the surfaces
+   * that render a composer, and it mounts and unmounts with the login gate as
+   * well as with `?view=plugin`. A ref callback fires exactly when the element
+   * appears and its cleanup when it goes, which an effect keyed on state would
+   * have to reconstruct.
+   */
+  const [dockHeight, setDockHeight] = useState(0);
+  const measureDock = useCallback((box: HTMLDivElement | null) => {
+    if (!box) {
+      setDockHeight(0);
+      return;
+    }
+    // jsdom has no `ResizeObserver`. The consequence is a `0px` reservation in
+    // tests, which is the same value the embedded surface uses, so nothing
+    // asserted here depends on a measurement the environment cannot make.
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => setDockHeight(box.offsetHeight));
+    observer.observe(box);
+    return () => observer.disconnect();
+  }, []);
 
   const onUnauthorized = useCallback(() => {
     void api
@@ -217,6 +359,32 @@ export function PlaygroundApp() {
     void refreshDetail();
   }, [selected, refreshDetail]);
 
+  // The opened project brings its own view with it. Keyed on the selection, not
+  // written from the switcher's click, because this is the answer to "what was
+  // this project left in" — and a project with no answer opens in the default,
+  // which is also what a project whose preference could not be read gets.
+  useEffect(() => {
+    if (!selected) return;
+    const asked = wantedMode.current;
+    wantedMode.current = null;
+    setMode(asked ?? rememberedMode(selected) ?? DEFAULT_MODE);
+  }, [selected]);
+
+  // The view in the URL, so a reload and a shared link land on it. Separate from
+  // the effect above rather than folded into the `?session=` one: that effect
+  // also refetches the project, and switching between two presentations of
+  // images already in hand must not cost a request.
+  //
+  // Not written on the embedded surface: `?view=plugin` renders one view and has
+  // no switcher, so a `?mode=` there would be a parameter nothing reads, written
+  // into an embedder's URL.
+  useEffect(() => {
+    if (embedded) return;
+    const url = new URL(window.location.href);
+    url.searchParams.set(MODE_PARAM, mode);
+    window.history.replaceState(null, "", url);
+  }, [embedded, mode]);
+
   // What is generated, and how much of it: the model list and `max_n` are the
   // two things the composer cannot invent.
   useEffect(() => {
@@ -296,8 +464,12 @@ export function PlaygroundApp() {
     setSending(true);
     setSubmitError(null);
     try {
-      // The session row is created by the first submission, so "New session"
-      // cannot litter the sidebar with empty conversations.
+      // Submitting with nothing selected still creates the project on demand.
+      // "New project" is now the deliberate way to make one — named, before
+      // anything is generated in it — but a prompt typed straight into an empty
+      // studio must not be refused for want of a container, and this is the one
+      // path where the server's auto-title from the first prompt is still what
+      // names the result.
       const id = sessionId ?? (await api.playgroundSessionCreate()).id;
       await call(id);
       if (id !== selected) setSelected(id);
@@ -480,6 +652,72 @@ export function PlaygroundApp() {
     await refreshSessions();
   }
 
+  /**
+   * Create a project, named, and open it.
+   *
+   * Two calls, because the API has no "create with a title": `POST` makes the
+   * record and `PATCH` names it. The order is forced — there is nothing to name
+   * before the first call answers — and the window between them is the one thing
+   * that had to be made safe, since a `PATCH` that fails would otherwise leave a
+   * project the server holds and the user never asked for.
+   *
+   * `created` is what closes that window. The id of a project made but not yet
+   * named is kept, the rail is refreshed either way, and a retry from the still
+   * open dialog names *that* project instead of creating a second one. So the
+   * worst case is a project called "Untitled project", visible in the rail and
+   * deletable there — never a record only the server can see.
+   *
+   * The server's own auto-title (`add_generation` back-fills a NULL title from
+   * the first prompt) is why the name is sent before the project can be
+   * generated in: a project named here has a title already, so there is nothing
+   * left for that back-fill to overwrite.
+   */
+  const created = useRef<string | null>(null);
+  async function create(title: string) {
+    const id = created.current ?? (await api.playgroundSessionCreate()).id;
+    created.current = id;
+    try {
+      await api.playgroundSessionRename(id, title);
+    } finally {
+      await refreshSessions();
+    }
+    created.current = null;
+    setDialog(null);
+    setSelected(id);
+  }
+
+  // Written where the state changes rather than in an effect: the preference is
+  // this click, and an effect would also write it on the first render, replacing
+  // what another tab had just stored with what this tab happened to read.
+  function toggleRail() {
+    const next = !railCollapsed;
+    setRailCollapsed(next);
+    try {
+      window.localStorage?.setItem(RAIL_KEY, next ? "1" : "0");
+    } catch {
+      // A preference that cannot be written is a preference that is not kept.
+    }
+  }
+
+  /**
+   * Switch view, and remember it for the project this is a view *of*.
+   *
+   * Written here rather than in an effect on `mode`, for the reason `toggleRail`
+   * gives: an effect would also fire when the mode is *adopted* from the store,
+   * writing back what was just read, and with nothing selected it would have no
+   * project to key on. Nothing but presentation happens — no fetch, no record
+   * touched — which is the whole of T1.
+   */
+  function chooseMode(next: ViewMode) {
+    setMode(next);
+    if (!selected) return;
+    try {
+      window.localStorage?.setItem(modeKey(selected), next);
+    } catch {
+      // A preference that cannot be written is a preference that is not kept.
+    }
+  }
+
   async function rename(id: string, title: string | null) {
     await api.playgroundSessionRename(id, title);
     setDialog(null);
@@ -526,6 +764,10 @@ export function PlaygroundApp() {
   const titleOf = (id: string) => sessions.find((entry) => entry.id === id)?.title ?? null;
   const isLocked = (id: string) => sessions.find((entry) => entry.id === id)?.locked ?? false;
   const srcOf = (url: string) => (selected ? api.imageUrl(url, selected) : url);
+  // The tile the gallery scrolls, token and all: a locked project's thumbnails
+  // are refused to exactly the caller its full images are refused to, so they
+  // need the same `?t=` treatment.
+  const thumbOf = (url: string) => (selected ? api.thumbnailUrl(url, selected) : url);
 
   if (session) {
     return (
@@ -544,74 +786,21 @@ export function PlaygroundApp() {
 
   return (
     <main className="playground">
-      <header>
-        <div className="identity">
-          <h1>Quantum Diffusion Server</h1>
-          {paused ? (
-            <span className="pill pill-warn">Queue paused</span>
-          ) : (
-            <span className="pill pill-live">Running</span>
-          )}
-        </div>
-        <button
-          type="button"
-          className="small pg-pause"
-          disabled={pausing}
-          aria-pressed={paused}
-          onClick={() => void togglePause(!paused)}
-        >
-          {paused ? "Resume queue" : "Pause queue"}
-        </button>
-        {/* No tab strip here: this page has one view and one way out. The arrow
-            says the button leaves rather than switches, and `?view=config` lands
-            on the screen the label names. Embedded, there is no "out": the pane
-            has no browser chrome to come back from, so the link is dropped. */}
-        {!embedded && (
-          <a className="shell-link" href="/dashboard/?view=config" target="_blank">
-            Server Config
-            <svg
-              viewBox="0 0 24 24"
-              width="14"
-              height="14"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              aria-hidden="true"
-            >
-              <path d="M4 12h13M12.5 6.5 18 12l-5.5 5.5" />
-            </svg>
-          </a>
-        )}
-      </header>
-
-      {connectionError && (
-        <div className="notice notice-error" role="status">
-          <strong>Could not reach the server.</strong> {connectionError}
-        </div>
-      )}
-
-      {/* Every fact a held queue needs to state, and no more: what still
-          happens, what does not, and the one way it can lose work. The last
-          sentence is not a caveat — the queue lives in memory, so a restart
-          fails what is waiting in it. */}
-      {paused && (
-        <div className="notice notice-warn" role="status">
-          <strong>Queue paused.</strong> The image being generated will finish, then nothing
-          more starts. Anything you send waits here. Direct API requests are unaffected, and a
-          server restart discards what is waiting.
-        </div>
-      )}
-
+      {/* The rail is flush with the window's edge and runs its whole height, so
+          the page is this row and the masthead belongs to the stage inside it —
+          the identity and the queue's state moved into the rail's own head and
+          foot with it (see `SessionList`). */}
       <div className={embedded ? "pg-layout pg-layout-embedded" : "pg-layout"}>
         {!embedded && (
           <SessionList
             sessions={sessions}
             selected={selected}
+            collapsed={railCollapsed}
+            paused={paused}
             unlocked={(id) => api.unlockToken(id) !== null}
             onSelect={setSelected}
-            onNew={() => setSelected(null)}
+            onNew={() => setDialog({ kind: "new" })}
+            onToggleCollapsed={toggleRail}
             onRename={(id) => {
               if (isLocked(id) && api.unlockToken(id) === null)
                 setDialog({ kind: "unlock", id, then: "open" });
@@ -619,7 +808,7 @@ export function PlaygroundApp() {
             }}
             onPassword={(id) => {
               // Renaming and changing a password are proof-gated like everything
-              // else on a locked session: unlock first, then the form.
+              // else on a locked project: unlock first, then the form.
               if (isLocked(id) && api.unlockToken(id) === null)
                 setDialog({ kind: "unlock", id, then: "open" });
               else setDialog({ kind: "password", id });
@@ -628,73 +817,237 @@ export function PlaygroundApp() {
             onDelete={(id) => void remove(id)}
           />
         )}
-        <section className="pg-studio">
-          {selected && lockedOut === selected ? (
-            <div className="pg-hero">
-              <span className="pg-hero-icon" aria-hidden="true">
-                🔒
-              </span>
-              <h2 className="pg-hero-title">This session is locked</h2>
-              <p className="pg-hero-tagline">Enter its password to see what it holds.</p>
-              <div className="pg-hero-actions">
+        <div className="pg-stage">
+          {/* The masthead is the stage's now, not the page's, and it holds what
+              is about *this* project's view: the switcher and the queue control.
+              Who this is and what the server is doing moved to the rail. */}
+          <header>
+            {/* The switcher, in the masthead rather than over the studio: this
+                is the page's one control strip, the tab vocabulary (`.views` /
+                `.view-tab`) is the dashboard's own, and a bar of its own above
+                the images would spend vertical space the pictures want. Not
+                rendered embedded — `?view=plugin` is the studio alone, and the
+                pane's owner chose what it shows. */}
+            {!embedded && (
+              <nav className="views" role="tablist" aria-label="Project views">
                 <button
-                  className="primary"
-                  onClick={() => setDialog({ kind: "unlock", id: selected, then: "open" })}
+                  role="tab"
+                  aria-selected={mode === "prompts"}
+                  className="view-tab"
+                  onClick={() => chooseMode("prompts")}
                 >
-                  Unlock
+                  Prompts
                 </button>
+                <button
+                  role="tab"
+                  aria-selected={mode === "gallery"}
+                  className="view-tab"
+                  onClick={() => chooseMode("gallery")}
+                >
+                  Gallery
+                </button>
+                <button
+                  role="tab"
+                  aria-selected={mode === "table"}
+                  className="view-tab"
+                  onClick={() => chooseMode("table")}
+                >
+                  Light Table
+                </button>
+              </nav>
+            )}
+            {/* The queue's state, embedded only. It normally lives in the rail's
+                footer, which is where the mockup puts it — but `?view=plugin`
+                renders no rail, so moving it there took the indicator away from
+                the one surface that cannot go looking for it: Hermes' pane has
+                no sidebar to expand and no browser chrome to navigate with. The
+                paused *notice* still appears below on both surfaces; this is the
+                at-a-glance state, which is a different thing from a warning. */}
+            {embedded &&
+              (paused ? (
+                <span className="pill pill-warn">Queue paused</span>
+              ) : (
+                <span className="pill pill-live">Running</span>
+              ))}
+            <button
+              type="button"
+              className="small pg-pause"
+              disabled={pausing}
+              aria-pressed={paused}
+              onClick={() => void togglePause(!paused)}
+            >
+              {paused ? "Resume queue" : "Pause queue"}
+            </button>
+          </header>
+
+          {connectionError && (
+            <div className="notice notice-error" role="status">
+              <strong>Could not reach the server.</strong> {connectionError}
+            </div>
+          )}
+
+          {/* Every fact a held queue needs to state, and no more: what still
+              happens, what does not, and the one way it can lose work. The last
+              sentence is not a caveat — the queue lives in memory, so a restart
+              fails what is waiting in it. */}
+          {paused && (
+            <div className="notice notice-warn" role="status">
+              <strong>Queue paused.</strong> The image being generated will finish, then nothing
+              more starts. Anything you send waits here. Direct API requests are unaffected, and
+              a server restart discards what is waiting.
+            </div>
+          )}
+
+          <section
+            className="pg-studio"
+            style={{ "--pg-dock-h": `${dockHeight}px` } as CSSProperties}
+          >
+            {selected && lockedOut === selected ? (
+              <div className="pg-hero">
+                <span className="pg-hero-icon" aria-hidden="true">
+                  🔒
+                </span>
+                <h2 className="pg-hero-title">This project is locked</h2>
+                <p className="pg-hero-tagline">Enter its password to see what it holds.</p>
+                <div className="pg-hero-actions">
+                  <button
+                    className="primary"
+                    onClick={() => setDialog({ kind: "unlock", id: selected, then: "open" })}
+                  >
+                    Unlock
+                  </button>
+                </div>
               </div>
-            </div>
-          ) : generations.length === 0 ? (
-            <div className="pg-hero">
-              <span className="pg-hero-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.6">
-                  <rect x="3" y="4" width="18" height="16" rx="2.5" />
-                  <circle cx="8.5" cy="9.5" r="1.8" />
-                  <path d="M4 17.5 9.5 12l4 4 2.5-2.5 4 4" strokeLinecap="round" />
-                </svg>
-              </span>
-              <h2 className="pg-hero-title">Imagine</h2>
-              <p className="pg-hero-tagline">
-                Bring your vision to life and craft the extraordinary
-              </p>
-            </div>
-          ) : (
-            <GenerationFeed
-              generations={generations}
-              progress={progress}
-              onCancel={(id) => void cancel(id)}
-              cancelling={cancelling}
-              busy={sending}
-              onRefine={(entry, image) => void refine(entry, image)}
-              onVariation={(entry) => void variation(entry)}
-              onUpscale={(entry, image, choice) => void upscale(entry, image, choice)}
-              upscalers={upscalers}
-              onDeleteImage={(url) => void deleteImage(url)}
-              onDeleteGroup={(groupId) => void deleteGroup(groupId)}
-              onUsePrompt={(text) =>
-                setPresetPrompt((current) => ({ text, nonce: (current?.nonce ?? 0) + 1 }))
-              }
-              paused={paused}
-              nameOf={nameOf}
-              srcOf={srcOf}
-            />
-          )}
-          {!embedded && (
-            <Composer
-              models={models}
-              defaultModel={defaultModel}
-              maxN={maxN}
-              busy={sending}
-              error={submitError}
-              rewrite={rewrite}
-              presetPrompt={presetPrompt}
-              onSubmit={(draft) => void submit(draft)}
-            />
-          )}
-        </section>
+            ) : generations.length === 0 ? (
+              <div className="pg-hero">
+                <span className="pg-hero-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" strokeWidth="1.6">
+                    <rect x="3" y="4" width="18" height="16" rx="2.5" />
+                    <circle cx="8.5" cy="9.5" r="1.8" />
+                    <path d="M4 17.5 9.5 12l4 4 2.5-2.5 4 4" strokeLinecap="round" />
+                  </svg>
+                </span>
+                <h2 className="pg-hero-title">Imagine</h2>
+                <p className="pg-hero-tagline">
+                  Bring your vision to life and craft the extraordinary
+                </p>
+              </div>
+            ) : mode === "gallery" ? (
+              /* `progress` and cancel are here now, and the rule that kept them
+                 out is reversed. It read: the gallery shows what exists, and a
+                 run in flight has no image yet, so the feed is where a
+                 generation is watched. That was extended from an earlier and
+                 still-correct rule — no *metadata* on a tile — and the extension
+                 was wrong. Nothing was ever lost by it: polling is driven by
+                 `active`, which is computed from the generations and not from
+                 the mode, so the picture landed in this view too. But a view
+                 that gives no sign a submission was accepted reads as a
+                 submission that failed, which is what the user reported. T8: in
+                 every view, what the server accepted is visible until it
+                 completes, fails or is cancelled. The tile is still a box with
+                 no facts written on it. */
+              <GalleryView
+                generations={generations}
+                progress={progress}
+                paused={paused}
+                cancelling={cancelling}
+                onCancel={(id) => void cancel(id)}
+                busy={sending}
+                upscalers={upscalers}
+                nameOf={nameOf}
+                srcOf={srcOf}
+                thumbOf={thumbOf}
+                onRefine={(entry, image) => void refine(entry, image)}
+                onVariation={(entry) => void variation(entry)}
+                onUpscale={(entry, image, choice) => void upscale(entry, image, choice)}
+                onDeleteImage={(url) => void deleteImage(url)}
+              />
+            ) : mode === "table" ? (
+              /* `progress` and cancel are here for the same reason they are on
+                 the gallery, and the same comment was reversed: "this view shows
+                 a picture that exists" left the hero on an old picture with
+                 nothing to say why, which is the reported defect at its worst —
+                 a stage that looks answered while a request is still running.
+
+                 Keyed on the project, which is the only prop of this kind on the
+                 page. The light table holds a selected frame, and that selection
+                 is an answer about *this* project's pictures — so it has to die
+                 with the project rather than be carried into the next one. The
+                 view resolves a selection it no longer recognises to its default
+                 frame on its own, which covers a deleted image, a newly landed
+                 one, and a run that has just finished; it cannot cover a project
+                 switch while the view stays mounted, because both projects being
+                 left in this view is exactly the case where nothing unmounts.
+                 The key is that unmount, and it keeps the selection out of the
+                 state up here. */
+              <LightTableView
+                key={selected ?? ""}
+                generations={generations}
+                progress={progress}
+                paused={paused}
+                cancelling={cancelling}
+                onCancel={(id) => void cancel(id)}
+                busy={sending}
+                upscalers={upscalers}
+                nameOf={nameOf}
+                srcOf={srcOf}
+                thumbOf={thumbOf}
+                onRefine={(entry, image) => void refine(entry, image)}
+                onVariation={(entry) => void variation(entry)}
+                onUpscale={(entry, image, choice) => void upscale(entry, image, choice)}
+                onDeleteImage={(url) => void deleteImage(url)}
+              />
+            ) : (
+              <GenerationFeed
+                generations={generations}
+                progress={progress}
+                onCancel={(id) => void cancel(id)}
+                cancelling={cancelling}
+                busy={sending}
+                onRefine={(entry, image) => void refine(entry, image)}
+                onVariation={(entry) => void variation(entry)}
+                onUpscale={(entry, image, choice) => void upscale(entry, image, choice)}
+                upscalers={upscalers}
+                onDeleteImage={(url) => void deleteImage(url)}
+                onDeleteGroup={(groupId) => void deleteGroup(groupId)}
+                onUsePrompt={(text) =>
+                  setPresetPrompt((current) => ({ text, nonce: (current?.nonce ?? 0) + 1 }))
+                }
+                paused={paused}
+                nameOf={nameOf}
+                srcOf={srcOf}
+              />
+            )}
+            {!embedded && (
+              <div className="pg-dock" ref={measureDock}>
+                <Composer
+                  models={models}
+                  defaultModel={defaultModel}
+                  maxN={maxN}
+                  busy={sending}
+                  error={submitError}
+                  rewrite={rewrite}
+                  presetPrompt={presetPrompt}
+                  onSubmit={(draft) => void submit(draft)}
+                />
+              </div>
+            )}
+          </section>
+        </div>
       </div>
 
+      {dialog?.kind === "new" && (
+        <NewProjectDialog
+          onCancel={() => {
+            setDialog(null);
+            // Nothing to undo: `create` is what makes the record, so a cancel
+            // before it ran leaves the server holding nothing. A cancel *after*
+            // a failed rename leaves an "Untitled project" in the rail, which is
+            // a project the user can see and delete.
+          }}
+          onCreate={create}
+        />
+      )}
       {dialog?.kind === "rename" && (
         <RenameDialog
           title={titleOf(dialog.id)}

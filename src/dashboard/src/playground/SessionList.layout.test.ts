@@ -1,10 +1,11 @@
 /**
- * Why the history sidebar's rows are a name and not a toolbar.
+ * Why the rail's rows are a name and not a toolbar, and why the collapsed rail
+ * is 56px of *track* rather than 56px of content inside a 280px column.
  *
- * Both of these are cascade questions, so they are asked of the real cascade
+ * All of these are cascade questions, so they are asked of the real cascade
  * (`css: true` in the vitest config) rather than assumed. jsdom has no layout
- * engine, so widths cannot be measured here — but the two properties that
- * *caused* the collapse are computed styles, and they are what these pin.
+ * engine, so widths cannot be measured here — but the properties that *caused*
+ * the collapse are computed styles, and they are what these pin.
  *
  * What went wrong: the action buttons sat in the row's flex line with
  * `flex-shrink: 0`, so they took their full intrinsic width — about 330px of
@@ -21,6 +22,11 @@ import "../styles.css";
 
 const ROW = `
   <aside class="pg-sidebar">
+    <div class="pg-sidebar-head">
+      <h2>Projects</h2>
+      <button class="small pg-rail-toggle"></button>
+      <button class="primary small pg-rail-new">+</button>
+    </div>
     <ul class="pg-sessions">
       <li>
         <div class="pg-session-row">
@@ -37,6 +43,18 @@ const ROW = `
     </ul>
   </aside>`;
 
+/** The same rail at its narrow width: landmarks, no names, no row actions. */
+const COLLAPSED = `
+  <aside class="pg-sidebar pg-sidebar-collapsed">
+    <div class="pg-sidebar-head">
+      <button class="small pg-rail-toggle"></button>
+      <button class="primary small pg-rail-new">+</button>
+    </div>
+    <ul class="pg-sessions">
+      <li><button class="pg-rail-mark" aria-current="true">F</button></li>
+    </ul>
+  </aside>`;
+
 /** Every selector in the loaded sheet, for a rule jsdom will not compute. */
 function rules(): string[] {
   return [...document.styleSheets].flatMap((sheet) =>
@@ -44,8 +62,8 @@ function rules(): string[] {
   );
 }
 
-function styleOf(selector: string): CSSStyleDeclaration {
-  document.body.innerHTML = ROW;
+function styleOf(selector: string, markup: string = ROW): CSSStyleDeclaration {
+  document.body.innerHTML = markup;
   const element = document.querySelector(selector);
   if (!element) throw new Error(`no ${selector}`);
   return window.getComputedStyle(element);
@@ -87,5 +105,39 @@ describe("a session row", () => {
     // resolve pseudo-element styles, so this proves the guard is *present*, not
     // that a browser applies it. The narrower claim is the true one.
     expect(rules()).toContain(".pg-tool:not([data-tip])::after");
+  });
+});
+
+describe("the collapsed rail", () => {
+  it("narrows the flex track itself, not just what sits in it", () => {
+    // `.pg-sidebar` is a flex item of `.pg-layout` with `flex: 0 0 280px`. A
+    // collapse that set only `width` would leave that basis in force: the rail
+    // would keep its 280px track and the landmarks would sit in a 56px column
+    // inside it, with the studio no wider than before. So the basis is the
+    // property under test, and the expanded rail is asserted alongside it —
+    // otherwise a rule that narrowed *both* states would pass.
+    expect(styleOf(".pg-sidebar", COLLAPSED).flexBasis).toBe("56px");
+    expect(styleOf(".pg-sidebar").flexBasis).toBe("280px");
+  });
+
+  it("stacks the rail's own controls, which do not fit side by side at 56px", () => {
+    expect(styleOf(".pg-sidebar-head", COLLAPSED).flexDirection).toBe("column");
+    // Still a row when there is room for one: the heading and the two controls
+    // share a line at full width.
+    expect(styleOf(".pg-sidebar-head").flexDirection).not.toBe("column");
+  });
+
+  it("keeps a name that cannot elide from widening the rail", () => {
+    // Nothing in this column is elidable — a landmark is one letter — so the
+    // overflow has to be clipped rather than allowed to push the track open.
+    expect(styleOf(".pg-sidebar", COLLAPSED).overflowX).toBe("hidden");
+  });
+
+  it("marks the open project on the landmark, which has no row to mark", () => {
+    // Expanded, selection is `aria-selected` on `.pg-session-row` and the tint
+    // comes from that. A landmark is a single button with no row around it, so
+    // the selected state is drawn on the button and keyed off `aria-current`.
+    expect(rules()).toContain('.pg-rail-mark[aria-current="true"]');
+    expect(styleOf(".pg-rail-mark", COLLAPSED).position).toBe("relative");
   });
 });

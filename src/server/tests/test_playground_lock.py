@@ -318,6 +318,69 @@ def test_images_carry_the_data_plane_credential(engine, tmp_path):
         ][0]["url"]
         assert secured.get(url).status_code == 401
         assert secured.get(url, headers=bearer).status_code == 200
+        assert secured.get(f"{url}/thumb").status_code == 401
+        assert secured.get(f"{url}/thumb", headers=bearer).status_code == 200
+
+
+# ── Thumbnails, behind the same lock ───────────────────────────────────────
+#
+# Asserted on the thumbnail route itself and never inferred from the image
+# route passing. The two are separate routes with separate code: the lock check
+# on this one is its own statement, and a copy-paste that dropped it would leave
+# every test above green while publishing a locked session's pictures -- small,
+# but pictures.
+
+
+def test_a_locked_sessions_thumbnail_needs_that_sessions_token(client, settings):
+    session_id, image_url, context_url = finished_session(client)
+    other = new_session(client)
+    token = protect(client, session_id)
+    thumbs = PlaygroundStore(settings.server.playground_store).thumbs_dir
+
+    def is_locked(response) -> bool:
+        return response.status_code == 403 and response.json()["error"]["code"] == "session_locked"
+
+    assert is_locked(client.get(f"{image_url}/thumb"))
+    assert is_locked(client.get(f"{context_url}/thumb"))
+    assert is_locked(client.get(f"{image_url}/thumb", params={"t": "junk"}))
+    # Another session's live token opens nothing here either.
+    assert is_locked(client.get(f"{image_url}/thumb", headers=with_token(protect(client, other))))
+    # Refused before any work: the lock is checked before the derivation, so a
+    # refusal leaves nothing on disk for a later request to find already made.
+    assert list(thumbs.iterdir()) == []
+
+    # Both token forms, because an `<img>` can only send the query one.
+    with_header = client.get(f"{image_url}/thumb", headers=with_token(token))
+    assert with_header.status_code == 200
+    assert with_header.headers["content-type"] == "image/webp"
+    assert client.get(f"{image_url}/thumb", params={"t": token}).status_code == 200
+    assert client.get(f"{context_url}/thumb", params={"t": token}).status_code == 200
+
+    # Re-locking stops serving it again, whatever the browser may still hold in
+    # its own cache -- see the route's `TEMPORARY:` note.
+    relocked = client.post(f"/playground/api/sessions/{session_id}/lock", headers=with_token(token))
+    assert relocked.status_code == 204
+    assert is_locked(client.get(f"{image_url}/thumb", params={"t": token}))
+
+
+def test_a_thumbnail_no_row_holds_is_a_404(client, settings):
+    stray = PlaygroundStore(settings.server.playground_store).images_dir / "stray.png"
+    stray.write_bytes(tiny_png())
+    assert client.get("/playground/images/stray.png/thumb").status_code == 404
+    assert client.get("/playground/images/../playground.db/thumb").status_code == 404
+    assert client.get("/playground/images/nope.png/thumb").status_code == 404
+    # The row lookup is the traversal guard, so nothing was read or written.
+    assert stray.is_file()
+    assert list(PlaygroundStore(settings.server.playground_store).thumbs_dir.iterdir()) == []
+
+
+def test_a_private_network_preflight_for_a_thumbnail_is_granted(client):
+    """The grant is a path-prefix one, and the thumbnail route lives under it on
+    purpose: an embedded client renders tiles from a private address too, and a
+    sibling path would have failed the same preflight the image route needed."""
+    response = client.options("/playground/images/anything.png/thumb", headers=PNA)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-private-network"] == "true"
 
 
 # ── Recovery ───────────────────────────────────────────────────────────────
@@ -394,12 +457,13 @@ def test_a_damaged_record_stays_locked(tmp_path):
         store.close()
 
 
-# ── Cross-site, on the one route where the origin never was the authority ──
+# ── Cross-site, on the two routes where the origin never was the authority ──
 #
 # `deny_cross_site` guards every playground route except `GET
-# /playground/images/{filename}`. That exception is deliberate and narrow, and
-# these four tests are what make it a decision rather than an oversight: the
-# first pins what changed, and the other three pin everything that must not.
+# /playground/images/{filename}` and its `/thumb` sibling. That exception is
+# deliberate and narrow, and these tests are what make it a decision rather than
+# an oversight: the first pins what changed, and the others pin everything that
+# must not.
 
 
 def image_of(client: TestClient) -> str:
@@ -435,6 +499,21 @@ def test_a_locked_sessions_image_is_still_refused_from_another_origin(client):
     session_id, url = image_of(client)
     protect(client, session_id)
     response = client.get(url, headers={"Origin": "tauri://localhost"})
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "session_locked"
+
+
+def test_a_locked_sessions_thumbnail_is_still_refused_from_another_origin(client):
+    """The same assertion on the thumbnail route, made on the route itself.
+
+    The two routes share a reasoning, not an implementation: this one derives a
+    file rather than serving a stored one, and the lock check on it is its own
+    line of code. A passing test on the image route says nothing about whether
+    that line is there.
+    """
+    session_id, url = image_of(client)
+    protect(client, session_id)
+    response = client.get(f"{url}/thumb", headers={"Origin": "tauri://localhost"})
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "session_locked"
 

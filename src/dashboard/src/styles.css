@@ -1,33 +1,52 @@
-/* The Quantum Codex visual language, applied to a diffusion server.
+/* The "Quiet Studio" visual language: a diffusion server's control plane in a
+   blue-tinted dark atelier.
 
-   Dense and operational rather than decorative: this is a panel an operator
-   watches while a model loads for two minutes and a conversion runs for two
-   hours, so density beats whitespace and every surface earns its border.
+   It was the Quantum Codex palette and type scale, kept at Codex's literal
+   values so the two applications read as one product family. That premise no
+   longer holds: this application's subject is a picture, and Codex's operational
+   density — 13px type on a 4px spacing floor, in neutral greys — makes the
+   chrome compete with the image instead of receding behind it. The direction
+   agreed with the project owner is the opposite one: bigger type, more air,
+   fewer and bluer surfaces, and depth (shadow, glass) where something genuinely
+   floats over the canvas.
 
-   The palette, type scale and control shapes are Quantum Codex OSS's, kept at
-   the same literal values so the two applications read as one product family.
-   What is expressed as tokens here and as literals there is the one deliberate
-   difference: QDS has more states to name — five availabilities, three job
-   outcomes, saved variants — and naming them once is what stops the next panel
-   from inventing a sixth colour. */
+   Three surfaces, back to front, and no fourth: `--bg` is the room, `--panel`
+   is what sits in it, `--raised` is what sits on that. `--sunken` stays for the
+   one thing that is neither — what you read out of or type into.
+
+   Everything below is a token because the two pages share this sheet: the
+   playground is the surface the direction was designed for, and the dashboard
+   inherits it through the cascade rather than through a second palette. */
 
 :root {
   /* Surfaces, back to front. */
-  --bg: #16181d;
-  --panel: #1e2128;
+  --bg: #0d1117;
+  /* `--bg` at zero alpha, for a gradient that fades *to* the room. Must be kept
+     in step with `--bg`: a gradient from the `transparent` keyword fades
+     through transparent black and greys its own middle. */
+  --bg-0: rgba(13, 17, 23, 0);
+  --panel: #151b24;
+  /* Above the panel: hover fills, floating chrome, the glass the composer and
+     the image tools are made of. */
+  --raised: #1c242f;
   /* Below the panel rather than above it: inputs, code, log bodies. Things you
      read out of or type into, as opposed to things you look at. */
-  --sunken: #12141a;
-  --line: #2b2f38;
-  --fieldset: #21252e;
+  --sunken: #10151c;
+  --line: #232c3a;
+  /* A line that separates without drawing attention: rails, section rules. */
+  --line-soft: #1a212b;
+  --fieldset: #1b2330;
 
-  --text: #e6e8ec;
-  --muted: #9aa1ad;
+  --text: #e8edf5;
+  --muted: #93a1b5;
+  /* A third text register the old palette had no name for, so every label that
+     wanted to be quieter than `--muted` invented an opacity instead. */
+  --faint: #5f6d80;
 
-  --accent: #7dd3fc;
-  --accent-line: #0e7490;
+  --accent: #5eb8ff;
+  --accent-line: #1d6fb8;
   --live: #4ade80;
-  --warn: #fde047;
+  --warn: #fbbf24;
   --down: #f87171;
 
   /* Tints for the pills. Kept as tokens because a pill and its text must move
@@ -36,34 +55,59 @@
   --live-tint: rgba(74, 222, 128, 0.15);
   --warn-tint: rgba(250, 204, 21, 0.15);
   --down-tint: rgba(248, 113, 113, 0.15);
-  --accent-tint: rgba(125, 211, 252, 0.14);
+  --accent-tint: rgba(94, 184, 255, 0.16);
 
   /* Spacing rhythm. Everything below is a multiple of these; nothing invents an
-     11px. */
-  --s1: 4px;
-  --s2: 8px;
-  --s3: 12px;
-  --s4: 16px;
-  --s5: 24px;
-  --s6: 32px;
+     11px. The floor is 6px rather than 4px: the scale is what carries the "less
+     dense" decision, so a rule written against `--s2` gets more air without
+     being rewritten. */
+  --s1: 6px;
+  --s2: 10px;
+  --s3: 16px;
+  --s4: 24px;
+  --s5: 36px;
+  --s6: 56px;
 
-  --radius: 7px;
-  --radius-lg: 10px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  /* What floats: the composer, the viewer's frame. A larger radius is part of
+     what says a surface is above the page rather than in it. */
+  --radius-xl: 18px;
   --radius-pill: 999px;
 
-  /* Type scale. Four sizes; a fifth would be a decision nobody could defend. */
-  --font-xs: 10px;
-  --font-sm: 11px;
-  --font-md: 12px;
-  --font-base: 13px;
-  --font-lg: 16px;
-  --font-xl: 18px;
+  /* Type scale. The base moves 13px → 15px and everything moves with it; a
+     seventh size would be a decision nobody could defend. `--font-2xl` is the
+     one display size, for the empty studio's title and nothing else. */
+  --font-xs: 12px;
+  --font-sm: 13px;
+  --font-md: 14px;
+  --font-base: 15px;
+  --font-lg: 19px;
+  --font-xl: 20px;
+  --font-2xl: 26px;
   --mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Depth. Named rather than written at each site, because "how far off the
+     page is this" is a three-value decision and four call sites had four
+     different answers to it. */
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+  --shadow: 0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  --shadow-lg: 0 24px 64px -12px rgba(0, 0, 0, 0.75);
+
+  /* The room, dimmed, behind a dialog. Translucent on purpose: what is under it
+     stays legible as context, blurred so it cannot be read as content. */
+  --scrim: rgba(8, 11, 16, 0.72);
 
   /* One control height, so a button, a select and an input sitting in the same
      row line up without anyone measuring. */
-  --control-h: 30px;
-  --control-h-sm: 24px;
+  --control-h: 40px;
+  --control-h-sm: 32px;
+
+  /* The scrollbar, as a pair: a thumb you can see against three dark surfaces
+     and a brighter one under the pointer. Tokens rather than literals because
+     both engines are styled below and the two must not drift apart. */
+  --scroll-thumb: #2a3442;
+  --scroll-thumb-hover: #3a4859;
 
   color-scheme: dark;
 }
@@ -84,6 +128,57 @@ body {
   color: var(--text);
   font: var(--font-base) / 1.5 ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbars, in both engines, everywhere.
+
+   There were none: every scroll box in this application — the rail, the feed,
+   the gallery, the filmstrip, the inspector, a dialog's body — drew the
+   platform's own bar, which on a light system theme is a pale slab across a
+   dark blue panel.
+
+   Two mechanisms, and they do not stack: `scrollbar-width`/`scrollbar-color`
+   are the standard properties, and a Chromium that understands them ignores the
+   `::-webkit-scrollbar` pseudo-elements on the same element outright. So the
+   standard pair is what Chromium and Firefox paint, and the legacy block below
+   is for the engines that have only it — WebKit before it shipped the standard
+   properties. Written to the same values, because a scrollbar that changes
+   colour with the browser is the thing this replaces.
+
+   Both are applied unqualified rather than to a list of the six scroll
+   containers: such a list is one to keep in step with the next box somebody
+   makes scrollable, and the two engines would disagree about which boxes were
+   quiet in the meantime. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scroll-thumb) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+/* No track: a rail drawn down the side of a panel is chrome the picture does
+   not need. What is left is a thumb floating over the content. */
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* `background-clip: padding-box` behind a transparent border is what insets the
+   thumb inside the 10px gutter: a 6px thumb with room around it, rather than a
+   10px slab against the edge. */
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  border-radius: var(--radius-pill);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: padding-box;
 }
 
 /* ── Shell ──────────────────────────────────────────────────────────────── */
@@ -510,6 +605,27 @@ dd.wrap {
 .pill-accent {
   background: var(--accent-tint);
   color: var(--accent);
+}
+
+/* A pill carrying a *fact* rather than a state: "1440x800", "28 steps", a model
+   name. The states above shout on purpose — uppercase, letterspaced, tinted with
+   the colour of the condition they report — and a run's settings are not a
+   condition, so a row of them in that voice reads as four warnings.
+
+   A modifier on `.pill` rather than a third badge class: the shape, the inline
+   flex and the pill radius are the same, and only the voice differs. Darker than
+   the base tint, which is what makes a chip read as a chip against the panel it
+   sits on instead of as tinted text. Tabular figures because these sit in
+   columns of numbers that change under a poll. */
+.pill-fact {
+  background: var(--sunken);
+  color: var(--muted);
+  border: 1px solid var(--line-soft);
+  font-weight: 500;
+  font-size: var(--font-sm);
+  text-transform: none;
+  letter-spacing: normal;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── Controls ───────────────────────────────────────────────────────────── */
@@ -1082,8 +1198,42 @@ select {
   align-items: flex-start;
   justify-content: center;
   padding: var(--s5) var(--s4);
-  background: rgba(10, 11, 14, 0.7);
+  background: var(--scrim);
+  /* Translucent *and* blurred, which is the pair that makes it a scrim rather
+     than a curtain: the studio underneath stays visible as the place the dialog
+     came from, and blurred enough that no word of it can be read as part of the
+     dialog. It matters most for the image viewer, which is a picture opened over
+     the picture it came from — hence one rule here rather than a second
+     translucent surface for `.pg-viewer` alone. */
+  backdrop-filter: blur(20px) saturate(1.15);
+  -webkit-backdrop-filter: blur(20px) saturate(1.15);
   overflow-y: auto;
+}
+
+/* The scrim fades, the surface rises. The mockups' own values and the mockups'
+   own reason: the magnify overlay is a picture opened over the picture it came
+   from, and appearing instantly reads as a page navigation rather than as
+   something opening on top of what is still there. One rule for every dialog
+   rather than one for the viewer — a second motion vocabulary for the same
+   gesture is what this sheet spends its comments avoiding.
+
+   Both animate `opacity` and `transform` only: nothing here reflows, so a
+   dialog opening over a feed of decoded images costs no layout. */
+@keyframes modal-fade {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes modal-rise {
+  from {
+    opacity: 0;
+    transform: scale(0.96) translateY(12px);
+  }
+}
+
+.modal-backdrop {
+  animation: modal-fade 0.2s ease;
 }
 
 .modal {
@@ -1094,7 +1244,15 @@ select {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-lg);
+  animation: modal-rise 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .modal-backdrop,
+  .modal {
+    animation: none;
+  }
 }
 
 .modal-head {
@@ -1102,7 +1260,7 @@ select {
   align-items: baseline;
   gap: var(--s3);
   flex-wrap: wrap;
-  padding: 12px 16px;
+  padding: var(--s2) var(--s3);
   border-bottom: 1px solid var(--line);
 }
 
@@ -1127,7 +1285,7 @@ select {
 }
 
 .modal-body {
-  padding: 4px 16px 16px;
+  padding: var(--s1) var(--s3) var(--s3);
   overflow-y: auto;
 }
 
@@ -1531,7 +1689,7 @@ main.view-logs > .notice {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow);
 }
 
 .size-breakdown {
@@ -1591,38 +1749,85 @@ main.playground {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  /* No page padding: the rail is flush with the window's edge and runs its
+     whole height, which is what the mockup's rail does and what the padding
+     made impossible. The stage inside pays the gutter instead. */
+  padding: 0;
 }
 
-/* One view, so the masthead line carries the way out instead of a tab strip. */
-main.playground > header {
+.pg-layout {
+  display: flex;
+  /* No gutter between the rail and the stage: the rail is a flush column with a
+     single `border-right`, not a card floating in a gap. */
+  gap: 0;
+  flex: 1;
+  min-height: 0;
+}
+
+/* `?view=plugin`: the studio is the only child, and the stage inside already
+   pays the gutter — the rule that used to live here was the sidebar's `gap`,
+   which no longer exists. Kept as a hook rather than removed: the class is what
+   the embedded surface is recognised by, in this sheet and in its tests. */
+.pg-layout-embedded {
+  gap: 0;
+}
+
+/* Everything the rail is not: the masthead, the notices and the studio, in the
+   column that owns the window's padding. */
+.pg-stage {
+  flex: 1;
+  min-width: 0;
+  /* And `min-height: 0`, which is not symmetry: a flex item's automatic minimum
+     is its content, and the studio inside this column is a wall of pictures.
+     Without it the column grows past the window and the scroll boxes inside it
+     never get a bounded box to scroll in — measured at 1440×820: a 928px studio
+     in an 820px window, with the composer's glass pushed off the bottom. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: var(--s3) var(--s4) var(--s4);
+}
+
+/* The masthead line: the view switcher and the queue control. The switcher
+   reuses the dashboard's `.views` track rather than a playground tab strip of
+   its own — a second vocabulary for "one of N is active" is exactly what this
+   sheet's Playground section exists not to grow. */
+.pg-stage > header {
   flex-direction: row;
   align-items: center;
   gap: var(--s3);
 }
 
-.pg-layout {
-  display: flex;
-  gap: var(--s4);
-  flex: 1;
-  min-height: 0;
-}
+/* The rail, flush: full height, one border, no radius and no gap around it.
+   It was a floating card — a full border, a `--radius-lg` and its own padding
+   inside the layout's gutter — which reads as a panel dropped on the page
+   rather than as the edge of the application.
 
-/* `?view=plugin`: the studio is the only child, so the row has nothing to
-   space out and the pane is narrow — reclaim the gutter the sidebar used. */
-.pg-layout-embedded {
-  gap: 0;
-}
-
+   `--line-soft` for the one border it keeps: a rail is a boundary, not a frame,
+   and `--line` at full height draws a hard rule down the window. */
 .pg-sidebar {
   flex: 0 0 280px;
   display: flex;
   flex-direction: column;
-  gap: var(--s3);
   background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 14px;
-  overflow-y: auto;
+  border-right: 1px solid var(--line-soft);
+  /* The list scrolls, not the rail: the head and the footer strip stay put, so
+     the wordmark does not slide away and the status pill stays reachable with a
+     hundred projects in between. */
+  overflow: hidden;
+  /* Animated because the user asked for the collapse to be a movement rather
+     than a jump. `flex-basis` is a layout property and the studio beside it does
+     re-lay out on every intermediate frame — that is the cost this rule was
+     written to avoid, and it is accepted knowingly: 180ms, and the feed's images
+     have reserved boxes now (see `.pg-tile`), so what re-flows is the box, not a
+     re-measurement of every decoded picture. */
+  transition: flex-basis 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-sidebar {
+    transition: none;
+  }
 }
 
 .pg-sidebar-head {
@@ -1630,19 +1835,198 @@ main.playground > header {
   align-items: center;
   justify-content: space-between;
   gap: var(--s2);
+  padding: var(--s3) var(--s3) var(--s2);
 }
 
-.pg-sidebar-head h2 {
+/* The wordmark: the page's `h1`, at the top of the rail. */
+.pg-rail-wordmark {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-width: 0;
+  font-size: var(--font-md);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.pg-rail-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The mark beside it, and the one gradient in the sheet: the mockup's, because
+   the product's one piece of decoration is where it says its own name. */
+.pg-rail-dot {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: linear-gradient(140deg, var(--accent) 0%, var(--accent-line) 100%);
+  box-shadow: 0 2px 10px var(--accent-tint);
+}
+
+/* A label over the list, not a title competing with the project names: the rail
+   has one heading and it says what the column is. */
+.pg-rail-label {
   margin: 0;
+  padding: var(--s2) var(--s3) var(--s1);
+  font-size: var(--font-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
 }
 
+/* The strip at the foot: the queue's state and the way off the page, over a
+   rule that separates them from the list they are not part of. */
+.pg-rail-foot {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  padding: var(--s3);
+  border-top: 1px solid var(--line-soft);
+}
+
+/* The shell's link, at rail scale: `.shell-link`'s own `margin-left: auto` is
+   the masthead's rule and would fight `justify-content` here. */
+.pg-rail-foot .shell-link {
+  margin-left: 0;
+  min-height: var(--control-h-sm);
+  padding: 2px var(--s2);
+  font-size: var(--font-sm);
+}
+
+/* Collapsed: a column of landmarks, 56px wide.
+
+   `flex-basis` is what changes, and nothing else about the row's layout — the
+   rail is a flex item of `.pg-layout` with `flex: 0 0 <width>`, so a rule that
+   only set `width` would be overruled by the basis and the rail would keep its
+   280px track while its content shrank inside it. That is the collapse bug
+   `SessionList.layout.test.ts` exists for, in the other direction. */
+.pg-sidebar-collapsed {
+  flex: 0 0 56px;
+  align-items: center;
+  /* Nothing here is elidable at this width, so a name that cannot shrink must
+     not be allowed to widen the rail instead. */
+  overflow-x: hidden;
+}
+
+/* The name does not fit at 56px; the mark beside it does, and it is what says
+   which application this is. */
+.pg-sidebar-collapsed .pg-rail-name {
+  display: none;
+}
+
+/* Stacked, and the pill loses its word rather than its colour: `font-size: 0`
+   leaves the text in the accessibility tree — "Queue paused" is still announced
+   and still findable — while the tinted round box remains as a status light. */
+.pg-sidebar-collapsed .pg-rail-foot {
+  /* The collapsed rail centres its children, which would shrink this strip to
+     the width of the dot in it and leave the rule above it a 30px stub. */
+  align-self: stretch;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2);
+}
+
+.pg-sidebar-collapsed .pg-rail-foot .pill {
+  gap: 0;
+  padding: 5px;
+  font-size: 0;
+  letter-spacing: 0;
+}
+
+/* Stacked rather than spread: two 32px controls do not fit side by side in a
+   56px column, and the toggle is the one that must stay reachable. */
+.pg-sidebar-collapsed .pg-sidebar-head {
+  flex-direction: column;
+  gap: var(--s1);
+}
+
+.pg-rail-toggle,
+.pg-rail-new {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  line-height: 0;
+}
+
+/* The landmark, and the tile a cover is drawn in. `/playground/api/sessions`
+   carries the project's most recent image now, so at this width a project is
+   usually its own picture; the hue and the letter are what a project with no
+   images — and a locked one, whose cover the server withholds on purpose — falls
+   back to. The hue comes from the id, so the mark stays the same colour as the
+   list reorders under it. */
+.pg-rail-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  min-height: 0;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: hsl(var(--pg-mark-hue, 210) 38% 24%);
+  color: hsl(var(--pg-mark-hue, 210) 70% 82%);
+  font-size: var(--font-md);
+  font-weight: 600;
+}
+
+/* Fills the mark completely: the tinted square is the fallback's background, and
+   a picture sitting inside it with the tint showing round the edge would read as
+   a frame nobody asked for. `object-fit: cover` because a 16:9 thumbnail in a
+   square box has to lose something, and cropping the middle is what a contact
+   sheet does. */
+.pg-rail-mark-cover,
+.pg-session-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.pg-rail-mark[aria-current="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-tint);
+}
+
+/* Drawn on the mark, not beside it: there is no room beside it. */
+.pg-rail-mark-lock {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.pg-rail-mark-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+}
+
+/* The list is what scrolls inside the rail, so the head above it and the strip
+   below it stay where they are. */
 .pg-sessions {
   list-style: none;
   margin: 0;
-  padding: 0;
+  padding: 0 var(--s2) var(--s3);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 2px;
+}
+
+/* The rail has no padding of its own any more, so its one sentence needs the
+   same gutter the list's rows sit in. */
+.pg-sidebar > .note {
+  padding: 0 var(--s3);
 }
 
 .pg-session-row {
@@ -1653,27 +2037,68 @@ main.playground > header {
   border: 1px solid transparent;
   border-radius: var(--radius);
   padding: 2px;
+  transition: background 150ms ease;
 }
 
-/* Selected the way every "one of N is active" control in this app says it —
-   accent tint over an accent line, as `.view-tab` and `.variant` do. */
+.pg-session-row:hover {
+  background: var(--raised);
+}
+
+/* The mockup's current row: a raised pill with an accent edge cut into its left
+   side. It was an accent tint behind an accent border — the sheet's "one of N
+   is active" vocabulary, which is right for a tab strip and wrong here, because
+   a rail of tinted rows makes the *rail* the loud thing on a page whose subject
+   is a picture. The inset shadow says the same in one edge, and costs no layout:
+   a border would move the row by a pixel as the selection travels. */
 .pg-session-row[aria-selected="true"] {
-  background: var(--accent-tint);
-  border-color: var(--accent-line);
+  background: var(--raised);
+  box-shadow: inset 2px 0 0 var(--accent);
 }
 
+@media (prefers-reduced-motion: reduce) {
+  .pg-session-row {
+    transition: none;
+  }
+}
+
+/* A grid rather than a column of two lines, because the row now leads with a
+   tile. Two columns and two rows, with the tile spanning both rows: the title
+   and the timestamp keep their own lines beside it, and no wrapper element had
+   to be introduced to hold them. `minmax(0, 1fr)` on the text column is what
+   keeps `.pg-session-title` elidable — a bare `1fr` floors at the content's
+   min-content width, and a long unbroken title would push the tile out of the
+   rail. */
 .pg-session-open {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: var(--s2);
+  row-gap: 2px;
+  justify-items: start;
   background: none;
   border: 0;
   padding: var(--s1) var(--s2);
   text-align: left;
   color: var(--text);
+}
+
+/* The same 1:1 tile the collapsed rail draws, smaller: a row is a name first,
+   and a tile as tall as the two text lines would make the picture the row. */
+.pg-session-thumb {
+  grid-row: 1 / span 2;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: hsl(var(--pg-mark-hue, 210) 38% 24%);
+  color: hsl(var(--pg-mark-hue, 210) 70% 82%);
+  font-size: var(--font-sm);
+  font-weight: 600;
+  line-height: 1;
 }
 
 .pg-session-title {
@@ -1749,13 +2174,14 @@ main.playground > header {
   background: linear-gradient(to right, transparent, var(--panel) var(--s5));
 }
 
-/* The selected row is `--accent-tint` *over* `--panel`, and the tint is
-   translucent — so matching it takes the same two layers in the same order, not
-   a flat colour that happens to look close. One layer would show as a patch. */
+/* A hovered or selected row is `--raised`, which is opaque, so one layer is
+   enough here — where the tint used to need two, because a translucent fill
+   over `--panel` cannot be matched by a flat colour without showing as a patch.
+   The rows the actions appear on are exactly the raised ones: they are revealed
+   on hover or focus, and both of those states raise the row. */
+.pg-session-row:hover .pg-session-actions,
 .pg-session-row[aria-selected="true"] .pg-session-actions {
-  background:
-    linear-gradient(to right, transparent, var(--accent-tint) var(--s5)),
-    linear-gradient(to right, transparent, var(--panel) var(--s5));
+  background: linear-gradient(to right, transparent, var(--raised) var(--s5));
 }
 
 /* Hover *or* keyboard focus, and `opacity` rather than `visibility` is what
@@ -1782,9 +2208,18 @@ main.playground > header {
 .pg-studio {
   flex: 1;
   min-width: 0;
+  /* The studio is a flex item of the stage's column now, not of the layout's
+     row, so its height is no longer settled by the row stretching it: its own
+     automatic minimum is its content, and the content is a feed. */
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: var(--s4);
+  /* The containing block for the floating composer — `.pg-dock` is
+     `position: absolute`, and without a positioned ancestor here it would
+     resolve against the viewport and sit over the page rather than over this
+     studio. */
+  position: relative;
 }
 
 .pg-feed {
@@ -1795,13 +2230,19 @@ main.playground > header {
   flex-direction: column;
   gap: var(--s3);
   padding-right: var(--s1);
+  /* The composer floats over the bottom of this box, so the scrollable content
+     reserves the room the composer no longer takes out of the flex column.
+     Padding on the scroll container rather than a spacer element: the last
+     entry then scrolls clear of the glass, which is what the auto-scroll to the
+     newest generation depends on. */
+  padding-bottom: calc(var(--pg-dock-h, 0px) + var(--s2));
 }
 
 .pg-entry {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  padding: 14px 16px;
+  padding: var(--s3);
 }
 
 .pg-prompt {
@@ -1889,22 +2330,23 @@ main.playground > header {
   letter-spacing: 0.04em;
 }
 
-/* In the header, where a control that acts on the whole queue belongs -- not in
-   the composer, which is about one request.
-
-   The `auto` margin pushes it to the far edge; `.shell-link` carries one too, so
-   its own is dropped here or the free space would be split between the two and
-   leave this button stranded mid-header. */
+/* In the masthead, where a control that acts on the whole queue belongs -- not
+   in the composer, which is about one request. The `auto` margin pushes it to
+   the far edge, and it is now the only thing in that header carrying one: the
+   way out of the page moved to the rail's footer strip, which took the second
+   `auto` margin — and the "stranded mid-header" bug it caused — with it. */
 .pg-pause {
   margin-left: auto;
 }
 
-main.playground > header .pg-pause ~ .shell-link {
-  margin-left: 0;
-}
-
+/* A row of fact chips now, not a line of dot-separated text: it wraps rather
+   than eliding, and the gap is the separator the dots used to be. */
 .pg-meta {
   margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s1);
   color: var(--muted);
   font-size: var(--font-sm);
 }
@@ -1952,29 +2394,117 @@ main.playground > header .pg-pause ~ .shell-link {
 
 .pg-images .pg-thumb img {
   width: 100%;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* The mockup's feed value — 1.02, a little less than the gallery's 1.035,
+   because a feed picture is already large. The button clips, so the picture
+   grows *inside* its corner radius instead of over the cell's edges, and only
+   `transform` moves: a composited property, so hovering one picture in a feed
+   of decoded images costs no layout. */
+.pg-images .pg-thumb {
+  overflow: hidden;
+}
+
+.pg-images .pg-thumb:hover img {
+  transform: scale(1.02);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-images .pg-thumb img {
+    transition: none;
+  }
+
+  .pg-images .pg-thumb:hover img {
+    transform: none;
+  }
+}
+
+/* A stacking context for the tag and the toolbar drawn over the picture, and
+   nothing in flow but the picture itself.
+
+   That is the reported bug's fix. The caption and the toolbar used to be
+   siblings *below* `.pg-thumb`, in normal flow, so a cell carrying an
+   "Upscaled · 2880x1600" caption was taller than the cells beside it: the grid
+   row grew to the tallest cell and every other cell's toolbar sat lower than
+   that one's. Out of flow, a cell is exactly as tall as its picture, whatever
+   it has to say about it.
+
+   `overflow: hidden` so the hover scale grows inside the cell's corners rather
+   than over its edges — the same reason `.pg-tile` clips. */
 .pg-image-cell {
   margin: 0; /* figure reset */
-  display: flex;
-  flex-direction: column;
-  gap: var(--s1);
-}
-
-/* The toolbar and the panel it opens, and the containing block for that panel.
-   The popover is `position: absolute` with `bottom: 100%`, so without a
-   positioned ancestor here it resolves against something far up the tree and
-   paints itself off the top of the page — the button toggles, the dialog
-   mounts, and nothing appears.
-
-   Anchored to the toolbar rather than to `.pg-image-cell` so the panel opens
-   over the *image*, which is the one place there is reliably room: `.pg-feed`
-   is a scroll container, and a panel hung above a 512px-tall cell is clipped
-   the moment that cell sits near the top of the view. */
-.pg-image-actions {
   position: relative;
+  /* Self-contained layers, for the reason `.pg-tile` states at length: the tag
+     (`z-index: 1`) and the toolbar (`2`) rank against each other, not against
+     the studio. Without this they compete with the floating composer and win
+     on document order. Fixed with the gallery's, because the same defect in
+     two views is one defect. */
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: var(--radius);
 }
 
+/* The picture is clipped by the cell now, so its own radius would draw a second
+   rounded edge inside the first. */
+.pg-image-cell .pg-thumb img {
+  border-radius: 0;
+}
+
+/* Over the picture, bottom left, on the same line the toolbar occupies — and
+   always visible, unlike the toolbar: "this is the 2880x1600 upscale, not the
+   1440x800 original" is what tells two otherwise identical pictures apart, and
+   a fact you have to hover to learn is a fact you do not have. Its own scrim,
+   because it is legible over a light picture only if it carries one. */
+.pg-image-cell .pg-image-tag {
+  position: absolute;
+  left: var(--s2);
+  bottom: var(--s2);
+  z-index: 1;
+  padding: 2px 8px;
+  border-radius: var(--radius-pill);
+  background: rgba(13, 17, 23, 0.72);
+  backdrop-filter: blur(8px);
+  color: var(--text);
+  font-size: var(--font-sm);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+
+/* Revealed on hover *or* keyboard focus, never on hover alone — the rule the
+   gallery's tiles and the rail's rows already follow, for the reason all three
+   share: a control a keyboard user cannot reach is not a control. `opacity`
+   rather than `visibility` or `display`, because both of those take the buttons
+   out of the tab order, so focus could never arrive to trigger the reveal.
+
+   Pinned to the right so it does not sit under the size tag on the left. */
+.pg-image-cell .pg-image-actions {
+  position: absolute;
+  right: var(--s2);
+  bottom: var(--s2);
+  z-index: 2;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pg-image-cell:hover .pg-image-actions,
+.pg-image-cell .pg-image-actions:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-image-cell .pg-image-actions {
+    transition: none;
+  }
+}
+
+/* The toolbar and the panel it opens. Neither is positioned here any more: the
+   upscale panel used to be `position: absolute; bottom: 100%` against this
+   element, and that is the bug this element's comment used to describe as a
+   feature — `.pg-feed` and `.pg-gallery` are scroll containers, and a panel
+   drawn outside one is clipped by it. The panel is portalled to the body and
+   placed against its trigger now (see `UpscalePopover`), so there is nothing
+   left for a containing block to do here. */
 .pg-image-tools {
   display: flex;
   gap: var(--s1);
@@ -2006,10 +2536,10 @@ main.playground > header .pg-pause ~ .shell-link {
   font-size: var(--font-sm);
   line-height: 1.4;
   color: var(--text);
-  background: var(--panel);
+  background: var(--raised);
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--shadow-sm);
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -2031,6 +2561,487 @@ main.playground > header .pg-pause ~ .shell-link {
 
 .pg-tool:hover::after,
 .pg-tool:focus-visible::after {
+  opacity: 1;
+}
+
+/* The gallery: the project's pictures and nothing else.
+
+   Justified rows — the layout Adobe, Google Photos and Lightroom use — computed
+   in `justify.ts` and rendered as one flex line per row. This is the third
+   layout this wall has had, and each was replaced for a measured reason:
+
+   - **`column-count: 4`** gave 600px tiles on a 2560px window: two pictures a
+     third of the screen apart.
+   - **`column-width` multicol** fixed the sizing but fills a column
+     top-to-bottom before starting the next, so document order stopped being
+     reading order at every width from 1100px up, and at 1920px the newest tile
+     — a run in flight, appended last — landed mid-wall.
+   - **A grid of equal tracks** fixed reading order but gives every tile the
+     same width, so a row takes the height of its tallest member. With one
+     aspect ratio that is invisible; this project's store holds four (1.80,
+     1.78, 1.00, 0.744), and a portrait is 2.4x taller than a landscape at equal
+     width — so every row holding one had a portrait-sized hole under every
+     other tile in it. That is the reported defect.
+
+   Justified rows keeps both properties at once: pictures are taken in order,
+   packed into a row, and the row is scaled so its pictures span the width
+   exactly. Every picture keeps its own shape, every row is flush on both edges,
+   and consecutive items stay consecutive. The one measurement is of the
+   container, never of an image — every tile declares its `WxH`, so no library
+   is needed to discover what is already known, and nothing re-measures on a
+   resize frame.
+
+   The same scroll box as `.pg-feed`, with the same reservation for the floating
+   composer: `--pg-dock-h` is published on `.pg-studio`, and whatever scrolls
+   under the glass has to spend it. */
+.pg-gallery {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Scrolling only; the rows live on `.pg-gallery-wall`. The split is also what
+     makes the wall measurable: `ResizeObserver` watches the wall's content box,
+     which excludes this element's padding, so the width handed to the solver is
+     the width the rows actually have. */
+  padding-right: var(--s1);
+  padding-bottom: calc(var(--pg-dock-h, 0px) + var(--s2));
+}
+
+.pg-gallery-wall {
+  display: flex;
+  flex-direction: column;
+  /* The vertical gutter. The horizontal one is the solver's `GAP` constant,
+     which must stay equal to `--s2`: the solver subtracts it to work out each
+     row's scale, so a mismatch would make rows overflow or fall short. */
+  gap: var(--s2);
+}
+
+.pg-gallery-row {
+  display: flex;
+  gap: var(--s2);
+  /* The row's height is set inline, from the solver. Items are sized inline
+     too, so nothing here may stretch them: `align-items: stretch` is what makes
+     each cell take the row's full height, and the cell's width is its own. */
+  align-items: stretch;
+  min-width: 0;
+}
+
+.pg-gallery-cell {
+  /* Neither grow nor shrink: the solver has already spent the width exactly,
+     and letting flex redistribute would undo the aspect ratios it preserved —
+     which is the hole this layout exists to close, reappearing by another
+     route. `min-width: 0` so a long alt text cannot push a cell wider. */
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* The tile fills the cell the solver sized. No `aspect-ratio` here: the cell's
+   width and the row's height already encode it, and a second declaration of the
+   same fact is one that can disagree. */
+.pg-gallery-cell > .pg-tile {
+  width: 100%;
+  height: 100%;
+}
+
+.pg-gallery-cell .pg-thumb,
+.pg-gallery-cell .pg-preview {
+  height: 100%;
+}
+
+/* `cover`, not `contain`: the cell is already the picture's own shape, so there
+   is nothing to letterbox — but a thumbnail whose stored `WxH` is a rounding
+   away from its real pixels would otherwise leave a hairline of background. */
+.pg-gallery-cell .pg-thumb img {
+  height: 100%;
+  object-fit: cover;
+}
+
+.pg-tile {
+  /* No bottom margin: the grid's `gap` owns the spacing now. Under multicol the
+     margin *was* the row gap, and leaving it would double the vertical gutter
+     against the horizontal one. */
+  margin: 0; /* figure reset */
+  /* The toolbar is drawn *on* the tile rather than under it: a caption line
+     below every picture is the metadata this view exists to leave out. */
+  position: relative;
+  /* Every `z-index` inside a tile is a claim about that tile's own layers —
+     the tag under the toolbar, the toolbar under the pending note — and none
+     of them is a claim about the studio. Without a stacking context here,
+     `position: relative` with no `z-index` leaves the tile at `auto`, so those
+     inner values compete directly with the page: the pending run's status bar
+     (`z-index: 1`) painted straight over the composer, which sits at `auto`.
+     `isolation: isolate` keeps the tile's ladder inside the tile, so the dock
+     below only has to outrank the tile itself. */
+  isolation: isolate;
+  /* The picture grows inside the tile's corners on hover rather than out of
+     them, which is what the mockup does and what makes the growth read as the
+     tile lifting rather than as the image escaping. */
+  overflow: hidden;
+  border-radius: var(--radius);
+}
+
+/* The button has to be the tile's width, not the picture's.
+
+   A `<button>` sizes to fit its content even at `display: block` — form
+   controls are shrink-to-fit — so `width: 100%` on the image below resolved
+   against a box that was itself waiting for the image: circular, and the
+   browser falls back to the intrinsic size, which for a picture that has not
+   arrived is the 4×2 placeholder. Measured with the thumbnail requests aborted:
+   tiles were 4×2 without this line and 362×201 with it. The reserved
+   `aspect-ratio` is worth nothing unless the width it multiplies is known. */
+.pg-tile .pg-thumb {
+  width: 100%;
+}
+
+.pg-tile .pg-thumb img {
+  width: 100%;
+  /* `auto` unless the tile reserved a ratio from the run's own `WxH` (see
+     `aspectOf`): the reserved box is what keeps the columns from re-balancing
+     as intrinsic heights are decoded, at load and on every resize frame. */
+  height: auto;
+  /* The image is clipped by the tile now, so its own radius would draw a second
+     rounded edge inside the first. */
+  border-radius: 0;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* The mockup's own value. `transform` only: it is composited, so a wall of
+   decoded thumbnails does not re-layout — which is precisely what a hover that
+   changed `width` would cost here. */
+.pg-tile:hover .pg-thumb img {
+  transform: scale(1.035);
+}
+
+/* Revealed on hover or keyboard focus, never on hover alone — the same rule the
+   project rows and the feed's entry actions follow, for the same reason: a
+   control a keyboard user cannot reach is not a control.
+
+   Nothing is anchored to this any more: the upscale panel is portalled out of
+   the scroll container and positioned against its trigger by RAC (see
+   `UpscalePopover`), so this element's `position` is about lifting the toolbar
+   over the picture and nothing else. */
+.pg-tile .pg-image-actions {
+  position: absolute;
+  left: var(--s2);
+  right: var(--s2);
+  bottom: var(--s2);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.pg-tile:hover .pg-image-actions,
+.pg-tile .pg-image-actions:focus-within {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-tile .pg-image-actions {
+    transition: none;
+  }
+
+  /* The reveal stays — it is what makes the controls reachable — but the
+     picture does not move. */
+  .pg-tile .pg-thumb img {
+    transition: none;
+  }
+
+  .pg-tile:hover .pg-thumb img {
+    transform: none;
+  }
+}
+
+/* A project with nothing to draw at all. Since work in flight has tiles of its
+   own, exactly one thing reaches this now: records that all completed and whose
+   images have since been deleted one by one — deleting a picture does not delete
+   the run that made it. Saying so is better than an empty page that looks
+   broken.
+
+   Shared with the light table, which is empty under exactly the same condition:
+   two rules centring one sentence would be two places to keep in step. */
+.pg-gallery-empty {
+  flex: 1;
+  display: grid;
+  place-items: center;
+}
+
+/* ── The light table: one picture, the project as a strip, the facts beside it ──
+
+   Three parts in one frame, and the frame is a grid rather than a flex row so
+   the inspector keeps its width while the stage takes whatever is left:
+   `minmax(0, 1fr)` on the stage is what lets a wide image shrink instead of
+   pushing the panel off the edge.
+
+   The composer floats over the whole studio (see `.pg-dock`), and this is the
+   one view that does not let its content run under the glass. The feed and the
+   gallery do, deliberately — they are a stream of pictures, and the newest one
+   continuing under the thing you type into is the point of the floating dock.
+   This frame is not a stream: the filmstrip is a fixed row at its foot and the
+   inspector is a bordered panel, and a bordered panel sliding under glass reads
+   as clipped rather than as depth. So the reservation is on the frame, which
+   shortens *both* tracks: the gap lands under the strip and under the panel,
+   and the panel keeps scrolling its own content above the composer. */
+.pg-table {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  /* The row is stated, not implied. An implicit `auto` row is sized from its
+     content — a hero whose own `max-height: 100%` cannot resolve while the row
+     is still being sized — so the frame grew past its own padding box and put
+     the filmstrip and the panel's foot back under the composer glass. Measured:
+     69px of overflow before this line. `minmax(0, 1fr)` makes the row exactly
+     the box it was given and lets both columns scroll inside it. */
+  grid-template-rows: minmax(0, 1fr);
+  gap: var(--s3);
+  padding-bottom: calc(var(--pg-dock-h, 0px) + var(--s2));
+}
+
+@media (max-width: 1100px) {
+  /* Narrow: the panel stops being a column and becomes the row under the strip.
+     A 300px inspector next to a 400px stage is neither. */
+  .pg-table {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto;
+  }
+}
+
+.pg-table-stage {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+/* The stage. `place-items: center` on a `min-height: 0` grid cell is what keeps
+   a portrait image inside the box rather than letting it set the box's height,
+   and it is the containing block the two nav buttons resolve against — they are
+   `position: absolute`, and without this they would sit against the studio and
+   drift over the rail and the inspector. */
+.pg-table-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  position: relative;
+}
+
+.pg-table-hero {
+  display: block;
+  padding: 0;
+  min-height: 0;
+  max-width: 100%;
+  max-height: 100%;
+  background: none;
+  border: none;
+  cursor: zoom-in;
+}
+
+.pg-table-hero img {
+  display: block;
+  max-width: 100%;
+  /* The picture is bounded by the stage, not by its own pixels: `100%` of a
+     grid-centred cell, so a 4096² upscale and a 512² original are framed the
+     same way. */
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Glass, like the composer and the image tools: these sit *over* the picture,
+   and a solid button there reads as part of the image. */
+.pg-table-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 40px;
+  height: 40px;
+  min-height: 0;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: var(--radius-pill);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  box-shadow: var(--shadow);
+}
+
+.pg-table-nav:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent-line);
+}
+
+.pg-table-nav:disabled {
+  opacity: 0.3;
+}
+
+.pg-table-nav.prev {
+  left: var(--s2);
+}
+
+.pg-table-nav.next {
+  right: var(--s2);
+}
+
+/* The filmstrip: one row, scrolling sideways, never wrapping and never squeezed
+   to nothing by the stage above it — `flex: 0 0 auto` is what makes the stage
+   give up height first. */
+.pg-strip {
+  flex: 0 0 auto;
+  display: flex;
+  gap: var(--s2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: var(--s1) 0;
+}
+
+.pg-strip-tile {
+  flex: 0 0 auto;
+  width: 116px;
+  padding: 0;
+  min-height: 0;
+  background: none;
+  border: none;
+  border-radius: var(--radius);
+  overflow: hidden;
+  /* Dimmed until it is the one you are looking at or the one you are pointing
+     at: the strip is context, and eight equally bright tiles compete with the
+     picture the view exists to show. */
+  opacity: 0.55;
+  transition: opacity 120ms ease;
+}
+
+.pg-strip-tile:hover {
+  opacity: 0.85;
+}
+
+/* The ring rather than a border: a border would move the tile by a pixel as the
+   selection travels down the strip. */
+.pg-strip-tile[aria-current="true"] {
+  opacity: 1;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.pg-strip-tile:focus-visible {
+  opacity: 1;
+}
+
+.pg-strip-tile img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pg-strip-tile {
+    transition: none;
+  }
+}
+
+/* The inspector. Scrolls on its own: a long prompt and a long enhanced prompt
+   together are taller than the stage, and growing the frame would push the
+   filmstrip off the bottom of the studio. */
+.pg-inspector {
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  padding: var(--s3);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+}
+
+.pg-insp-section h3 {
+  margin: 0 0 var(--s2);
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--font-xs);
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.pg-insp-prompt {
+  margin: 0;
+  font-size: var(--font-sm);
+  line-height: 1.6;
+  color: var(--text);
+}
+
+/* Quieter than the prompt above it, for the reason the feed hides it behind a
+   disclosure: these are not the user's words. */
+.pg-insp-enhanced {
+  color: var(--muted);
+}
+
+.pg-insp-tag {
+  padding: 1px var(--s1);
+  border-radius: var(--radius-pill);
+  background: var(--accent-tint);
+  color: var(--accent);
+  font-size: var(--font-xs);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+/* The shell styles every `dl` as a two-column `auto 1fr` grid, for panels whose
+   `dt`/`dd` pairs are its direct children. These pairs are wrapped, one row per
+   fact, so under that rule two facts shared a line and the labels stopped
+   lining up with their values. A stack of rows, and each row does its own
+   two-column job. */
+.pg-insp-facts {
+  display: block;
+  margin: 0;
+}
+
+.pg-kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--s2);
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: var(--font-sm);
+}
+
+.pg-kv:last-child {
+  border-bottom: none;
+}
+
+.pg-kv dt {
+  color: var(--faint);
+}
+
+.pg-kv dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: var(--font-xs);
+  color: var(--muted);
+}
+
+/* A fact chip in this panel has to give way, and `.pill` on its own does not:
+   that class is `white-space: nowrap` because a state badge is two words, while
+   a *value* is as long as the server's own name for it. Measured in the browser:
+   "stabilityai/stable-diffusion-3.5-large" ran straight out of the 280px panel.
+   `min-width: 0` lets the flex item shrink below its content, and the wrap is
+   right-aligned so the chip still ends at the panel's edge like the short ones. */
+.pg-kv .pill-fact {
+  min-width: 0;
+  white-space: normal;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+/* The one place the image toolbar is not drawn over a picture: there is a single
+   image on the stage, so nothing needs disambiguating by hover, and the actions
+   are a row of the panel like any other. */
+.pg-inspector .pg-image-actions {
+  position: relative;
   opacity: 1;
 }
 
@@ -2130,6 +3141,114 @@ main.playground > header .pg-pause ~ .shell-link {
   }
 }
 
+/* ── Work in flight, in the wall, the strip and on the stage ─────────────────
+
+   A placeholder tile is a `.pg-tile` like any other, so it columns, clips and
+   keeps its corners with the pictures around it. Two things are its own:
+
+   The box takes the whole tile. `.pg-preview` carries the reserved
+   `aspect-ratio` inline, from the same `WxH` the finished image's tile will use,
+   so the column balancer sees the final shape immediately and the wall does not
+   re-flow when the picture replaces the placeholder — the flicker fixed when the
+   tiles first reserved their boxes. Its own radius goes: the tile clips, and a
+   second rounded edge inside the first is visible at these sizes.
+
+   The words are drawn *over* the box. In flow they would make this tile taller
+   than the picture that replaces it, which is the same re-flow by a longer
+   route. Unlike the tile's toolbar they are not hidden until hover: a control
+   you have to find is bad, and a *state* you have to find is the defect this
+   whole treatment exists to fix. Hence the scrim — the same one the upscale
+   caption carries, and for the same reason: this text sits on a picture
+   emerging underneath it. */
+.pg-tile-pending .pg-preview {
+  border-radius: 0;
+}
+
+.pg-tile-pending .pg-pending-note {
+  position: absolute;
+  left: var(--s2);
+  right: var(--s2);
+  bottom: var(--s2);
+  z-index: 1;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--radius);
+  background: rgba(13, 17, 23, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* The status block's own top margins are for a transcript, where the bar sits
+   under an entry. Inside a tile it is the whole content of a scrim. */
+.pg-tile-pending .pg-running,
+.pg-tile-pending .pg-status {
+  margin-top: 0;
+}
+
+/* A run that ended without a picture: failed or cancelled. No glow — nothing is
+   coming — and a mark instead, so the box is not read as one still loading. The
+   box stays the run's own shape: it is the only honest size for a picture that
+   was asked for, and a wall that dropped the tile would be back to a run
+   vanishing from a view, which is the defect in its worst case. */
+.pg-preview-ended {
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+
+.pg-preview-mark {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--faint);
+}
+
+/* In the filmstrip the frame is the strip's shape, not the run's: the tiles of
+   a row are one height, and a portrait run in flight must not make the strip
+   taller than the pictures beside it. Both axes of the box are pinned by
+   `inset`, which is what makes the browser ignore the inline `aspect-ratio` —
+   the same override the strip's own thumbnails get from `object-fit: cover`. */
+.pg-strip-pending {
+  position: relative;
+  aspect-ratio: 16 / 10;
+  /* The strip dims what is not selected. A run in flight is the one frame worth
+     looking at even when it is not: it is the only one that is changing. */
+  opacity: 1;
+}
+
+.pg-strip-pending .pg-preview {
+  position: absolute;
+  inset: 0;
+  width: auto;
+  border: none;
+  border-radius: 0;
+}
+
+/* The stage, given to a run with no file yet. Width-driven and capped, because
+   the studio's stage is a wide box with height to spare: the ratio is exact
+   whenever the box's derived height fits, and `max-height` is the backstop for a
+   short window, where a very wide run's placeholder is clamped rather than
+   allowed to push the filmstrip off the frame. A picture on the stage has
+   `object-fit: contain` for this and a placeholder has no content to fit. */
+.pg-table-pending {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--s2);
+  min-width: 0;
+  min-height: 0;
+  max-height: 100%;
+  width: min(100%, 640px);
+}
+
+.pg-table-pending .pg-preview {
+  min-height: 0;
+  max-height: 100%;
+  border-radius: var(--radius-lg);
+}
+
+.pg-table-pending .pg-running {
+  margin-top: 0;
+}
+
 .pg-status {
   display: flex;
   align-items: center;
@@ -2138,10 +3257,11 @@ main.playground > header .pg-pause ~ .shell-link {
   margin-top: var(--s2);
 }
 
-/* The empty state. The composer stays where it is with a transcript — docked at
-   the bottom of the window — and the hero takes the space above it, centred in
-   what is left. Centring the pair instead left the prompt box floating in the
-   middle of the page and moving as soon as the first generation arrived. */
+/* The empty state. The composer floats over the bottom of the studio and the
+   hero takes the space above it, centred in what is left. Centring it in the
+   whole height instead put the tagline behind the glass; centring the pair —
+   what this used to do when the composer was in flow — left the prompt box in
+   the middle of the page, moving as soon as the first generation arrived. */
 .pg-hero {
   flex: 1;
   min-height: 0;
@@ -2151,13 +3271,14 @@ main.playground > header .pg-pause ~ .shell-link {
   justify-content: center;
   gap: var(--s2);
   text-align: center;
+  padding-bottom: var(--pg-dock-h, 0px);
 }
 
 .pg-hero-icon {
   display: grid;
   place-items: center;
-  width: 52px;
-  height: 52px;
+  width: 60px;
+  height: 60px;
   border-radius: var(--radius-lg);
   background: var(--accent-tint);
   border: 1px solid var(--accent-line);
@@ -2166,9 +3287,11 @@ main.playground > header .pg-pause ~ .shell-link {
 
 .pg-hero-title {
   margin: var(--s2) 0 0;
-  font-size: var(--font-xl);
+  /* The one display size in the sheet: an empty studio is a title and an
+     invitation, and this is the invitation. */
+  font-size: var(--font-2xl);
+  letter-spacing: -0.01em;
   text-transform: none;
-  letter-spacing: 0.2px;
   color: var(--text);
 }
 
@@ -2178,12 +3301,56 @@ main.playground > header .pg-pause ~ .shell-link {
   color: var(--muted);
 }
 
+/* The composer, floating.
+
+   It was docked: the last item of the studio's flex column, opaque, with the
+   feed ending above it. It floats now because the canvas is the subject — the
+   feed runs the full height of the studio and the composer sits over it on
+   glass, so the picture continues under the thing you type into instead of
+   stopping at it. Two consequences, both handled rather than assumed:
+
+   - Out of flow, it no longer reserves its own height, so whatever scrolls
+     underneath must reserve it instead. `--pg-dock-h` is measured from the dock
+     by `PlaygroundApp` and read by `.pg-feed` and `.pg-hero` below. The `0px`
+     fallback is the embedded surface, which renders no composer at all.
+   - Glass over an opaque backdrop is a no-op, so the overlap is the feature.
+     The gradient above the card is what keeps the feed from appearing to slide
+     under a hard edge. */
+.pg-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  /* Above whatever scrolls under it. `auto` left the dock tied with the tiles
+     on the same layer, so document order decided — and a tile that comes later
+     in the DOM won, which is how a pending run's status bar came to paint over
+     the composer. 10 is below the popovers (20/30/40) and the modal (50), all
+     of which must still open over the composer; it only has to outrank the
+     tiles, which are now self-contained (`isolation: isolate`). */
+  z-index: 10;
+  padding: var(--s5) 0 var(--s3);
+  /* The scrim, not the composer, is what the feed fades into. `--bg-0` is
+     `--bg` at zero alpha: interpolating from the `transparent` keyword fades
+     through transparent *black*, which greys the middle of the ramp. */
+  background: linear-gradient(180deg, var(--bg-0) 0%, var(--bg) 58%);
+  /* The gradient covers the feed's last rows; only the card itself may take a
+     click, or the strip above it would swallow presses on the picture. */
+  pointer-events: none;
+}
+
 .pg-composer {
+  pointer-events: auto;
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
   display: flex;
   flex-direction: column;
   gap: var(--s2);
 }
 
+/* Part of the floating stack, so it needs the same glass as the card below it:
+   over a picture, a dashed outline with nothing behind it read as words printed
+   on the image rather than as a control belonging to the composer. */
 .pg-dropzone {
   display: flex;
   align-items: center;
@@ -2192,6 +3359,9 @@ main.playground > header .pg-pause ~ .shell-link {
   border: 1px dashed var(--line);
   border-radius: var(--radius-lg);
   padding: var(--s2) var(--s3);
+  background: color-mix(in srgb, var(--raised) 78%, transparent);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
   color: var(--muted);
   font-size: var(--font-md);
 }
@@ -2230,18 +3400,49 @@ main.playground > header .pg-pause ~ .shell-link {
   font-size: var(--font-sm);
 }
 
+/* The glass itself. A translucent `--raised` rather than a fourth surface
+   colour: what the composer is made of is the surface above the panel, seen
+   through a blur. The hairline is white at low alpha, not `--line`, because a
+   line drawn on glass catches the light from what is behind it. */
 .pg-prompt-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--raised) 82%, transparent);
+  backdrop-filter: blur(28px) saturate(1.3);
+  -webkit-backdrop-filter: blur(28px) saturate(1.3);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
   padding: var(--s3);
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
 }
 
+/* Focus is on the card, not on the textarea: the textarea has no border of its
+   own here, so the surface is what has to say the caret is in it. */
+.pg-prompt-card:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  box-shadow:
+    var(--shadow-lg),
+    0 0 0 4px var(--accent-tint);
+}
+
+/* No field of its own inside the glass: the card is the field. A sunken box
+   with its own border, sitting on a translucent surface, read as a form control
+   dropped onto the composer rather than as the place you write. The focus ring
+   the card takes on `:focus-within` is what replaces this one. */
 .pg-textarea {
   width: 100%;
   resize: vertical;
+  background: none;
+  border-color: transparent;
+  padding-left: 0;
+  padding-right: 0;
   font-size: var(--font-base);
   line-height: 1.5;
+}
+
+.pg-textarea:focus {
+  border-color: transparent;
 }
 
 .pg-controls {
@@ -2254,10 +3455,6 @@ main.playground > header .pg-pause ~ .shell-link {
 /* The stepper opens the right-hand cluster; the gear and Generate follow it. */
 .pg-controls .pg-stepper {
   margin-left: auto;
-}
-
-.pg-advanced {
-  position: relative;
 }
 
 .pg-gear {
@@ -2285,22 +3482,72 @@ main.playground > header .pg-pause ~ .shell-link {
   color: var(--accent);
 }
 
-/* Opens upward and right-aligned: the composer is docked at the bottom and the
-   gear sits in the right-hand cluster. z-index stays below the modal's 50. */
+/* The panel's chrome, and only its chrome: where it is drawn is RAC's business
+   now. It is portalled to the body and given inline `position`, `top`, `left`,
+   `z-index` and `max-height` by `usePopover`, which measures the trigger and
+   flips the panel below it when there is no room above. This sheet stopped
+   positioning it because it could not: the panel opens from a toolbar inside
+   `.pg-feed` / `.pg-gallery`, both `overflow-y: auto`, and a scroll container
+   clips whatever its descendants paint outside its box.
+
+   `overflow-y: auto` here spends the `max-height` RAC writes: on a short window
+   the panel is bounded by the viewport, and a bounded box whose content cannot
+   scroll is a submit button nobody can reach. */
 .pg-popover {
-  position: absolute;
-  bottom: calc(100% + var(--s2));
-  right: 0;
-  z-index: 40;
-  width: 320px;
+  width: 260px;
+  max-width: calc(100vw - 2 * var(--s3));
+  overflow-y: auto;
   padding: var(--s3) var(--s4);
+  /* `--raised`, not `--panel`: it opens over the composer or over a picture,
+     and a panel-coloured sheet on either reads as part of what it opened from
+     rather than as something opened. */
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+/* The dialog inside the positioned wrapper: RAC owns the outer box, so the
+   fields stack in here. */
+.pg-popover-fields {
   display: flex;
   flex-direction: column;
   gap: var(--s3);
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  outline: none;
+}
+
+/* The advanced settings dialog.
+
+   A 320px popover above the composer until now, and six fields in one column is
+   taller than a laptop: the top of the panel left the window. A rectangle in
+   the middle of the window instead — `align-self` rather than a change to
+   `.modal-backdrop`, which starts every other dialog at the top of the page on
+   purpose and must keep doing so. Wider than the 660px form measure because it
+   carries two columns. */
+.modal.pg-settings {
+  align-self: center;
+  width: min(840px, 100%);
+}
+
+/* Two columns where there is room for two. The fields are self-contained — a
+   label, a control and its note — so they tile without a second layout idea,
+   and `align-items: start` keeps a short field from stretching to the height of
+   the negative prompt beside it. */
+.pg-settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  align-items: start;
+  gap: var(--s4);
+  padding-top: var(--s2);
+}
+
+/* Narrow: one column, and the dialog's own body scrolls (`.modal-body` is
+   `overflow-y: auto`), because two columns squeezed into a phone-width window
+   are two illegible columns. */
+@media (max-width: 720px) {
+  .pg-settings-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .pg-field {
@@ -2361,41 +3608,86 @@ main.playground > header .pg-pause ~ .shell-link {
   font-size: var(--font-md);
 }
 
-/* The image viewer. The app's one dialog, at the size a 1280×720 render needs:
-   the surface follows the picture rather than the 660px measure a form wants,
-   and the picture is bounded by the viewport so a portrait render does not push
-   its own close button off screen. */
+/* The image viewer: the mockup's `.overlay-frame`, not a panel.
+
+   No background, no border, no padding — the picture *is* the surface, and a
+   panel drawn round it framed a frame. The box is still `.modal`, so it keeps
+   the backdrop's blur, the rise animation and the `prefers-reduced-motion` block
+   above; what is dropped here is the panel vocabulary that box normally carries.
+
+   `position: relative` is the whole layout: the close control and the foot bar
+   are drawn on the picture, and this is what they resolve against. `width: auto`
+   because the surface follows the picture rather than the 660px measure a form
+   wants, and `overflow: hidden` so the bar's corners follow the frame's. */
 .modal.pg-viewer {
+  position: relative;
+  display: block;
+  /* Centred in the backdrop, which lays its dialogs out from the top: a form
+     grows downwards from a fixed head, a picture has no head and reads as
+     floating when it is centred. `.modal.pg-settings` asks for the same. */
+  align-self: center;
   width: auto;
   max-width: calc(100vw - 2 * var(--s4));
-}
-
-/* Keep the close button on the same row; the prompt is the flexible item and
-   wraps inside the image-sized surface instead of making the modal wider. */
-.pg-viewer .modal-head {
-  flex-wrap: nowrap;
-}
-
-.pg-viewer .modal-title {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow-wrap: anywhere;
+  background: none;
+  border: 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
 }
 
 .pg-viewer-image {
   display: block;
   max-width: 100%;
-  max-height: calc(100vh - 12 * var(--s4));
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
+  /* Exactly the height `.modal` allows, which is the backdrop's own padding and
+     nothing else: the head and the body padding are gone, and the foot bar is
+     drawn over the picture rather than under it. It was `9 * --s4` (216px)
+     reserved for chrome that no longer exists, and any value larger than
+     `.modal`'s own ceiling would simply be clipped by it. */
+  max-height: calc(100vh - 2 * var(--s5));
+  width: auto;
+  border-radius: var(--radius-lg);
   margin: auto;
 }
 
-.pg-viewer-foot {
+/* A cross in a circle, over the top right corner of the picture. Glassy and
+   dark so it stays legible over a pale render, which a bare icon would not. */
+.pg-viewer-close {
+  position: absolute;
+  top: var(--s3);
+  right: var(--s3);
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  min-height: 0;
+  padding: 0;
+  border-radius: var(--radius-pill);
+  background: rgba(20, 26, 34, 0.65);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  color: var(--muted);
+  line-height: 0;
+}
+
+.pg-viewer-close:hover {
+  color: var(--text);
+  background: rgba(30, 38, 48, 0.9);
+}
+
+/* One bar along the foot of the picture: the download on the left, the run's
+   stats on the right. A gradient rather than a flat fill, so the bar fades into
+   the picture instead of cutting a band across it. */
+.pg-viewer-bar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: var(--s3);
-  margin-top: var(--s2);
+  padding: var(--s3) var(--s4);
+  background: linear-gradient(180deg, rgba(10, 14, 20, 0) 0%, rgba(10, 14, 20, 0.92) 60%);
 }
 
 .pg-viewer-link {
@@ -2408,14 +3700,6 @@ main.playground > header .pg-pause ~ .shell-link {
   color: var(--muted);
   font-family: var(--mono);
   font-size: var(--font-sm);
-}
-
-/* Opens upward from the image's toolbar and aligns left, where the Upscale
-   button is — the composer's popover is right-aligned because its gear is. */
-.pg-upscale-pop {
-  right: auto;
-  left: 0;
-  width: 260px;
 }
 
 /* What an image *is*, when the entry's own line cannot say it: an upscale

@@ -15,13 +15,14 @@ That flag is on `CORSMiddleware`, so it would grant private-network access to
 *every* route: `/v1`, `/admin`, `/playground/api`, `/mcp`. PNA exists to stop a
 web page reaching a service on someone's machine, and a keyless loopback install
 has an open `/v1` -- granting it there would let any page in any tab spend this
-machine's GPU. So the grant is scoped to the one route where it is defensible.
+machine's GPU. So the grant is scoped to the one path prefix where it is
+defensible: the image route and the thumbnail route beneath it.
 
 **Why it is defensible there.** The filename is a `uuid4().hex`: naming a file is
 holding 122 bits of secret, the session lock is enforced per request underneath,
 and `/playground/api` still refuses cross-site outright so nothing can enumerate
-names. It is the same reasoning that removed the cross-site check from this route,
-applied to the same route.
+names. It is the same reasoning that removed the cross-site check from those
+routes, applied to the same routes.
 
 Outermost by construction: added after `CORSMiddleware`, so it sees the preflight
 first and can answer it before that middleware rejects it.
@@ -32,7 +33,9 @@ from __future__ import annotations
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-#: The one path prefix this grant covers.
+#: The one path prefix this grant covers -- the full-resolution image route and
+#: the thumbnail route that lives beneath it, which need the same grant for the
+#: same embedded clients.
 IMAGES_PREFIX = "/playground/images/"
 
 _REQUEST_HEADER = "access-control-request-private-network"

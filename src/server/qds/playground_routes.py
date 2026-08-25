@@ -8,7 +8,8 @@ where no TTL purge can reach them.
 Everything under `/playground/api` carries the data-plane credential *and*
 `deny_cross_site`, like the dashboard's own routes: a page on another origin
 must not be able to spend this machine's GPU. `/playground/images/{filename}`
-is the documented exception, for the reason its own docstring gives.
+and its `/thumb` sibling are the documented exceptions, each for the reason its
+own docstring gives.
 
 The admission rules are `Admission`'s, never redecided here.
 """
@@ -28,7 +29,7 @@ from qds import admin, credential, playground_lock
 from qds.admission import DEFAULT_IMAGE_STRENGTH, MAX_SEED, Admission, _save_upload
 from qds.errors import APIError
 from qds.logs import SERVER_LOGGER
-from qds.playground import IMAGE_MEDIA_TYPES
+from qds.playground import IMAGE_MEDIA_TYPES, THUMBNAIL_MEDIA_TYPE
 from qds.registry import edit_enabled
 from qds.upscale import catalogue as upscale_catalogue
 
@@ -38,6 +39,12 @@ logger = logging.getLogger(SERVER_LOGGER)
 #: postponed annotations FastAPI resolves names in the module namespace, so a
 #: local alias inside the builder would be read as a required body field.
 SessionToken = Annotated[str | None, Header(alias=playground_lock.UNLOCK_HEADER)]
+
+#: How long a browser may keep a thumbnail. A day: long enough that scrolling a
+#: project twice does not refetch it, short enough to bound the replay window the
+#: route's `TEMPORARY:` note describes. The bytes themselves never go stale --
+#: a filename is a `uuid4` and its pixels never change.
+THUMBNAIL_MAX_AGE_S = 86400
 
 
 class RenameRequest(BaseModel):
@@ -80,8 +87,8 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
     """Both playground surfaces, as one router to include.
 
     Unprefixed, because the two are not siblings under one path: the API sits
-    behind `/playground/api` with `deny_cross_site`, while the image route sits
-    at `/playground/images/{filename}` without it.
+    behind `/playground/api` with `deny_cross_site`, while the image routes sit
+    at `/playground/images/{filename}` and `.../{filename}/thumb` without it.
     """
     router = APIRouter()
     settings = admission.settings
@@ -493,6 +500,84 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
             media_type=IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
             headers={
                 "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @router.get(
+        "/playground/images/{filename}/thumb",
+        dependencies=[auth],
+        include_in_schema=False,
+    )
+    async def playground_image_thumbnail(
+        filename: str,
+        x_qds_session_token: SessionToken = None,
+        t: Annotated[str | None, Query(alias=playground_lock.UNLOCK_QUERY)] = None,
+    ) -> FileResponse:
+        """The same image, small, behind the same lock.
+
+        A gallery grid paints tens of tiles at once, and the stored files average
+        1.9 MB, so serving the full image into a tile is ~190 MB for a hundred of
+        them. This route serves a derived copy bounded to `THUMBNAIL_EDGE` on its
+        longest edge -- ~20 KB measured.
+
+        **Authority is this route's own, not inherited by proximity.** The row
+        lookup comes first, so a name no row holds is a 404 before any path is
+        built, and `assert_unlocked` runs on *this* request: a thumbnail is
+        refused to exactly the caller the full image is refused to. `?t=` is
+        accepted for the reason the image route accepts it -- an `<img>` sends no
+        headers -- and nothing else about the lock is different here.
+
+        `deny_cross_site` is absent, on the same argument the image route makes
+        for itself and for the same narrow reason: the origin never authorized
+        this request either. The path is `<uuid4 hex>/thumb`, so naming a tile is
+        still holding 122 bits of secret, the session lock is still checked
+        underneath, and the caller that needs it is the plugin pane rendering in
+        an origin of its own (`tauri://localhost`) -- the very surface the guard
+        broke on the image route. It also keeps the route under
+        `pna.IMAGES_PREFIX`, so the private-network preflight an embedded client
+        sends is granted here as well; a sibling path would have failed it.
+
+        TEMPORARY: `private, max-age` rather than the image route's `no-store`.
+        What this weakens, exactly: a session that has been re-locked can still
+        have its *thumbnails* replayed from that one browser's cache until they
+        expire, whereas its full images cannot. Authorised for this step so a
+        scrolling grid does not refetch every tile, and scheduled to be revisited
+        -- a validator with a short-lived token, or an unlock-scoped ETag, would
+        give the grid its cache without the replay window. The full-image route
+        keeps `no-store`, and so does the fallback below, so no full-resolution
+        byte becomes cacheable by this decision.
+        """
+        session_id = playground.session_of_image(filename)
+        if session_id is None:
+            raise no_image(filename)
+        assert_unlocked(session_id, x_qds_session_token or t)
+        # In a thread: the derivation is ~40 ms of CPU on a 5120x2880 source, and
+        # a cold grid asks for many at once. On the event loop that would stall
+        # every other request, previews included, for the length of the grid.
+        thumb = await asyncio.to_thread(playground.thumbnail, filename)
+        if thumb is None:
+            # A missing thumbnail degrades to the full image, never to a broken
+            # tile: the derived artifact is an optimisation, and the caller has
+            # already been authorized for the bytes it stands in for. `no-store`
+            # here, because what is being served *is* the full-resolution file
+            # and it keeps that file's régime wherever it is served from.
+            path = playground.images_dir / filename
+            if not path.is_file():
+                raise no_image(filename)
+            return FileResponse(
+                path,
+                media_type=IMAGE_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+                headers={
+                    "Cache-Control": "private, no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        return FileResponse(
+            thumb,
+            media_type=THUMBNAIL_MEDIA_TYPE,
+            headers={
+                "Cache-Control": f"private, max-age={THUMBNAIL_MAX_AGE_S}",
                 "X-Content-Type-Options": "nosniff",
             },
         )

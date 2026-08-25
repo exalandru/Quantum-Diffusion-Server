@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState, type DragEvent } from "react"
 import * as api from "../api";
 import type { ModelCapabilities, RewriteCapabilities } from "../types";
 import { AdvancedSettings, DEFAULT_ADVANCED, sizeOf, type Advanced } from "./AdvancedSettings";
-import { useDismissable } from "./useDismissable";
 
 export type Draft = {
   prompt: string;
@@ -71,7 +70,6 @@ export function Composer({
   // was set in would change what a later prompt does with no sign of it.
   const [enhance, setEnhance] = useState(false);
   const picker = useRef<HTMLInputElement>(null);
-  const advancedWrapper = useRef<HTMLDivElement>(null);
 
   const selected =
     chosen ??
@@ -133,8 +131,6 @@ export function Composer({
     advanced.steps !== null ||
     advanced.seed !== null ||
     (acceptsNegative && advanced.negativePrompt.trim() !== "");
-
-  useDismissable(settingsOpen, advancedWrapper, closeSettings);
 
   useEffect(() => {
     if (!presetPrompt) return;
@@ -315,37 +311,38 @@ export function Composer({
               Enhance
             </button>
           )}
-          <div className="pg-advanced" ref={advancedWrapper}>
-            <button
-              type="button"
-              className={advancedTouched ? "small pg-gear active" : "small pg-gear"}
-              aria-label="Advanced settings"
-              aria-expanded={settingsOpen}
-              onClick={() => setSettingsOpen((open) => !open)}
+          {/* No wrapper: the panel is a modal in the middle of the window now,
+              so there is nothing here for it to be positioned against. */}
+          <button
+            type="button"
+            className={advancedTouched ? "small pg-gear active" : "small pg-gear"}
+            aria-label="Advanced settings"
+            aria-expanded={settingsOpen}
+            onClick={() => setSettingsOpen((open) => !open)}
+          >
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              aria-hidden="true"
             >
-              <svg
-                viewBox="0 0 24 24"
-                width="14"
-                height="14"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-                strokeLinecap="round"
-                aria-hidden="true"
-              >
-                <path d="M4 7h9M19 7h1M4 17h3M13 17h7" />
-                <circle cx="15.5" cy="7" r="2.5" />
-                <circle cx="9.5" cy="17" r="2.5" />
-              </svg>
-            </button>
-            {settingsOpen && (
-              <AdvancedSettings
-                value={advanced}
-                onChange={setAdvanced}
-                capabilities={capabilities}
-              />
-            )}
-          </div>
+              <path d="M4 7h9M19 7h1M4 17h3M13 17h7" />
+              <circle cx="15.5" cy="7" r="2.5" />
+              <circle cx="9.5" cy="17" r="2.5" />
+            </svg>
+          </button>
+          {settingsOpen && (
+            <AdvancedSettings
+              value={advanced}
+              onChange={setAdvanced}
+              capabilities={capabilities}
+              onClose={closeSettings}
+            />
+          )}
           <button className="primary" disabled={!prompt.trim() || busy} onClick={submit}>
             {busy ? "Sending…" : "Generate ↵"}
           </button>

@@ -144,6 +144,22 @@ export function imageUrl(url: string, sessionId: string): string {
   return token ? `${url}?t=${encodeURIComponent(token)}` : url;
 }
 
+/**
+ * The same image, as the small derived tile the gallery scrolls.
+ *
+ * `/thumb` is a sibling of the file's own route and is enforced identically —
+ * same session lock, per request, and the same `?t=` for the same reason, since
+ * an `<img>` sends no headers. Built here rather than in the view so the URL in
+ * state stays the server's, exactly as `imageUrl` leaves it: the filename the
+ * delete button parses back out of it must not acquire a suffix.
+ *
+ * A thumbnail the server cannot derive is answered with the full image, so a
+ * caller of this never has to handle a missing tile.
+ */
+export function thumbnailUrl(url: string, sessionId: string): string {
+  return imageUrl(`${url}/thumb`, sessionId);
+}
+
 /** Extra per-request options on top of `fetch`'s. */
 type Options = RequestInit & {
   /** Attach the unlock token held for this playground session, if any. */

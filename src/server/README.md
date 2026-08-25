@@ -183,7 +183,8 @@ The download works by loading the model and exiting. That is deliberate: the dow
 | `/playground/api/sessions/{id}/password` | POST/DELETE | set or change a session password (returns an unlock token) / remove it |
 | `/playground/api/sessions/{id}/unlock`, `…/lock` | POST | redeem the password for an unlock token (sent as `X-QDS-Session-Token`; in-memory, 30 min idle, gone on restart) / give it back |
 | `/playground/api/preview` | GET | the running playground generation's latest partially-denoised frame (JPEG); 404 when there is none |
-| `/playground/images/{name}.png` | GET | images owned by a playground session; **not** TTL-purged. A locked session's images need its token (`?t=` accepted here, since `<img>` sends no header). The **only** playground route without the cross-site check — the `uuid4` filename is the capability, and MCP clients render in their own origin (see [MCP](#mcp)) |
+| `/playground/images/{name}.png` | GET | images owned by a playground session; **not** TTL-purged. A locked session's images need its token (`?t=` accepted here, since `<img>` sends no header). One of two playground routes without the cross-site check — the `uuid4` filename is the capability, and MCP clients render in their own origin (see [MCP](#mcp)) |
+| `/playground/images/{name}.png/thumb` | GET | the same image bounded to 512 px on its longest edge (WebP, ~22 KB against a ~2 MB source), derived on first request and cached on disk beside the store. Same lock, same `?t=`, same cross-site exception, and the same 404 for a name no row holds. Deleting an image, a group or a session reclaims its thumbnail; a source that cannot be decoded falls back to the full file rather than to a broken tile. Cacheable (`private, max-age=86400`) unlike the full image's `no-store` — see the route's `TEMPORARY:` note for what that trades |
 | `/admin/playground/sessions/{id}/password` | DELETE | admin recovery: remove a session password without knowing it |
 | `/mcp` | POST/GET/DELETE | the MCP surface (see below). Same credential as `/v1`; absent when `mcp.enabled` is false, and absent in recovery mode |
 
@@ -258,7 +259,9 @@ request still runs three images one after another:
 - the record and its images live in `playground_store` — by default a
   `playground/` directory beside `server-config.json` — outside `image_store`,
   so no TTL purge can reach them. They are deleted with their session, and only
-  then;
+  then. A `thumbnails/` sibling of `images/` holds the derived tiles the gallery
+  serves: nothing authoritative, rebuilt on demand, and unlinked with the image
+  each one came from;
 - closing the browser loses nothing: reopening `/playground` reconstructs the
   sessions, the transcript and the live status from the server alone;
 - every accepted generation reaches a terminal status. One interrupted by a
@@ -598,9 +601,10 @@ ignored — but they no longer do anything.)*
 
 ### Why an image link works from a chat client at all
 
-`GET /playground/images/{name}.png` is the one route on this server that grants
-two things every other route refuses, and both exist for the same reason: a chat
-client renders in an origin of its own, on a page that is not local.
+`GET /playground/images/{name}.png` — and, beneath it, `…/thumb` — are the two
+routes on this server that grant two things every other route refuses, and both
+exist for the same reason: a chat client renders in an origin of its own, on a
+page that is not local.
 
 - **No cross-site check.** Every other playground route refuses a request a
   browser marked cross-site. Here the origin was never the authority: the
@@ -612,7 +616,7 @@ client renders in an origin of its own, on a page that is not local.
   never loaded — while `curl`, which sends no preflight, fetched the same URL
   perfectly. That asymmetry is why this looked like a client bug for a long time.
 
-The grant is one route wide. `/v1`, `/admin`, `/playground/api` and `/mcp` all
+The grant is one path prefix wide. `/v1`, `/admin`, `/playground/api` and `/mcp` all
 still answer a private-network preflight with a 400, which matters most for
 `/v1`: a keyless loopback install has an open data plane, and granting it there
 would let any page in any tab spend this machine's GPU. That is precisely the
@@ -620,10 +624,11 @@ drive-by Private Network Access exists to stop, which is why the one-line
 `allow_private_network=True` on the CORS middleware was **not** the fix — it
 would have granted the same to all of them. See `qds/pna.py`.
 
-What still holds on the image route: a password-protected session's images need
-its token even so, a name no row holds is a 404, and `no-store` keeps a relocked
-session out of the cache. A preflight only says the request may be *made*; every
-check still runs on the GET that follows.
+What still holds on both routes: a password-protected session's images need its
+token even so, a name no row holds is a 404, and the full-resolution route's
+`no-store` keeps a relocked session out of the cache — the thumbnail route
+deliberately differs there, and says so in its own docstring. A preflight only
+says the request may be *made*; every check still runs on the GET that follows.
 
 ### What a result costs a model
 

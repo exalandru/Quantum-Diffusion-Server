@@ -16,6 +16,26 @@
 // `undefined` unless the process was started with `--localstorage-file`.
 import { afterEach } from "vitest";
 
+// jsdom implements no `ResizeObserver`, and the gallery needs one: its rows are
+// justified to the wall's width, so the wall has to be measured, and the wall
+// also changes width when the project rail collapses — which no window event
+// reports. Without this the view throws on mount and every gallery test fails
+// with `ReferenceError` rather than with anything about galleries.
+//
+// A stub that observes nothing, deliberately. jsdom has no layout engine, so a
+// real implementation could only ever report zero — the honest thing is to let
+// the component fall back to its initial width and to prove the *solver*
+// separately, as a pure function, in `justify.test.ts`. Tests that need a real
+// width set one on the element and read it back through `getBoundingClientRect`,
+// which jsdom does support.
+if (!("ResizeObserver" in globalThis)) {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}
+
 afterEach(() => {
   window.sessionStorage.clear();
 });

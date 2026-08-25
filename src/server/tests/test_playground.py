@@ -9,11 +9,13 @@ subject is the record, not the pixels.
 from __future__ import annotations
 
 import asyncio
+import io
 import sqlite3
 import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from qds import playground as playground_module
 from qds import settings as settings_module
@@ -1485,3 +1487,156 @@ def test_a_vanished_source_fails_with_an_answer_about_the_source(client, setting
     error = generations(client, session_id)[1]["error"]
     assert "source image" in error
     assert "Weights" not in error, f"answered about the wrong thing: {error}"
+
+
+# ── Thumbnails ─────────────────────────────────────────────────────────────
+#
+# A derived artifact, and every test here is about that word: it is produced on
+# demand from the stored file, it is bounded, it dies with what it was derived
+# from, and its absence costs quality rather than the picture.
+
+
+def thumbs_dir(settings) -> Path:
+    return Path(settings.server.playground_store, "thumbnails")
+
+
+def thumb_names(settings) -> set[str]:
+    return {path.name for path in thumbs_dir(settings).iterdir()}
+
+
+def finished_image_url(client: TestClient, session_id: str, **fields) -> str:
+    submit(client, session_id, **fields)
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    return generations(client, session_id)[0]["images"][0]["url"]
+
+
+def test_a_thumbnail_is_derived_on_first_request_and_then_reused(client, settings):
+    session_id = new_session(client)
+    url = finished_image_url(client, session_id)
+    name = url.rsplit("/", 1)[-1]
+    assert thumb_names(settings) == set(), "nothing is derived until it is asked for"
+
+    response = client.get(f"{url}/thumb")
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/webp"
+    assert response.headers["cache-control"] == "private, max-age=86400"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert Image.open(io.BytesIO(response.content)).format == "WEBP"
+
+    assert thumb_names(settings) == {f"{name}.webp"}
+    derived = thumbs_dir(settings) / f"{name}.webp"
+    stamp = derived.stat().st_mtime_ns
+
+    again = client.get(f"{url}/thumb")
+    assert again.status_code == 200
+    assert again.content == response.content
+    assert derived.stat().st_mtime_ns == stamp, "the second request re-derived it"
+
+
+def test_a_thumbnail_is_bounded_to_its_longest_edge(client, settings):
+    """The whole point of the route: what it serves is small.
+
+    The stored file is replaced with a large one *behind* its row, which is the
+    only way to get a realistic source out of a fake engine. The row is
+    untouched, so this exercises exactly the path a real 5120x2880 upscale takes.
+    """
+    session_id = new_session(client)
+    url = finished_image_url(client, session_id)
+    name = url.rsplit("/", 1)[-1]
+    buffer = io.BytesIO()
+    Image.new("RGB", (2048, 1024), "green").save(buffer, format="PNG")
+    images_dir(settings).joinpath(name).write_bytes(buffer.getvalue())
+
+    response = client.get(f"{url}/thumb")
+    assert response.status_code == 200
+    thumbnail = Image.open(io.BytesIO(response.content))
+    # Aspect ratio preserved, longest edge at the bound, not merely "smaller".
+    assert thumbnail.size == (playground_module.THUMBNAIL_EDGE, playground_module.THUMBNAIL_EDGE // 2)
+    assert len(response.content) < len(buffer.getvalue()) / 10
+
+
+def test_an_image_that_cannot_be_thumbnailed_is_served_whole(client, settings):
+    """T4's second half: a missing thumbnail degrades to the full image.
+
+    Witnessed on bytes that are not a picture, because that is the failure a
+    derivation can hit at request time and cannot be retried out of. The caller
+    was already authorized for these bytes -- the derived copy was an
+    optimisation -- so the answer is the file, not a 500 and not a broken tile.
+    """
+    session_id = new_session(client)
+    url = finished_image_url(client, session_id)
+    name = url.rsplit("/", 1)[-1]
+    images_dir(settings).joinpath(name).write_bytes(b"not an image at all")
+
+    response = client.get(f"{url}/thumb")
+    assert response.status_code == 200
+    assert response.content == b"not an image at all"
+    assert response.headers["content-type"] == "image/png"
+    # The fallback is the full-resolution file, so it keeps that file's régime.
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert thumb_names(settings) == set(), "a failed derivation left a file behind"
+
+
+def test_a_thumbnail_of_a_vanished_file_is_a_404(client, settings):
+    """A row without its file is a 404, as it is on the image route: there is
+    nothing to fall back to, and answering 200 with nothing would be the broken
+    tile the fallback exists to avoid."""
+    session_id = new_session(client)
+    url = finished_image_url(client, session_id)
+    images_dir(settings).joinpath(url.rsplit("/", 1)[-1]).unlink()
+    assert client.get(f"{url}/thumb").status_code == 404
+
+
+def test_deleting_an_image_reclaims_its_thumbnail(client, settings):
+    session_id = new_session(client)
+    submit(client, session_id, prompt="a fox", n=2)
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    urls = [image["url"] for image in generations(client, session_id)[0]["images"]]
+    names = [url.rsplit("/", 1)[-1] for url in urls]
+    for url in urls:
+        assert client.get(f"{url}/thumb").status_code == 200
+    assert thumb_names(settings) == {f"{name}.webp" for name in names}
+
+    assert client.delete(f"/playground/api/images/{names[0]}").status_code == 204
+
+    assert thumb_names(settings) == {f"{names[1]}.webp"}, "the thumbnail outlived its image"
+    assert client.get(f"{urls[0]}/thumb").status_code == 404
+    assert client.get(f"{urls[1]}/thumb").status_code == 200
+
+
+def test_deleting_a_session_reclaims_the_thumbnails_of_its_images(client, settings):
+    session_id = new_session(client)
+    submit(client, session_id, prompt="a fox", n=2, files={"image": ("ctx.png", tiny_png(), "image/png")})
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    entry = generations(client, session_id)[0]
+    urls = [image["url"] for image in entry["images"]] + [entry["contextImage"]]
+    for url in urls:
+        assert client.get(f"{url}/thumb").status_code == 200
+    assert len(thumb_names(settings)) == 3, "the context image is a stored file too"
+
+    assert client.delete(f"/playground/api/sessions/{session_id}").status_code == 204
+
+    assert thumb_names(settings) == set()
+    for url in urls:
+        assert client.get(f"{url}/thumb").status_code == 404
+
+
+def test_deleting_a_group_reclaims_the_thumbnails_of_its_images(client, settings):
+    session_id = new_session(client)
+    first = submit(client, session_id, prompt="a fox").json()
+    assert wait_until(lambda: status_of(client, session_id) == "completed")
+    submit(client, session_id, prompt="a fox", group=first["groupId"])
+    assert wait_until(lambda: len(generations(client, session_id)) == 2)
+    assert wait_until(lambda: status_of(client, session_id, 1) == "completed")
+    urls = [
+        image["url"] for entry in generations(client, session_id) for image in entry["images"]
+    ]
+    assert len(urls) == 2
+    for url in urls:
+        assert client.get(f"{url}/thumb").status_code == 200
+    assert len(thumb_names(settings)) == 2
+
+    assert client.delete(f"/playground/api/groups/{first['groupId']}").status_code == 204
+
+    assert thumb_names(settings) == set()

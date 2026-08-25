@@ -107,6 +107,16 @@ async function openAdvanced() {
   return screen.getByRole("dialog", { name: "Advanced settings" });
 }
 
+/** Shut the settings dialog, the way a user does before typing a prompt.
+ *
+ * The panel is a modal now, not a popover: RAC contains focus in it and marks
+ * the rest of the page hidden while it is up, so the composer's own fields are
+ * deliberately unreachable until it is closed. That is the mechanism working,
+ * and the tests below say so explicitly rather than reaching through it. */
+async function closeAdvanced() {
+  await userEvent.click(screen.getByRole("button", { name: "Close" }));
+}
+
 it("offers the negative prompt for a model that declares one", async () => {
   composer(vi.fn());
   await waitFor(() => expect(server.requests.some((r) => r.path.includes("with-cfg"))).toBe(true));
@@ -137,6 +147,7 @@ it("sends the negative prompt with the request", async () => {
   await waitFor(() => expect((field as HTMLTextAreaElement).disabled).toBe(false));
 
   await userEvent.type(field, "blurry, watermark");
+  await closeAdvanced();
   await userEvent.type(screen.getByLabelText("Prompt"), "a fox");
   await userEvent.click(screen.getByRole("button", { name: "Generate ↵" }));
 
@@ -155,9 +166,10 @@ it("keeps what was typed but stops sending it when the model changes", async () 
   const field = screen.getByLabelText("Negative prompt");
   await waitFor(() => expect((field as HTMLTextAreaElement).disabled).toBe(false));
   await userEvent.type(field, "blurry");
+  await closeAdvanced();
 
-  // Reaching the model picker closes the popover, as a press anywhere outside
-  // it does; reopening is what the user does too.
+  // The model picker with the dialog shut, then the dialog again: what the user
+  // does, and the point is that the text survived the round trip.
   await userEvent.selectOptions(screen.getByLabelText("Model"), "distilled");
   await openAdvanced();
   await waitFor(() =>
@@ -165,6 +177,7 @@ it("keeps what was typed but stops sending it when the model changes", async () 
   );
   expect((screen.getByLabelText("Negative prompt") as HTMLTextAreaElement).value).toBe("blurry");
 
+  await closeAdvanced();
   await userEvent.type(screen.getByLabelText("Prompt"), "a fox");
   await userEvent.click(screen.getByRole("button", { name: "Generate ↵" }));
 

@@ -4,7 +4,7 @@
  * Hermes' `qds-playground` plugin creates the session and drives generation
  * from the chat, then opens this URL in its preview pane. What it must show is
  * the work: the feed, and the live preview inside it. What it must NOT show is
- * a second way to do what the chat already does — the session sidebar and the
+ * a second way to do what the chat already does — the project rail and the
  * prompt composer — because two surfaces owning the same action is how they
  * drift apart.
  *
@@ -87,7 +87,40 @@ it("hides the session sidebar and the composer under ?view=plugin", async () => 
   // The two surfaces the chat replaces.
   expect(screen.queryByRole("textbox")).toBeNull();
   expect(screen.queryByRole("button", { name: /generate/i })).toBeNull();
-  expect(screen.queryByRole("button", { name: /new session/i })).toBeNull();
+  // No rail: not the list, not the "New project" control, not the collapse
+  // toggle. Asked of the landmark element as well as of the labels, because a
+  // label is the part most likely to be renamed — as "New session" just was —
+  // and a query for a name nobody renders passes by being wrong twice.
+  expect(screen.queryByRole("complementary")).toBeNull();
+  expect(screen.queryByRole("button", { name: /new project/i })).toBeNull();
+  expect(screen.queryByRole("button", { name: /project rail/i })).toBeNull();
+  // No view switcher either, and no `?mode=` written into the embedder's URL:
+  // this surface renders one view, and which one is the pane owner's choice —
+  // not a control the chat has to explain.
+  expect(screen.queryByRole("tablist")).toBeNull();
+  expect(screen.queryByRole("tab", { name: /gallery/i })).toBeNull();
+  expect(screen.queryByRole("tab", { name: /light table/i })).toBeNull();
+  expect(new URLSearchParams(window.location.search).get("mode")).toBeNull();
+  // What it must NOT lose with the rail: the queue's state at a glance. The
+  // pill moved into the rail's footer with the redesign, and this surface has
+  // no rail — so it is rendered in the masthead here instead. A pane with no
+  // sidebar to expand and no browser chrome cannot go looking for it.
+  expect(screen.getByText("Running")).toBeTruthy();
+});
+
+it("shows a held queue in the masthead when embedded, where the rail is not", async () => {
+  // The list payload is what carries `paused` — the same one the rail's footer
+  // reads on the full surface.
+  server.on("GET /playground/api/sessions", () => ({
+    sessions: [playgroundSession({ id: "s1", title: "lighthouses" })],
+    paused: true,
+  }));
+  window.history.replaceState(null, "", "/playground/?session=s1&view=plugin");
+  render(<PlaygroundApp />);
+
+  expect(await screen.findByText("Queue paused")).toBeTruthy();
+  // Still no rail — the pill is in the masthead, not a sidebar smuggled back in.
+  expect(screen.queryByRole("complementary")).toBeNull();
   // Nowhere to navigate from a pane with no browser chrome.
   expect(screen.queryByRole("link", { name: /server config/i })).toBeNull();
 });
@@ -111,4 +144,7 @@ it("keeps every control in the default view", async () => {
 
   expect(screen.getByRole("textbox")).toBeTruthy();
   expect(screen.getByRole("link", { name: /server config/i })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Prompts" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Gallery" })).toBeTruthy();
+  expect(screen.getByRole("tab", { name: "Light Table" })).toBeTruthy();
 });

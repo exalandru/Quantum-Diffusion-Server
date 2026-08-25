@@ -1,11 +1,16 @@
 /**
- * The three small forms a session row opens: rename, unlock, password.
+ * The four small forms a project opens: create, rename, unlock, password.
  *
  * Each is a `Modal` around one form, the shape `PathPrompt` established. They
  * report the server's answer rather than validating ahead of it — the length
  * floor is mentioned as a hint, and the server still decides.
+ *
+ * The vocabulary here is the interface's, not the API's: these say "project"
+ * while every route, payload and MCP tool underneath keeps saying "session".
+ * That split is deliberate — renaming a public route for a UI word would be a
+ * contract change with no caller asking for it.
  */
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 
 import { messageOf } from "../api";
 import { Modal } from "../modal";
@@ -32,6 +37,103 @@ function useSubmit(action: () => Promise<void>) {
   return { busy, error, submit };
 }
 
+/**
+ * One labelled control, laid out: label above, control full width beneath it,
+ * help under the control.
+ *
+ * These four forms rendered a bare `<label>` next to a bare `<input>`, which is
+ * not a layout at all — a `<label>` is inline and an `<input>` is a shrink-to-fit
+ * inline-block, so the two sat on one line with the field at the browser's
+ * default ~20 character width, jammed against its own label. And the helper
+ * sentence sat *above* the label, where the eye reads it as the dialog's
+ * subtitle rather than as help for the field under it.
+ *
+ * `.setting` / `.setting-label` / `.setting-help` are the sheet's existing form
+ * vocabulary — the configuration panel, the model dialogs and the import forms
+ * all use it, and `.setting input { width: 100% }` is where the full width comes
+ * from. So this is one component adopting a convention rather than a fifth way
+ * to draw a field, and it is a component rather than four copies of the same
+ * three elements because the defect was that all four dialogs drifted the same
+ * way once.
+ */
+function Field({
+  id,
+  label,
+  help,
+  children,
+}: {
+  id: string;
+  label: ReactNode;
+  /** Under the control, where it reads as help. Optional. */
+  help?: ReactNode;
+  /** The control itself. Its `id` must be the one above. */
+  children: ReactNode;
+}) {
+  return (
+    <div className="setting">
+      <label className="setting-label" htmlFor={id}>
+        {label}
+      </label>
+      {children}
+      {help && <p className="setting-help">{help}</p>}
+    </div>
+  );
+}
+
+/**
+ * Name a project, and create it.
+ *
+ * The project does not exist yet when this opens: `onCreate` is what creates it.
+ * Cancelling therefore leaves nothing behind, which is the one thing that had to
+ * be true of creating a project up front — a record the server holds and the
+ * rail cannot show would be worse than no record at all.
+ */
+export function NewProjectDialog({
+  onCancel,
+  onCreate,
+}: {
+  onCancel: () => void;
+  /** Resolves once the server holds a project with this name. */
+  onCreate: (title: string) => Promise<void>;
+}) {
+  const [value, setValue] = useState("");
+  const { busy, error, submit } = useSubmit(() => onCreate(value.trim()));
+
+  return (
+    <Modal title="New project" onClose={onCancel}>
+      <form onSubmit={(event) => void submit(event)}>
+        <Field
+          id="project-title"
+          label="Name"
+          help="A project holds prompts and the images they produced. You can rename it later."
+        >
+          <input
+            id="project-title"
+            type="text"
+            autoFocus
+            maxLength={80}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+        </Field>
+        {error && (
+          <p className="setting-error" role="alert">
+            {error}
+          </p>
+        )}
+        <div className="actions">
+          <button type="button" onClick={onCancel}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={busy || !value.trim()}>
+            Create
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
 export function RenameDialog({
   title,
   onCancel,
@@ -48,20 +150,22 @@ export function RenameDialog({
   );
 
   return (
-    <Modal title="Rename session" onClose={onCancel}>
+    <Modal title="Rename project" onClose={onCancel}>
       <form onSubmit={(event) => void submit(event)}>
-        <p className="setting-help">
-          Leave it empty to name the session after its first prompt.
-        </p>
-        <label htmlFor="session-title">Name</label>
-        <input
+        <Field
           id="session-title"
-          type="text"
-          autoFocus
-          maxLength={80}
-          value={value}
-          onChange={(event) => setValue(event.target.value)}
-        />
+          label="Name"
+          help="Leave it empty to name the project after its first prompt."
+        >
+          <input
+            id="session-title"
+            type="text"
+            autoFocus
+            maxLength={80}
+            value={value}
+            onChange={(event) => setValue(event.target.value)}
+          />
+        </Field>
         {error && (
           <p className="setting-error" role="alert">
             {error}
@@ -95,24 +199,25 @@ export function UnlockDialog({
 
   return (
     <Modal
-      title="Unlock session"
+      title="Unlock project"
       subtitle={title ?? undefined}
       onClose={onCancel}
     >
       <form onSubmit={(event) => void submit(event)}>
-        <p className="setting-help">
-          This session has a password. It stays unlocked in this tab until you
-          lock it or close the tab.
-        </p>
-        <label htmlFor="session-password">Password</label>
-        <input
+        <Field
           id="session-password"
-          type="password"
-          autoFocus
-          autoComplete="off"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-        />
+          label="Password"
+          help="This project has a password. It stays unlocked in this tab until you lock it or close the tab."
+        >
+          <input
+            id="session-password"
+            type="password"
+            autoFocus
+            autoComplete="off"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </Field>
         {error && (
           <p className="setting-error" role="alert">
             {error}
@@ -164,31 +269,36 @@ export function PasswordDialog({
       onClose={onCancel}
     >
       <form onSubmit={(event) => void submit(event)}>
-        <p className="setting-help">
-          A password locks this session's prompts and images. Anyone opening it
-          — on this machine or another — is asked for it first.
-          {locked && " Changing it signs every other tab out of this session."}
-        </p>
-        <label htmlFor="session-new-password">
-          {locked ? "New password" : "Password"} (at least {MIN_PASSWORD_LENGTH}{" "}
-          characters)
-        </label>
-        <input
+        <Field
           id="session-new-password"
-          type="password"
-          autoFocus
-          autoComplete="new-password"
-          value={password}
-          onChange={(event) => setPassword(event.target.value)}
-        />
-        <label htmlFor="session-confirm-password">Confirm</label>
-        <input
-          id="session-confirm-password"
-          type="password"
-          autoComplete="new-password"
-          value={confirm}
-          onChange={(event) => setConfirm(event.target.value)}
-        />
+          label={locked ? "New password" : "Password"}
+          help={
+            <>
+              At least {MIN_PASSWORD_LENGTH} characters. A password locks this
+              project's prompts and images: anyone opening it — on this machine or
+              another — is asked for it first.
+              {locked && " Changing it signs every other tab out of this project."}
+            </>
+          }
+        >
+          <input
+            id="session-new-password"
+            type="password"
+            autoFocus
+            autoComplete="new-password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+          />
+        </Field>
+        <Field id="session-confirm-password" label="Confirm">
+          <input
+            id="session-confirm-password"
+            type="password"
+            autoComplete="new-password"
+            value={confirm}
+            onChange={(event) => setConfirm(event.target.value)}
+          />
+        </Field>
         {mismatch && <p className="setting-error">The two passwords differ.</p>}
         {(error || removeError) && (
           <p className="setting-error" role="alert">
@@ -204,7 +314,7 @@ export function PasswordDialog({
               onClick={() => {
                 if (
                   !window.confirm(
-                    "Remove the password? Anyone will be able to open this session.",
+                    "Remove the password? Anyone will be able to open this project.",
                   )
                 )
                   return;

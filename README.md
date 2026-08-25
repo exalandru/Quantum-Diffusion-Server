@@ -28,7 +28,7 @@ Because the model stays loaded in memory between requests, generating a second a
 
 ### Playground
 
-The playground is where most people will spend their time: a prompt box, a model picker, and everything you generate kept in a session you can come back to.
+The playground is where most people will spend their time: a prompt box, a model picker, and everything you generate kept in a project you can come back to.
 
 - ✅ **Prompt composer**: a prompt, an optional negative prompt, an optional reference image (drag-drop or paste) for models that support editing or image-to-image, and a batch count.
 - ✅ **Prompt enhance**: expand a short prompt into a more detailed one using a small local rewriter model, with the expanded version shown alongside the result so you can reuse it.
@@ -36,7 +36,8 @@ The playground is where most people will spend their time: a prompt box, a model
 - ✅ **Live progress**: a progressively sharper preview while an image generates, with a cancel button that leaves the server usable.
 - ✅ **Refine, vary, delete**: act on any generated image without losing the rest of its history.
 - ✅ **Upscale**: Any generated image can be upscaled ×2 or ×4 with a dedicated upscaler model, right from the feed.
-- ✅ **Sessions**: Everything you generate is recorded server-side and organized into sessions you can rename, revisit, and, if you're sharing the machine, lock behind a password. The generation queue itself can be paused and resumed without losing what's already running.
+- ✅ **Projects**: Everything you generate is recorded server-side and organized into projects you can create, name, rename, revisit, and, if you're sharing the machine, lock behind a password. The rail that lists them collapses to landmarks when you want the room. The generation queue itself can be paused and resumed without losing what's already running. (The HTTP API and the MCP tools call the same thing a *session* — the interface's word changed, the contract's did not.)
+- ✅ **Three views of a project**: *Prompts*, the feed of what you asked for and what came back; *Gallery*, a waterfall of every picture in the project and nothing else; *Light Table*, one image on a stage with the project as a filmstrip under it and that image's prompt, settings and actions beside it. Galleries and filmstrips load small derived thumbnails rather than the full files. Which view a project opens in is remembered per project, in that browser.
 
 ### Dashboard
 
