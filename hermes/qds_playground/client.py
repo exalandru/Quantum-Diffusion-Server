@@ -29,7 +29,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Tuple
 
 import requests
@@ -63,43 +62,36 @@ def base_url() -> str:
     return raw.rstrip("/")
 
 
-def _config_api_key() -> Optional[str]:
-    """Read ``server.api_key`` from QDS' own ``server-config.json``, if present.
-
-    Order of candidates: ``QDS_SERVER_CONFIG`` (QDS' own override) and the
-    repository copy two levels above this file (this plugin ships inside the
-    QDS repo). A missing/unreadable/keyless config is not an error — a
-    keyless loopback data plane is the documented default.
-    """
-    candidates = []
-    env_path = (os.environ.get("QDS_SERVER_CONFIG") or "").strip()
-    if env_path:
-        candidates.append(Path(env_path).expanduser())
-    candidates.append(Path(__file__).resolve().parents[2] / "src" / "server" / "server-config.json")
-    for path in candidates:
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            continue
-        server = raw.get("server") if isinstance(raw, dict) else None
-        value = server.get("api_key") if isinstance(server, dict) else None
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None
-
-
 def api_key() -> Optional[str]:
     """Return the data-plane bearer key, or ``None`` for a keyless server.
 
-    ``QDS_API_KEY`` (this plugin's own knob) wins, then QDS' own
-    ``QDS_SERVER_API_KEY`` env override, then the configured
-    ``server.api_key``. The value is never echoed into a tool result.
+    **Environment only.** ``QDS_API_KEY`` (this plugin's own knob) wins, then
+    QDS' own ``QDS_SERVER_API_KEY``. The value is never echoed into a tool
+    result.
+
+    This used to fall back to reading ``server.api_key`` out of QDS'
+    ``server-config.json``, and that was wrong twice over:
+
+    - **It assumes the client shares a filesystem with the server.** The moment
+      QDS is exposed on the network and Hermes runs on another machine — the
+      deployment the server's `playground_auth_scope` exists to make safe —
+      there is no config file to read, and the plugin would report "keyless"
+      while the server demanded a key.
+    - **It behaved differently depending on where the file sat.** The lookup
+      resolved `parents[2]/src/server/server-config.json`, which exists when the
+      plugin runs from a checkout of this repo and does not exist once it is
+      deployed as a copy under `~/.hermes/plugins/`. Identical code, two
+      behaviours, and the one that worked was the one nobody ships.
+
+    So the credential is configuration, stated once, the same way on every
+    machine. A keyless loopback server still needs nothing set — that is the
+    documented default and it is unchanged.
     """
     for var in ("QDS_API_KEY", "QDS_SERVER_API_KEY"):
         value = (os.environ.get(var) or "").strip()
         if value:
             return value
-    return _config_api_key()
+    return None
 
 
 class QdsError(RuntimeError):
@@ -209,6 +201,28 @@ class QdsClient:
             raise QdsUnreachable(f"QDS server unreachable at {self.base}: {exc}") from exc
         if resp.status_code == 404 and accept_404:
             return resp
+        if resp.status_code == 401:
+            # The one failure a user cannot diagnose from the server's own
+            # wording. QDS says "login required", which is true and useless
+            # here: this is not a browser, it will never see a login screen, and
+            # the fix is an environment variable on *this* machine. Naming it —
+            # and the URL it was aimed at — is the difference between a
+            # two-minute fix and an afternoon.
+            if stream:
+                resp.close()
+            _, code = _error_message(resp)
+            held = "set" if self._key else "not set"
+            raise QdsHttpError(
+                f"QDS refused the request at {self.base} (HTTP 401). "
+                f"This plugin's credential is {held}. "
+                f"Set QDS_API_KEY to the server's server.api_key — and "
+                f"QDS_BASE_URL if QDS runs on another machine. "
+                f"The plugin reads credentials from the environment only; it "
+                f"cannot read the server's config file, which would not exist "
+                f"on this machine anyway.",
+                status_code=401,
+                code=code,
+            )
         if resp.status_code >= 400:
             message, code = _error_message(resp)
             if stream:

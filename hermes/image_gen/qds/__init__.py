@@ -75,6 +75,27 @@ def base_url() -> str:
     return raw.rstrip("/")
 
 
+def auth_headers() -> Dict[str, str]:
+    """Bearer header for the data plane, or empty for a keyless server.
+
+    From the environment only — ``QDS_API_KEY``, then QDS' own
+    ``QDS_SERVER_API_KEY`` — never from the server's config file: this plugin
+    can run on a different machine from QDS, in which case there is no such
+    file to read, and reading one that happened to exist locally would be
+    answering a question about the wrong server.
+
+    Without this, every call here went out unauthenticated. That worked only
+    because a loopback install with no ``server.api_key`` is open by default;
+    the moment a key is configured — or QDS is exposed on the network, which
+    makes a key mandatory — the plugin got a 401 it could not explain.
+    """
+    for var in ("QDS_API_KEY", "QDS_SERVER_API_KEY"):
+        value = (os.environ.get(var) or "").strip()
+        if value:
+            return {"Authorization": f"Bearer {value}"}
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # Server metadata
 # ---------------------------------------------------------------------------
@@ -94,7 +115,9 @@ def _fetch_capabilities(*, use_cache: bool = True) -> Dict[str, Any]:
     try:
         import requests
 
-        resp = requests.get(f"{url}/v1/capabilities", timeout=META_TIMEOUT_S)
+        resp = requests.get(
+            f"{url}/v1/capabilities", timeout=META_TIMEOUT_S, headers=auth_headers()
+        )
         resp.raise_for_status()
         payload = resp.json()
     except Exception as exc:
@@ -444,6 +467,7 @@ class QdsImageGenProvider(ImageGenProvider):
                     },
                     files={"image": (filename, data)},
                     timeout=GENERATE_TIMEOUT_S,
+                    headers=auth_headers(),
                 )
             else:
                 resp = requests.post(
@@ -456,6 +480,7 @@ class QdsImageGenProvider(ImageGenProvider):
                         "response_format": "b64_json",
                     },
                     timeout=GENERATE_TIMEOUT_S,
+                    headers=auth_headers(),
                 )
         except Exception as exc:
             logger.debug("QDS request failed", exc_info=True)

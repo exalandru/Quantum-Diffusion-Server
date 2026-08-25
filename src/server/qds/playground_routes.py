@@ -5,11 +5,15 @@ the request that submitted it. It is a row in `PlaygroundStore`, run by the
 single-worker `PlaygroundRunner`, and its images live outside `image_store`
 where no TTL purge can reach them.
 
-Everything under `/playground/api` carries the data-plane credential *and*
+Everything under `/playground/api` carries this plane's own credential *and*
 `deny_cross_site`, like the dashboard's own routes: a page on another origin
-must not be able to spend this machine's GPU. `/playground/images/{filename}`
-and its `/thumb` sibling are the documented exceptions, each for the reason its
-own docstring gives.
+must not be able to spend this machine's GPU. That credential is the playground
+password, an admin session, the local token or `server.api_key`, and whether it
+is demanded at all on loopback is `server.playground_auth_scope`'s to say —
+`build_playground_authorizer` in `qds/auth.py` holds the rule.
+`/playground/api/session` is the login itself, so it is outside the gate by
+construction; `/playground/images/{filename}` and its `/thumb` sibling are the
+documented exceptions, each for the reason its own docstring gives.
 
 The admission rules are `Admission`'s, never redecided here.
 """
@@ -21,16 +25,19 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, File, Form, Header, Query, UploadFile, params
+from fastapi import APIRouter, Cookie, Depends, File, Form, Header, Query, UploadFile, params
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from qds import admin, credential, playground_lock
+from qds import session as session_module
 from qds.admission import DEFAULT_IMAGE_STRENGTH, MAX_SEED, Admission, _save_upload
 from qds.errors import APIError
 from qds.logs import SERVER_LOGGER
 from qds.playground import IMAGE_MEDIA_TYPES, THUMBNAIL_MEDIA_TYPE
 from qds.registry import edit_enabled
+from qds.session import SessionStore
+from qds.settings import Settings
 from qds.upscale import catalogue as upscale_catalogue
 
 logger = logging.getLogger(SERVER_LOGGER)
@@ -42,7 +49,7 @@ SessionToken = Annotated[str | None, Header(alias=playground_lock.UNLOCK_HEADER)
 
 #: How long a browser may keep a thumbnail. A day: long enough that scrolling a
 #: project twice does not refetch it, short enough to bound the replay window the
-#: route's `TEMPORARY:` note describes. The bytes themselves never go stale --
+#: route's own note describes. The bytes themselves never go stale --
 #: a filename is a `uuid4` and its pixels never change.
 THUMBNAIL_MAX_AGE_S = 86400
 
@@ -83,12 +90,137 @@ class UpscaleRequest(BaseModel):
     group: str | None = Field(default=None, max_length=64)
 
 
-def build_playground_router(admission: Admission, auth: params.Depends) -> APIRouter:
+class PlaygroundLoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    password: str
+
+
+def build_playground_session_router(
+    *,
+    settings: Settings,
+    sessions: SessionStore,
+    throttle: admin.LoginThrottle,
+) -> APIRouter:
+    """Logging in to the playground, which by definition cannot require being
+    logged in to the playground.
+
+    Its own router for the reason `admin.build_session_router` is: FastAPI's
+    router-level dependencies are not overridable per route, so a login endpoint
+    on the gated router would be unreachable by construction. It keeps
+    `deny_cross_site` — the cookie alone is not the boundary, and a hostile page
+    must not be able to post a guess with the user's credentials.
+
+    The throttle is the playground's own instance, never the admin's: a shared
+    one would let anybody who can reach the playground lock the operator out of
+    the control plane by guessing here five times.
+    """
+    router = APIRouter(
+        prefix="/playground/api", tags=["playground"], dependencies=[Depends(admin.deny_cross_site)]
+    )
+
+    @router.get("/session")
+    async def playground_session_status(
+        qds_playground: Annotated[str | None, Cookie(alias=session_module.PLAYGROUND_COOKIE)] = None,
+    ) -> dict:
+        """What the lock screen needs, and nothing more.
+
+        `passwordSet` is the same disclosure the admin login screen already
+        makes, to a same-origin caller only: without it the form cannot tell
+        "type yours" from "nobody has set one, ask the person who owns this
+        machine" — and it says nothing about *which* password, only that a hash
+        file exists. `gated` is what lets the surface stop asking at all on a
+        loopback install whose scope is `network`.
+        """
+        return {
+            "passwordSet": credential.PLAYGROUND.is_set(),
+            "authenticated": sessions.validate(qds_playground),
+            "loopback": settings.server.is_loopback,
+            "gated": settings.server.playground_gate_binds,
+        }
+
+    @router.post("/session", status_code=204)
+    async def playground_log_in(body: PlaygroundLoginRequest, response: Response) -> None:
+        wait = throttle.retry_after()
+        if wait > 0:
+            raise APIError(
+                f"Too many attempts. Try again in {wait:.0f} seconds.",
+                status_code=429,
+                error_type="invalid_request_error",
+                code="too_many_attempts",
+            )
+        if not credential.PLAYGROUND.is_set():
+            raise APIError(
+                "No playground password is set on this server.",
+                status_code=409,
+                code="no_password_set",
+            )
+        # Off the event loop: verifying costs ~94 ms by design, and the queue,
+        # the progress stream and every other tab share this loop.
+        if not await asyncio.to_thread(credential.PLAYGROUND.verify, body.password):
+            throttle.record_failure()
+            # WARNING so it reaches the ring buffer the dashboard's Logs view
+            # reads: repeated failures here are worth seeing.
+            logger.warning("playground login failed")
+            raise APIError(
+                "Incorrect password.",
+                status_code=401,
+                error_type="invalid_request_error",
+                code="invalid_password",
+            )
+
+        throttle.record_success()
+        response.set_cookie(
+            session_module.PLAYGROUND_COOKIE,
+            sessions.create(),
+            httponly=True,
+            samesite="strict",
+            path="/",
+            # `secure` deliberately absent, as on the admin cookie: this server
+            # speaks plain HTTP, and a Secure cookie would never be sent over
+            # the LAN address the network scope exists for. The cost is stated
+            # in the interface rather than papered over here.
+        )
+        logger.info("playground: logged in")
+
+    @router.delete("/session", status_code=204)
+    async def playground_log_out(
+        response: Response,
+        qds_playground: Annotated[str | None, Cookie(alias=session_module.PLAYGROUND_COOKIE)] = None,
+    ) -> None:
+        # No auth: presenting a cookie the server does not know and being told
+        # you are logged out is the correct outcome, not an error.
+        sessions.revoke(qds_playground)
+        response.delete_cookie(session_module.PLAYGROUND_COOKIE, path="/")
+
+    return router
+
+
+def build_playground_router(
+    admission: Admission,
+    auth: params.Depends,
+    image_auth: params.Depends,
+) -> APIRouter:
     """Both playground surfaces, as one router to include.
 
     Unprefixed, because the two are not siblings under one path: the API sits
     behind `/playground/api` with `deny_cross_site`, while the image routes sit
     at `/playground/images/{filename}` and `.../{filename}/thumb` without it.
+
+    Two credentials for the same reason they are two surfaces. `auth` is this
+    plane's own gate — the playground password, an admin session, the local
+    token or the api_key — and it guards the API. `image_auth` is the data-plane
+    credential, and it guards the bytes, which is what it already did.
+
+    **The image routes are deliberately not moved onto the playground gate.** A
+    picture is fetched by an `<img>`, which can present no header, and the
+    embedded surface (`?view=plugin`, opened by the Hermes plugin) is not always
+    a context a `SameSite=Strict` cookie is sent in — so binding them to a
+    cookie-based gate would break a surface D3's api_key exemption does not
+    cover. What that leaves open is one image at a time to a caller who already
+    knows a `uuid4` filename: the API that would list them is gated, and against
+    the threat this feature exists for — somebody walks up to the machine — a
+    filename nobody can enumerate is not a way in. Widening it is a separate
+    decision about the plugin, not a detail of this one.
     """
     router = APIRouter()
     settings = admission.settings
@@ -406,12 +538,26 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
         playground.unlink(removed)
 
     @playground_api.get("/preview")
-    async def playground_preview() -> Response:
+    async def playground_preview(x_qds_session_token: SessionToken = None) -> Response:
         """The running generation's latest partially-denoised image, if there is one.
 
         A same-origin `<img>` sends the session cookie and no `Origin` header, so
         it satisfies both router dependencies — the same auth story as the feed's
         image fetches. 404 outside a run, or when the running job is a `/v1` one.
+
+        **The lock applies here too, and it did not used to.** This route serves
+        the frame of whatever the engine is denoising, and a project can be
+        locked *while* it generates — locking is allowed at any time and does not
+        stop the run. Without the check below, a caller holding no token received
+        the in-flight frame of a locked project with a 200 while the detail
+        endpoint refused them with a 403: measured, byte-identical to what the
+        token-holder got. The lock exists to withhold a project's pictures, and a
+        picture half-denoised is still the picture.
+
+        Resolved the way `cancel` and `delete_group` resolve theirs: the running
+        generation names its session, and `assert_unlocked` decides. A `/v1` run
+        has no playground record, so it falls through to the 404 the docstring
+        already promised rather than to an unguarded frame.
 
         The client's `?v=<preview_seq>` is a cache-buster, not a selector: the one
         slot always answers with its current frame, which can already be a newer
@@ -419,6 +565,15 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
         entitled to whenever a fast model decodes the next one mid-fetch, and
         "latest" is what the caller wants either way.
         """
+        # Asked before the bytes: a 404 for "nothing is running" must not depend
+        # on whether the caller could have seen it, and a locked project must not
+        # be distinguishable from an idle engine by timing either.
+        running = runner.current_id
+        if running is not None:
+            session_id = playground.session_of_generation(running)
+            if session_id is not None:
+                assert_unlocked(session_id, x_qds_session_token)
+
         payload = engine.preview()
         if payload is None:
             raise APIError("No preview is available.", status_code=404, code="not_found")
@@ -448,7 +603,7 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
 
     @router.get(
         "/playground/images/{filename}",
-        dependencies=[auth],
+        dependencies=[image_auth],
         include_in_schema=False,
     )
     async def playground_image(
@@ -506,7 +661,7 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
 
     @router.get(
         "/playground/images/{filename}/thumb",
-        dependencies=[auth],
+        dependencies=[image_auth],
         include_in_schema=False,
     )
     async def playground_image_thumbnail(
@@ -538,15 +693,20 @@ def build_playground_router(admission: Admission, auth: params.Depends) -> APIRo
         `pna.IMAGES_PREFIX`, so the private-network preflight an embedded client
         sends is granted here as well; a sibling path would have failed it.
 
-        TEMPORARY: `private, max-age` rather than the image route's `no-store`.
-        What this weakens, exactly: a session that has been re-locked can still
-        have its *thumbnails* replayed from that one browser's cache until they
-        expire, whereas its full images cannot. Authorised for this step so a
-        scrolling grid does not refetch every tile, and scheduled to be revisited
-        -- a validator with a short-lived token, or an unlock-scoped ETag, would
-        give the grid its cache without the replay window. The full-image route
-        keeps `no-store`, and so does the fallback below, so no full-resolution
-        byte becomes cacheable by this decision.
+        **A stated limit, no longer a debt.** `private, max-age` rather than the
+        image route's `no-store`. What it costs, exactly: a session that has been
+        re-locked can still have its *thumbnails* replayed from that one
+        browser's cache until they expire, whereas its full images cannot. It
+        carried a `TEMPORARY:` marker written under the threat model "another
+        person using this same browser replays the cache". The model this server
+        is actually built against is "somebody walks up to the machine", and
+        against that the window is unreachable without hand-crafting a request to
+        a `uuid4` path -- so this is documented rather than owed. Revisit it if
+        real user accounts ever land, when one browser genuinely serves two
+        people: a validator with a short-lived token, or an unlock-scoped ETag,
+        would give the grid its cache with no replay window at all. The
+        full-image route keeps `no-store`, and so does the fallback below, so no
+        full-resolution byte is made cacheable by this decision.
         """
         session_id = playground.session_of_image(filename)
         if session_id is None:

@@ -12,7 +12,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -26,12 +26,36 @@ LOOPBACK_HOSTS = {"127.0.0.1", "::1", "localhost"}
 #: "raw" is a local extension: the PNG bytes straight in the response body.
 RESPONSE_FORMATS = {"url", "b64_json", "raw"}
 
+#: When a plane's gate applies. `network` binds it only while the server is
+#: reachable beyond this machine; `always` binds it on loopback too.
+#:
+#: A tightening knob only: there is no value here that opens something the
+#: server closes today. Off-loopback exposure keeps its own floor further down
+#: in `runtime_issues` — an admin password *and* an api_key — which `network`
+#: cannot lower and `always` only adds to.
+AuthScope = Literal["network", "always"]
+
 
 class ServerSettings(BaseModel):
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
     #: When set, required as `Authorization: Bearer <key>`.
     api_key: str | None = None
+    #: When each plane's gate applies, decided per plane rather than once for
+    #: the server. The pair exists because the sensible desktop posture is
+    #: asymmetric: the control plane edits the configuration, reads the logs and
+    #: restarts the process, so it is worth a password even for someone sitting
+    #: at the machine; the playground is the thing that machine's owner uses all
+    #: day, and asking them for a password to generate an image locally is
+    #: ceremony. A single global scope cannot express `admin: always` with
+    #: `playground: network`, which is exactly the posture asked for.
+    #:
+    #: Flat fields rather than a nested `auth:` block: the two credentials they
+    #: govern — `api_key` here, the admin password beside the configuration —
+    #: already live at this level, and half the auth story in another place is
+    #: how the two halves drift.
+    admin_auth_scope: AuthScope = "network"
+    playground_auth_scope: AuthScope = "network"
     #: Origins a *browser page* may read a response from. Empty is the default and
     #: means none: `/v1` is open on a keyless loopback install, and a wildcard there
     #: lets any page in any tab spend this machine's GPU and read what came back.
@@ -119,6 +143,23 @@ class ServerSettings(BaseModel):
     @property
     def is_loopback(self) -> bool:
         return self.host in LOOPBACK_HOSTS
+
+    def gate_binds(self, scope: AuthScope) -> bool:
+        """Whether a gate with this scope applies to *this* server's binding.
+
+        One truth table, asked twice, so the two planes cannot answer the same
+        question differently: `always` binds everywhere, `network` binds only
+        once the socket is reachable beyond this machine.
+        """
+        return scope == "always" or not self.is_loopback
+
+    @property
+    def admin_gate_binds(self) -> bool:
+        return self.gate_binds(self.admin_auth_scope)
+
+    @property
+    def playground_gate_binds(self) -> bool:
+        return self.gate_binds(self.playground_auth_scope)
 
 
 #: Where `huggingface_hub` keeps its cache when nothing says otherwise. Its own
@@ -520,6 +561,36 @@ class Settings(BaseModel):
                     ),
                 )
             )
+        # A gate that is on but has no key is a gate that is off, so each plane
+        # is checked against *its own* credential and names *its own* field: a
+        # misconfigured playground reported as an admin problem sends the person
+        # repairing it to the wrong screen. Fail closed, the way an off-loopback
+        # server without an admin password already does — the alternative is a
+        # scope that silently means nothing.
+        if self.server.admin_auth_scope == "always" and not credential_is_set():
+            issues.append(
+                RuntimeIssue(
+                    code="admin_password_required_by_scope",
+                    field="server.admin_auth_scope",
+                    message=(
+                        "admin_auth_scope='always' asks for the admin password even on this "
+                        "machine, and no admin password is set. Set one in the dashboard, or "
+                        "put admin_auth_scope back to 'network'."
+                    ),
+                )
+            )
+        if self.server.playground_auth_scope == "always" and not playground_credential_is_set():
+            issues.append(
+                RuntimeIssue(
+                    code="playground_password_required_by_scope",
+                    field="server.playground_auth_scope",
+                    message=(
+                        "playground_auth_scope='always' asks for the playground password even "
+                        "on this machine, and no playground password is set. Set one in the "
+                        "dashboard, or put playground_auth_scope back to 'network'."
+                    ),
+                )
+            )
         return issues
 
     @property
@@ -728,6 +799,13 @@ def credential_is_set() -> bool:
     from qds import credential
 
     return credential.is_set()
+
+
+def playground_credential_is_set() -> bool:
+    """Whether a playground password exists. Lazy for the same reason."""
+    from qds import credential
+
+    return credential.PLAYGROUND.is_set()
 
 
 #: Set by `load_settings` when no config file was found. `setup_logging` only

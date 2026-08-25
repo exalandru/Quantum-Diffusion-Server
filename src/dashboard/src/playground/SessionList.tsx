@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 
+import appIcon from "../assets/app-icon.png";
 import type { PlaygroundSession } from "../types";
 import { Tool } from "./Tool";
 
@@ -118,11 +119,34 @@ export function SessionList({
         {/* The wordmark, in the rail rather than in a masthead over the page.
             The rail is flush with the window edge and runs its full height —
             the mockup's treatment — so the top of the rail is where the product
-            names itself, and the page's one `h1` belongs here. The mark is
-            decoration and says so: the name beside it is the accessible one. */}
+            names itself, and the page's one `h1` belongs here.
+
+            "QDS", not "Quantum Diffusion Server": the rail is ~280px wide and
+            carries a collapse button beside this, so the full name did not fit
+            and wrapped or clipped. The accessible name keeps the whole thing —
+            a screen reader has no width limit — so shortening the glyphs costs
+            nothing there.
+
+            The mark is the app's own icon rather than a coloured square, and it
+            is `aria-hidden` for the same reason the square was: it repeats what
+            the text already says. Imported rather than written as a path so the
+            bundler fingerprints it and resolves the `/dashboard/` base — a bare
+            `/app-icon.png` would 404 under the mount. */}
         <h1 className="pg-rail-wordmark">
-          <span className="pg-rail-dot" aria-hidden="true" />
-          <span className="pg-rail-name">Quantum Diffusion Server</span>
+          <img
+            className="pg-rail-icon"
+            src={appIcon}
+            alt=""
+            aria-hidden="true"
+            width={22}
+            height={22}
+          />
+          <span className="pg-rail-name" title="Quantum Diffusion Server">
+            QDS
+          </span>
+          {/* The full product name stays the accessible one: a reader has no
+              width limit, so the rail's does not have to cost it. */}
+          <span className="pg-rail-fullname">Quantum Diffusion Server</span>
         </h1>
         <button
           type="button"

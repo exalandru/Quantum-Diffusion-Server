@@ -17,6 +17,7 @@ gets instead.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -46,7 +47,7 @@ from qds.jobs import JobManager
 from qds.logbuffer import LogBuffer
 from qds.logs import SERVER_LOGGER, setup_logging
 from qds.playground import PlaygroundStore
-from qds.playground_routes import build_playground_router
+from qds.playground_routes import build_playground_router, build_playground_session_router
 from qds.pna import PrivateNetworkImages
 from qds.session import SessionStore, discard_local_token, issue_local_token
 from qds.settings import (
@@ -343,7 +344,15 @@ def create_app(
 
     sessions = SessionStore()
     throttle = admin.LoginThrottle()
-    require_api, require_admin = build_dependencies(settings, sessions, local_token)
+    # The playground's own store and its own throttle. Not the admin's, in both
+    # cases and for the same reason: revoking every admin session must not sign
+    # the playground out, and a housemate guessing the playground password must
+    # not be able to lock the operator out of the control plane.
+    playground_sessions = SessionStore()
+    playground_throttle = admin.LoginThrottle()
+    require_api, require_admin, require_playground = build_dependencies(
+        settings, sessions, local_token, playground_sessions=playground_sessions
+    )
     auth = Depends(require_api)
 
     # ── Control plane ──────────────────────────────────────────────────────
@@ -375,13 +384,23 @@ def create_app(
 
     # ── The browser playground ─────────────────────────────────────────────
 
-    app.include_router(build_playground_router(admission, auth))
+    # `require_playground`, not `auth`: this plane's gate is its own, so
+    # `playground_auth_scope` moves it without moving `/v1` or `/admin`. The
+    # image routes inside keep `auth` — see `build_playground_router`.
+    app.include_router(build_playground_router(admission, Depends(require_playground), auth))
+    app.include_router(
+        build_playground_session_router(
+            settings=settings, sessions=playground_sessions, throttle=playground_throttle
+        )
+    )
 
-    # ── Admin recovery ─────────────────────────────────────────────────────
+    # ── The playground's password, and the way past a project's ─────────────
     #
-    # The one way past a session password without knowing it. Admin authority,
-    # because the admin already owns the disk the database sits on; this only
-    # saves them a sqlite shell.
+    # Both under admin authority, and for the same reason: the admin already owns
+    # the disk these files and rows sit on, so this only saves them a text editor
+    # and a sqlite shell. It is also what makes `playground_auth_scope: always`
+    # recoverable — the plane's password is set, changed and removed from here,
+    # by a credential that is not it.
 
     playground_admin = APIRouter(
         prefix="/admin/playground",
@@ -401,6 +420,47 @@ def create_app(
         admission.unlocks.revoke_session(session_id)
         admission.unlock_throttles.forget(session_id)
         logger.warning("playground: session %s password removed by admin", session_id)
+
+    @playground_admin.post("/password")
+    async def admin_set_playground_password(body: admin.PlaygroundPasswordRequest) -> dict:
+        """Set or change the playground password.
+
+        No `current`, unlike `/admin/password`: the credential being replaced is
+        not the one that authorised this call, and demanding it would break the
+        recovery path this route exists to be. An admin who has forgotten the
+        playground password must still be able to set a new one.
+        """
+        try:
+            await asyncio.to_thread(credential.PLAYGROUND.set_password, body.new)
+        except credential.WeakPassword as exc:
+            raise APIError(str(exc), status_code=400, code="weak_password") from exc
+        # Every playground session was minted against the old password.
+        playground_sessions.revoke_all()
+        playground_throttle.record_success()
+        logger.info("playground password changed; every playground session ended")
+        return {"ok": True}
+
+    @playground_admin.delete("/password")
+    async def admin_clear_playground_password() -> dict:
+        """Remove it. Refused while the scope demands one.
+
+        `playground_auth_scope: always` with no password is a gate with no key:
+        the server refuses to start in that state, so allowing this here would
+        only produce a configuration that cannot come back. Same rule, same
+        reason, as `DELETE /admin/password` off-loopback.
+        """
+        if settings.server.playground_auth_scope == "always":
+            raise APIError(
+                "The playground password cannot be removed while "
+                "playground_auth_scope is 'always'.",
+                status_code=409,
+                code="password_required_by_scope",
+                param="server.playground_auth_scope",
+            )
+        credential.PLAYGROUND.clear()
+        playground_sessions.revoke_all()
+        logger.info("playground password removed")
+        return {"ok": True}
 
     app.include_router(playground_admin)
 
@@ -552,7 +612,16 @@ def create_recovery_app(
 
     sessions = SessionStore()
     throttle = admin.LoginThrottle()
-    require_api, require_admin = build_dependencies(settings, sessions, local_token)
+    # `recovery=True`: this app exists to repair a configuration, and
+    # `admin_auth_scope: always` with no admin password is one of the
+    # configurations that lands here. Enforcing the scope on the only screen
+    # that can undo it would make the setting a one-way door. Safe because a
+    # recovery server with no password binds loopback whatever the file says —
+    # see `effective_bind_host`. There is no playground here, so the third
+    # dependency has nothing to guard.
+    require_api, require_admin, _ = build_dependencies(
+        settings, sessions, local_token, recovery=True
+    )
 
     @app.get("/health")
     async def health() -> dict[str, Any]:

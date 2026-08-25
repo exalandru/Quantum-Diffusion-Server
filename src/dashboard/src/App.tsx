@@ -257,6 +257,7 @@ export function App() {
           defaultCacheDir={state.effectiveCacheDir}
           hfTokenPresent={state.hfTokenPresent}
           adminPasswordSet={state.adminPasswordSet}
+          playgroundPasswordSet={state.playgroundPasswordSet}
           lanAddresses={state.lanAddresses}
           onSaved={onConfigChanged}
         />

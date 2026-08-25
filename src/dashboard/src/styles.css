@@ -383,6 +383,19 @@ main.unreachable > header {
   margin-bottom: var(--s2);
 }
 
+/* `?view=plugin`: the same card in an embedder's pane, which is a few hundred
+   pixels wide and has no page around it. The 460px cap above would leave the
+   card wider than the pane, so the constraint is dropped rather than reduced —
+   the pane's own width is the measurement, and this page cannot know it. */
+main.unreachable.login-embedded {
+  max-width: none;
+  padding: var(--s3);
+}
+
+.login-card-compact {
+  padding: var(--s4);
+}
+
 /* ── Surfaces ───────────────────────────────────────────────────────────── */
 
 .panel {
@@ -1856,15 +1869,37 @@ main.playground {
   white-space: nowrap;
 }
 
-/* The mark beside it, and the one gradient in the sheet: the mockup's, because
-   the product's one piece of decoration is where it says its own name. */
-.pg-rail-dot {
+/* The full product name, for readers only. "Quantum Diffusion Server" did not
+   fit the ~280px rail beside a collapse button — it ellipsised to "Quantum
+   Diffusion Se…", which reads worse than the initialism. The glyphs shrink;
+   the accessible name does not, because a screen reader has no width limit.
+
+   Clipped rather than `display: none`, which would take it out of the
+   accessibility tree along with the layout — the whole point is that it stays
+   in one and not the other. */
+.pg-rail-fullname {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The mark beside it: the app's own icon, at the size the coloured square it
+   replaced used. `border-radius` still applies — the source is a macOS icon
+   whose squircle is baked into the pixels, and the two shapes are close enough
+   that rounding the box only tidies the corners. */
+.pg-rail-icon {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
-  border-radius: 7px;
-  background: linear-gradient(140deg, var(--accent) 0%, var(--accent-line) 100%);
-  box-shadow: 0 2px 10px var(--accent-tint);
+  border-radius: 6px;
+  /* The icon carries its own depth; the square needed a glow to have any. */
+  box-shadow: 0 2px 10px rgb(0 0 0 / 0.35);
 }
 
 /* A label over the list, not a title competing with the project names: the rail
@@ -2997,6 +3032,52 @@ main.playground {
 .pg-insp-facts {
   display: block;
   margin: 0;
+}
+
+/* The settings, compacted: chips flowing on one wrapping line instead of one
+   full row per fact. Four stacked rows — each a label, a value and a rule —
+   cost most of the panel's height for four short values, and that height was
+   taken from the prompt, which is the only thing in this panel that needs it.
+
+   Scoped to the modifier, and `.pg-kv` is used nowhere else, so the stacked
+   rules below stay as the description of what a row was. */
+.pg-insp-facts-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s2);
+}
+
+.pg-insp-facts-inline .pg-kv {
+  /* No rule, no full-width row, no space-between pushing the value to the far
+     edge: a chip is as wide as it needs to be and the next one follows it. */
+  display: inline-flex;
+  justify-content: flex-start;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border-bottom: none;
+  font-size: var(--font-xs);
+}
+
+.pg-insp-facts-inline .pg-kv dt {
+  /* The label is the chip's own leading word now. Uppercase and small so it
+     reads as a caption rather than as part of the value beside it. */
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pg-insp-facts-inline .pg-kv .pill-fact {
+  /* Back to not wrapping: a chip on a shared line that broke mid-value would
+     drag the whole row's height up, which is what this layout exists to avoid.
+     A long model name ellipsises instead — the full text is one hover away, and
+     `title` carries it for anyone who cannot hover. */
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
 }
 
 .pg-kv {

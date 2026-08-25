@@ -4,6 +4,7 @@ import * as api from "../api";
 import { Locked, NotFound, Unauthorized, messageOf } from "../api";
 import { LoginPrompt } from "../LoginPrompt";
 import { Unreachable } from "../Unreachable";
+import { PlaygroundLock } from "./PlaygroundLock";
 import type {
   PlaygroundGeneration,
   PlaygroundSession,
@@ -171,6 +172,11 @@ export function PlaygroundApp() {
   const [presetPrompt, setPresetPrompt] = useState<{ text: string; nonce: number } | null>(null);
   const [defaultModel, setDefaultModel] = useState("");
   const [session, setSession] = useState<api.SessionStatus | null>(null);
+  // This plane's own gate: the playground password, asked for when
+  // `playground_auth_scope` says it applies. Separate from `session` above —
+  // that one is the admin credential — and separate again from `lockedOut`
+  // below, which is one project's password inside an already-open playground.
+  const [playgroundGate, setPlaygroundGate] = useState<api.PlaygroundSessionStatus | null>(null);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -250,9 +256,21 @@ export function PlaygroundApp() {
   }, []);
 
   const onUnauthorized = useCallback(() => {
+    // *Which* credential is being asked for is the server's to say, and it is
+    // not derivable from a 401: `playground_auth_scope` decides whether this
+    // plane wants its own password, while a server that only has an api_key
+    // configured still wants the admin login it has always asked for here — an
+    // admin session opens this plane too. Asking is one request; guessing wrong
+    // puts the wrong form in front of the user.
     void api
-      .sessionStatus()
-      .then(setSession)
+      .playgroundSessionStatus()
+      .then((status) => {
+        if (status.gated) {
+          setPlaygroundGate(status);
+          return;
+        }
+        return api.sessionStatus().then(setSession);
+      })
       .catch((cause) => setConnectionError(messageOf(cause)));
   }, []);
 
@@ -768,6 +786,23 @@ export function PlaygroundApp() {
   // are refused to exactly the caller its full images are refused to, so they
   // need the same `?t=` treatment.
   const thumbOf = (url: string) => (selected ? api.thumbnailUrl(url, selected) : url);
+
+  // Before the admin form, because it is the narrower credential: a plane that
+  // asks for its own password must not send the user off to type the one that
+  // also opens the configuration writer.
+  if (playgroundGate) {
+    return (
+      <PlaygroundLock
+        status={playgroundGate}
+        embedded={embedded}
+        onAuthenticated={() => {
+          setPlaygroundGate(null);
+          void refreshSessions();
+          void refreshDetail();
+        }}
+      />
+    );
+  }
 
   if (session) {
     return (

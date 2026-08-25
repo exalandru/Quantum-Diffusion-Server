@@ -732,6 +732,8 @@ resolved before the check. Point it at the one directory you meant.
 |---|---|---|
 | `host` / `port` | `127.0.0.1` / `8765` | binding |
 | `api_key` | `null` | when set, `Authorization: Bearer` is required. **Mandatory as soon as `host` is not local** |
+| `admin_auth_scope` | `network` | when the admin password is demanded. `network` keeps the shipped behaviour; `always` makes one **mandatory** — the server refuses to start without it, and a browser on this machine is asked for it like any other. See [Who may reach what](#who-may-reach-what) |
+| `playground_auth_scope` | `network` | the same choice for `/playground/api`. `always` asks for the **playground password** even on loopback, which is what closes the private-window hole on a keyless local install |
 | `cors_origins` | `[]` | origins a **browser page on another origin** may read a response from. Empty means none, which is what a keyless `/v1` needs: the dashboard and playground are same-origin and need no entry here. Add one only for a browser client served from elsewhere, and prefer setting an `api_key` alongside a `"*"` |
 | `max_n` | `4` | bounds OpenAI's `n` (generations are sequential) |
 | `request_timeout_s` | `900` | interrupts the denoising loop past this point |
@@ -1036,13 +1038,93 @@ Finally, `request_timeout_s` goes to `2400`: 50 steps on a 32B model far exceed 
 
 `qds prequantize --json-logs` applies the same configuration to the conversion.
 
+### Who may reach what
+
+Three credentials, three audiences. None of them is a user account: this is a
+single-operator server, and each secret is one shared secret for one plane.
+
+| credential | where it lives | opens |
+|---|---|---|
+| `server.api_key` | `server-config.json` | `/v1`, `/mcp`, `/playground/api`, the playground's image routes. A **machine** credential: it is what Open WebUI, the OpenAI SDKs and the Hermes plugin present |
+| admin password | `admin-credential.json` beside the configuration, scrypt-hashed | `/admin` — the configuration, the logs, the restart button — and, being strictly stronger, everything above |
+| playground password | `playground-credential.json`, same hashing | `/playground/api` only. Not this screen, not the logs, not the restart button |
+
+A fourth exists and is not a password: `admin-token`, written 0600 at every
+start, is how the menubar app and the CLI reach the control plane without being
+asked to type anything. It is also the credential of last resort — see
+**Locked out** below.
+
+**When a gate applies is a per-plane choice.** `admin_auth_scope` and
+`playground_auth_scope` each take `network` (the default: the gate binds only
+once the server is reachable beyond this machine) or `always` (it binds on
+loopback too). Two settings rather than one, because the sensible desktop
+posture is asymmetric:
+
+```json
+{"server": {"admin_auth_scope": "always", "playground_auth_scope": "network"}}
+```
+
+A password for the control plane even for whoever is sitting at the machine —
+it edits the configuration, reads the logs and restarts the process — and an
+open playground on that same machine, because generating an image locally should
+not cost a login. The reverse, `network` + `always`, is the other useful one: a
+shared machine where anyone may administer nothing and only the person with the
+playground password may spend the GPU.
+
+A scope only ever **tightens**. There is no value that opens something the
+server closes today: `network` on loopback leaves each plane exactly as it
+shipped, and off-loopback the floor below still applies whatever the scopes say.
+
+`always` with no password for that plane is a **startup refusal**, not a warning:
+a gate that is on with no key behind it is a gate that is off. The message names
+the field — `server.admin_auth_scope` or `server.playground_auth_scope` — and the
+server comes up in recovery mode so the screen that can repair it stays
+reachable.
+
+The playground password is set, changed and removed from the dashboard's
+Configuration screen, beside the admin one. Setting it is an act of
+administration on purpose: the person who may generate images is not the person
+who chooses the secret.
+
+#### Locked out
+
+- **Forgotten admin password.** `admin-token` in the configuration directory is a
+  live credential for the control plane: `curl -H "X-QDS-Admin-Token: $(cat
+  ~/.../admin-token)" …`, or the menubar app, which reads it for you. Deleting
+  `admin-credential.json` also works and is what "no password set" means.
+- **Forgotten playground password.** An admin session opens the playground on its
+  own, and an admin sets a new playground password without presenting the old
+  one. `playground_auth_scope: always` cannot lock the operator out of their own
+  playground.
+- **A scope set to `always` with no password.** The server will not start, which
+  puts it in recovery mode — where the control plane is reachable, exempt from
+  `admin_auth_scope` by design, and bound to loopback whenever no admin password
+  exists. Fix the field or set the password there.
+
+#### What the gates do not cover
+
+`/playground/images/{filename}` and its `/thumb` sibling stay on the **data-plane**
+credential rather than moving to the playground gate. An `<img>` presents no
+header, and the embedded surface (`?view=plugin`, which the Hermes plugin opens
+in its pane) is not always a context a `SameSite=Strict` cookie is sent in — so
+binding the bytes to a cookie would break a surface that has no other way to
+load them. What that leaves reachable on a keyless loopback install is one image
+at a time **to a caller who already knows its `uuid4` filename**: the API that
+lists them is gated, and a name nobody can enumerate is not a way in for someone
+who walked up to the machine. Widening this is a decision about the plugin, not
+a detail of the gate.
+
 ### Access from the local network
 
 ```json
 {"server": {"host": "0.0.0.0", "api_key": "a-long-random-key"}}
 ```
 
-The server refuses to start with a non-local host and no API key.
+The server refuses to start with a non-local host and no API key, and refuses
+equally without an admin password. That floor is independent of the scopes above:
+`network` already binds both gates here, and `always` only adds loopback on top.
+The connection is plain HTTP, so every credential on it is observable to anyone
+on the same network.
 
 ## Known limitations
 

@@ -34,8 +34,13 @@ from qds.settings import config_path
 
 logger = logging.getLogger(f"{SERVER_LOGGER}.session")
 
-#: Name of the cookie holding a session token.
+#: Name of the cookie holding an admin session token.
 COOKIE = "qds_admin"
+
+#: And the playground's, which is a different session in a different store. Two
+#: names because they are two credentials: revoking every admin session must not
+#: sign the playground out, and a browser that holds one holds only that one.
+PLAYGROUND_COOKIE = "qds_playground"
 
 #: How long a session may live at all, and how long it may sit idle. The
 #: absolute bound is what limits replay of a cookie captured on a plain-HTTP

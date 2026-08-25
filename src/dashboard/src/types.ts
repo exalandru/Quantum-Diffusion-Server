@@ -24,6 +24,8 @@ export type Overview = {
   restartRequired: boolean;
   /** Whether the control plane is protected. The network toggle needs it. */
   adminPasswordSet: boolean;
+  /** Whether the playground's own password exists, which its scope may demand. */
+  playgroundPasswordSet: boolean;
   /** This machine's own addresses, to hand out when listening on the network. */
   lanAddresses: string[];
   server: { host: string; port: number };

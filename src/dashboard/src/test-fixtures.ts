@@ -45,6 +45,7 @@ export function overview(patch: Partial<Overview> = {}): Overview {
     recoveryError: null,
     restartRequired: false,
     adminPasswordSet: false,
+    playgroundPasswordSet: false,
     lanAddresses: ["192.168.1.19"],
     ...patch,
   };

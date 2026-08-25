@@ -320,6 +320,43 @@ export const setPassword = (next: string, current?: string) =>
     current: current ?? null,
   });
 
+// ── Logging in to the playground ───────────────────────────────────────────
+//
+// A second plane with a second credential, so a second set of calls. Sharing
+// `SessionStatus` would be wrong in the one field that matters: this plane says
+// whether its gate is armed at all, which is what `playground_auth_scope`
+// decides and what the admin plane has no equivalent of.
+
+export type PlaygroundSessionStatus = {
+  passwordSet: boolean;
+  authenticated: boolean;
+  loopback: boolean;
+  /** Whether the playground demands its password here and now. */
+  gated: boolean;
+};
+
+/** Unauthenticated on purpose, and outside the gate it describes. */
+export const playgroundSessionStatus = () =>
+  get<PlaygroundSessionStatus>("/playground/api/session");
+
+export const playgroundLogIn = (password: string) =>
+  send<void>("/playground/api/session", "POST", { password });
+
+export const playgroundLogOut = () =>
+  request<void>("/playground/api/session", { method: "DELETE" });
+
+/**
+ * Set or change the playground password. Admin authority, not the playground's
+ * own: the credential being replaced is not the one that authorises the call,
+ * which is what makes this the way back from a forgotten one.
+ */
+export const playgroundPasswordSet = (next: string) =>
+  send<{ ok: boolean }>("/admin/playground/password", "POST", { new: next });
+
+/** Refused with a 409 while `playground_auth_scope` is `always`. */
+export const playgroundPasswordRemove = () =>
+  send<{ ok: boolean }>("/admin/playground/password", "DELETE");
+
 // ── Lifetime ───────────────────────────────────────────────────────────────
 
 /**

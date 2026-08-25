@@ -183,6 +183,12 @@ class PasswordRequest(BaseModel):
     current: str | None = None
 
 
+class PlaygroundPasswordRequest(BaseModel):
+    """No `current`, deliberately — see `POST /admin/playground/password`."""
+
+    new: str
+
+
 class LoginThrottle:
     """A bound on guessing, on top of the one hashing already imposes.
 
@@ -387,6 +393,10 @@ def build_router(
             "recoveryError": recovery_error,
             "restartRequired": pending.restart_required,
             "adminPasswordSet": credential.is_set(),
+            # The playground's, so the Configuration screen can say whether the
+            # credential its scope may demand actually exists. Admin-gated like
+            # the rest of this payload, so it discloses nothing new.
+            "playgroundPasswordSet": credential.PLAYGROUND.is_set(),
             # Computed once at startup, never per request: resolving this
             # machine's own name can block on a network where it does not.
             "lanAddresses": lan_addresses,

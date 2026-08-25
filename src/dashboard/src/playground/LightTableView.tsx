@@ -376,13 +376,25 @@ function Inspector({
               reads as a run that never sampled. */}
           {facts.kind === "upscale" && <span className="pg-insp-tag">Upscaled</span>}
         </h3>
-        {/* The same facts the feed's entry line carries, in the same chips: this
-            panel and that line answer one question — what produced this file —
-            and reading them in two voices makes them look like two subjects. */}
-        <dl className="pg-insp-facts">
+        {/* Chips on one wrapping line, not a stacked definition list. The list
+            spent a full row per fact — four labels, four values, four rows —
+            for four short values that read perfectly well as chips. That height
+            came out of the prompt above it, which is the one thing here that
+            genuinely needs the room. The same facts, in the same chips the feed
+            and the gallery already use.
+
+            The `dl` stays: these *are* term/value pairs, and flattening them to
+            plain text would say less. Only the layout changed — `dt` is now the
+            chip's own leading word rather than a line of its own. */}
+        <dl className="pg-insp-facts pg-insp-facts-inline">
           <div className="pg-kv">
             <dt>Model</dt>
-            <dd className="pill pill-fact">{nameOf(facts.model)}</dd>
+            {/* `title` because the chip ellipsises: "stabilityai/stable-diffusion-3.5-large"
+                does not fit a 280px panel on one line, and the full name has to
+                stay reachable without opening anything. */}
+            <dd className="pill pill-fact" title={nameOf(facts.model)}>
+              {nameOf(facts.model)}
+            </dd>
           </div>
           <div className="pg-kv">
             <dt>Size</dt>

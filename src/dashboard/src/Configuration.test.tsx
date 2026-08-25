@@ -22,7 +22,13 @@ const onSaved = vi.fn(async () => {});
 
 let server: FakeServer;
 
-function show(config: unknown = { server: { port: 8765 }, storage: {} }, tokenPresent = false) {
+function show(
+  config: unknown = { server: { port: 8765 }, storage: {} },
+  tokenPresent = false,
+  // The two credential facts the panel is told rather than reads: they decide
+  // what its password controls say, and the scope selects warn against.
+  passwords: { admin?: boolean; playground?: boolean } = {},
+) {
   server.on("GET /admin/models", () => ({ models: [], warnings: [] }));
   server.on("GET /admin/config", () => config);
   server.on("PUT /admin/config", () => ({ ok: true, restartRequired: false, issues: [] }));
@@ -33,7 +39,8 @@ function show(config: unknown = { server: { port: 8765 }, storage: {} }, tokenPr
       effectiveHfHome="/hf"
       defaultCacheDir="/data/cache"
       hfTokenPresent={tokenPresent}
-      adminPasswordSet={false}
+      adminPasswordSet={passwords.admin ?? false}
+      playgroundPasswordSet={passwords.playground ?? false}
       lanAddresses={["192.168.1.19"]}
       onSaved={onSaved}
     />,
@@ -213,6 +220,119 @@ describe("Storage", () => {
     const directory = await screen.findByLabelText(/Hugging Face model directory/i);
     const cache = screen.getByLabelText(/Pre-quantized model cache/i);
     expect(directory.closest("fieldset")).not.toBe(cache.closest("fieldset"));
+  });
+});
+
+describe("Access", () => {
+  it("offers a scope per plane, beside the passwords they govern", async () => {
+    // Two selects, not one switch: the posture this exists for is asymmetric —
+    // an admin password even on this machine, an open playground on it — and a
+    // single control cannot express it.
+    show();
+    const adminScope = (await screen.findByLabelText(
+      /When the admin password applies/i,
+    )) as HTMLSelectElement;
+    const playgroundScope = screen.getByLabelText(
+      /When the playground password applies/i,
+    ) as HTMLSelectElement;
+
+    expect(adminScope).not.toBe(playgroundScope);
+    // The shipped default, read from a document that names neither.
+    expect([adminScope.value, playgroundScope.value]).toEqual(["network", "network"]);
+    // One section, because which password opens which plane is one subject.
+    expect(adminScope.closest("fieldset")).toBe(
+      screen.getByLabelText("Playground password").closest("fieldset"),
+    );
+  });
+
+  it("saves each scope under its own key, and moves neither with the other", async () => {
+    const seen = show({ server: { port: 8765 }, storage: {} });
+
+    await userEvent.selectOptions(
+      await screen.findByLabelText(/When the admin password applies/i),
+      "always",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(seen.some((call) => call.method === "PUT" && call.path === "/admin/config")).toBe(true),
+    );
+
+    const written = seen.find((call) => call.method === "PUT" && call.path === "/admin/config")!
+      .body as { server: Record<string, unknown> };
+    expect(written.server.admin_auth_scope).toBe("always");
+    // The asymmetric cell, in the interface this time: choosing one scope must
+    // not choose the other.
+    expect(written.server.playground_auth_scope ?? "network").toBe("network");
+  });
+
+  it("warns when a scope would demand a password that does not exist", async () => {
+    // The server refuses to start in that state, so saying so here is the
+    // difference between a form and a trap.
+    show({ server: { playground_auth_scope: "always" }, storage: {} });
+    expect(await screen.findByText(/Set a playground password first/i)).toBeTruthy();
+    expect(screen.queryByText(/Set an admin password first: the server will not start/i)).toBeNull();
+  });
+
+  it("stops warning once that plane has its password", async () => {
+    show({ server: { playground_auth_scope: "always" }, storage: {} }, false, {
+      playground: true,
+    });
+    expect(await screen.findByText("password set")).toBeTruthy();
+    expect(screen.queryByText(/Set a playground password first/i)).toBeNull();
+  });
+
+  it("sets the playground password through the admin route, not the form's Save", async () => {
+    server.on("POST /admin/playground/password", () => ({ ok: true }));
+    const seen = show();
+
+    const field = await screen.findByLabelText("Playground password");
+    // Scoped: the admin credential above has a button with the same words, and
+    // that is right — they do the same thing to two different secrets.
+    const control = field.closest(".setting") as HTMLElement;
+    await userEvent.type(field, "open the picture door");
+    await userEvent.click(within(control).getByRole("button", { name: "Set password" }));
+
+    await waitFor(() =>
+      expect(seen.some((call) => call.path === "/admin/playground/password")).toBe(true),
+    );
+    const written = seen.find((call) => call.path === "/admin/playground/password")!;
+    expect(written.method).toBe("POST");
+    expect(written.body).toEqual({ new: "open the picture door" });
+    // Hashed into its own file, so it has no business in the configuration
+    // document this form writes.
+    expect(seen.some((call) => call.method === "PUT" && call.path === "/admin/config")).toBe(false);
+    expect(onSaved).toHaveBeenCalled();
+    // And the field does not keep the secret it just handed over.
+    expect((screen.getByLabelText("Playground password") as HTMLInputElement).value).toBe("");
+  });
+
+  it("does not offer to remove a password the scope requires", async () => {
+    // The server answers 409, so offering the button would be offering a
+    // configuration that cannot start.
+    show({ server: { playground_auth_scope: "always" }, storage: {} }, false, {
+      playground: true,
+    });
+    const section = (await screen.findByLabelText("Playground password")).closest(
+      ".setting",
+    ) as HTMLElement;
+    expect(within(section).queryByRole("button", { name: "Remove" })).toBeNull();
+
+    // Ungated, the same password is removable.
+    document.body.innerHTML = "";
+    show({ server: {}, storage: {} }, false, { playground: true });
+    const ungated = (await screen.findByLabelText("Playground password")).closest(
+      ".setting",
+    ) as HTMLElement;
+    expect(within(ungated).getByRole("button", { name: "Remove" })).toBeTruthy();
+  });
+
+  it("refuses to save a playground password too short for the server", async () => {
+    show();
+    await userEvent.type(await screen.findByLabelText("Playground password"), "short");
+    const button = screen
+      .getAllByRole("button", { name: "Set password" })
+      .find((candidate) => candidate.closest(".setting")?.textContent?.includes("Playground"));
+    expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

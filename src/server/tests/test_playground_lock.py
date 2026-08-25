@@ -9,7 +9,9 @@ endpoint keeps showing the row, and only the row.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
+import threading
 
 import pytest
 from fastapi.testclient import TestClient
@@ -605,3 +607,52 @@ def test_granting_the_preflight_does_not_grant_the_image(client):
     assert refused.json()["error"]["code"] == "session_locked"
 
     assert client.get("/playground/images/nope.png", headers=PNA).status_code == 404
+
+
+def test_a_locked_projects_in_flight_frame_is_not_served(client, engine, monkeypatch):
+    """The lock covers the picture being denoised, not just the finished file.
+
+    A project can be locked *while* it generates -- locking is allowed at any
+    time and does not stop the run -- and `/playground/api/preview` serves
+    whatever the engine currently holds. Before this check the route asked
+    nothing: a caller with no token got the in-flight frame with a 200, byte for
+    byte what the token holder got, while `GET /sessions/{id}` refused them 403.
+    A half-denoised picture is still the picture.
+
+    The run is held open rather than left to the fake engine, which finishes
+    instantly: the whole question is what happens *while* a generation is on the
+    worker, so `current_id` has to still be set when the frame is asked for.
+    """
+    session_id = new_session(client)
+    engine.preview_bytes = b"\xff\xd8\xff-in-flight"
+
+    started = threading.Event()
+    release = threading.Event()
+    original = engine.generate
+
+    async def held(job):
+        started.set()
+        # Bounded: a wedged test is worse than a failing one.
+        await asyncio.get_running_loop().run_in_executor(None, release.wait, 10)
+        return await original(job)
+
+    monkeypatch.setattr(engine, "generate", held)
+
+    assert submit(client, session_id).status_code == 202
+    assert started.wait(10), "the generation never reached the engine"
+
+    try:
+        token = protect(client, session_id)
+
+        refused = client.get("/playground/api/preview")
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["code"] == "session_locked"
+        assert b"in-flight" not in refused.content
+
+        # And the entitled caller still sees it: the lock withholds, it does not
+        # break the feature for the person who set it.
+        allowed = client.get("/playground/api/preview", headers=with_token(token))
+        assert allowed.status_code == 200
+        assert allowed.content == engine.preview_bytes
+    finally:
+        release.set()

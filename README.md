@@ -37,17 +37,33 @@ The playground is where most people will spend their time: a prompt box, a model
 - ✅ **Refine, vary, delete**: act on any generated image without losing the rest of its history.
 - ✅ **Upscale**: Any generated image can be upscaled ×2 or ×4 with a dedicated upscaler model, right from the feed.
 - ✅ **Projects**: Everything you generate is recorded server-side and organized into projects you can create, name, rename, revisit, and, if you're sharing the machine, lock behind a password. The rail that lists them collapses to landmarks when you want the room. The generation queue itself can be paused and resumed without losing what's already running. (The HTTP API and the MCP tools call the same thing a *session* — the interface's word changed, the contract's did not.)
-- ✅ **Three views of a project**: *Prompts*, the feed of what you asked for and what came back; *Gallery*, a waterfall of every picture in the project and nothing else; *Light Table*, one image on a stage with the project as a filmstrip under it and that image's prompt, settings and actions beside it. Galleries and filmstrips load small derived thumbnails rather than the full files. Which view a project opens in is remembered per project, in that browser.
+- ✅ **Three ways to look at a project**: a prompt feed, a gallery, and a light table — see [Workspaces](#workspaces) below.
+
+### Workspaces
+
+A project is one set of images; how you look at them is up to you. The switcher at the top of the playground moves between three workspaces at any time, and each project remembers the one you left it in.
+
+| Workspace | What you see | Reach for it when |
+|---|---|---|
+| **Prompts** | The feed: every request with its prompt, its enhanced prompt, its settings and the images that came back. | You're iterating on wording and want to see what each change produced. |
+| **Gallery** | Every picture in the project and nothing else, packed into full-width rows that keep each image's own shape. | You want to look at the work rather than read about it. |
+| **Light Table** | One image on a stage, the project as a filmstrip beneath it, its prompt, settings and actions alongside. | You're comparing candidates and picking the keeper. |
+
+| Gallery | Light Table |
+|---|---|
+| ![The Gallery: every picture in the project, in full-width rows](assets/app-playground-gallery.png) | ![The Light Table: one image on a stage, the project as a filmstrip](assets/app-playground-lighttable.png) |
+
+*(The Prompts feed is the screenshot at the top of this page.)*
+
+Galleries and filmstrips load small derived thumbnails rather than the full files, so a project with hundreds of images opens as quickly as one with three.
 
 ### Dashboard
 
 The dashboard is the control panel behind the playground: install and manage models, and see what the server is doing.
 
-![Model catalog](assets/app-dashboard-catalog.png)
+![Dashboard](assets/app-dashboard-main.png)
 
 - **Model catalog**: browse the whole model catalogue, install weights from Hugging Face or point at an existing local copy, and manage quantized variants, all without stopping the server.
-
-![Dashboard](assets/app-dashboard-main.png)
 
 - **Configuration**: port, API key, CORS, timeouts, storage locations, and per-model defaults, all as a form.
 - **Logs**: structured events and raw output, filterable by level.

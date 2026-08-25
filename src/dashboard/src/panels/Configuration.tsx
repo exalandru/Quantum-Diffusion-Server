@@ -43,6 +43,7 @@ export function Configuration({
   defaultCacheDir,
   hfTokenPresent,
   adminPasswordSet,
+  playgroundPasswordSet,
   lanAddresses,
   onSaved,
 }: {
@@ -57,6 +58,8 @@ export function Configuration({
   hfTokenPresent: boolean;
   /** Whether the control plane is protected. The network toggle requires it. */
   adminPasswordSet: boolean;
+  /** Whether the playground's own password exists. Its scope may demand it. */
+  playgroundPasswordSet: boolean;
   /** This machine's own addresses, to show once it listens on the network. */
   lanAddresses: string[];
   onSaved: () => void | Promise<void>;
@@ -71,6 +74,7 @@ export function Configuration({
   const [token, setToken] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [currentPassword, setCurrentPassword] = useState("");
+  const [playgroundPassword, setPlaygroundPassword] = useState("");
   // The catalogue, so the rows below are the models the backend actually has.
   // They used to be the config file's key set, which meant a model added in a new
   // release stayed invisible — and unconfigurable — on every existing install.
@@ -195,6 +199,36 @@ export function Configuration({
         await onSaved();
       },
       "Password saved. Every browser has been signed out.",
+    );
+  }
+
+  /**
+   * The playground's password, set from here because setting it is an act of
+   * administration: the person who may generate images is not the person who
+   * chooses the secret, and this is also the way back when it is the one that
+   * was forgotten. No "current" field for that reason — the credential proving
+   * this call is the admin's, not the playground's.
+   */
+  async function savePlaygroundPassword() {
+    await run(
+      "playgroundPassword",
+      async () => {
+        await api.playgroundPasswordSet(playgroundPassword.trim());
+        setPlaygroundPassword("");
+        await onSaved();
+      },
+      "Playground password saved. Every playground tab has been signed out.",
+    );
+  }
+
+  async function removePlaygroundPassword() {
+    await run(
+      "playgroundPasswordRemove",
+      async () => {
+        await api.playgroundPasswordRemove();
+        await onSaved();
+      },
+      "Playground password removed.",
     );
   }
 
@@ -441,6 +475,124 @@ export function Configuration({
               </p>
             )}
           </div>
+
+          <hr className="setting-divider" />
+
+          {/* The playground's own credential, beside the admin one because the
+              two are one subject: which password opens which plane. Same shape
+              as the control above, minus the "current" field — see
+              `savePlaygroundPassword`. */}
+          <div className="setting">
+            <span className="setting-label" id="playground-password-label">
+              Playground password
+            </span>
+            <div className="setting-row">
+              <span className={playgroundPasswordSet ? "pill pill-ok" : "pill pill-warn"}>
+                {playgroundPasswordSet ? "password set" : "no password"}
+              </span>
+              <input
+                type="password"
+                aria-labelledby="playground-password-label"
+                placeholder={playgroundPasswordSet ? "new password" : "at least 8 characters"}
+                autoComplete="new-password"
+                value={playgroundPassword}
+                onChange={(event) => setPlaygroundPassword(event.target.value)}
+              />
+              <button
+                onClick={() => void savePlaygroundPassword()}
+                disabled={playgroundPassword.trim().length < 8 || busy("playgroundPassword")}
+              >
+                {busy("playgroundPassword")
+                  ? "Saving…"
+                  : playgroundPasswordSet
+                    ? "Change"
+                    : "Set password"}
+              </button>
+              {/* Refused by the server while the scope demands one, so the
+                  button is not offered then: removing it would produce a
+                  configuration that cannot start. */}
+              {playgroundPasswordSet && server.playground_auth_scope !== "always" && (
+                <button
+                  onClick={() => void removePlaygroundPassword()}
+                  disabled={busy("playgroundPasswordRemove")}
+                >
+                  {busy("playgroundPasswordRemove") ? "Removing…" : "Remove"}
+                </button>
+              )}
+            </div>
+            <ActionNote
+              state={stateOf("playgroundPassword")}
+              onDismiss={() => dismiss("playgroundPassword")}
+            />
+            <ActionNote
+              state={stateOf("playgroundPasswordRemove")}
+              onDismiss={() => dismiss("playgroundPasswordRemove")}
+            />
+            <p className="setting-help">
+              Opens the playground and nothing else - not this screen, not the logs, not the
+              restart button. Hand it to someone who may generate images without handing them the
+              admin password. Whether it is asked for on this machine is the setting below.
+            </p>
+          </div>
+
+          <hr className="setting-divider" />
+
+          {/* Two selects rather than one, and that is the feature: the sensible
+              posture here is asymmetric — a password for the control plane even
+              on this machine, an open playground on it — and a single switch
+              cannot say that. */}
+          <div className="setting-pair">
+            <div className="setting">
+              <label className="setting-label" htmlFor="admin-auth-scope">
+                When the admin password applies
+              </label>
+              <select
+                id="admin-auth-scope"
+                value={String(server.admin_auth_scope ?? "network")}
+                onChange={(event) => patchServer("admin_auth_scope", event.target.value)}
+              >
+                <option value="network">Only from the network</option>
+                <option value="always">Always, this machine included</option>
+              </select>
+              <p className="setting-help">
+                <strong>Always</strong> makes an admin password mandatory: the server will not
+                start without one, and a browser on this machine is asked for it like any other.
+              </p>
+            </div>
+
+            <div className="setting">
+              <label className="setting-label" htmlFor="playground-auth-scope">
+                When the playground password applies
+              </label>
+              <select
+                id="playground-auth-scope"
+                value={String(server.playground_auth_scope ?? "network")}
+                onChange={(event) => patchServer("playground_auth_scope", event.target.value)}
+              >
+                <option value="network">Only from the network</option>
+                <option value="always">Always, this machine included</option>
+              </select>
+              <p className="setting-help">
+                <strong>Only from the network</strong> keeps the playground open for whoever is
+                sitting here, which is what a private window reaches too.{" "}
+                <strong>Always</strong> asks for the playground password even locally.
+              </p>
+              {String(server.playground_auth_scope ?? "network") === "always" &&
+                !playgroundPasswordSet && (
+                  <p className="setting-error">
+                    Set a playground password first: a gate with no key is one the server refuses
+                    to start behind.
+                  </p>
+                )}
+            </div>
+          </div>
+
+          {String(server.admin_auth_scope ?? "network") === "always" && !adminPasswordSet && (
+            <p className="setting-error">
+              Set an admin password first: the server will not start with{" "}
+              <code>admin_auth_scope</code> set to always and no password to check.
+            </p>
+          )}
 
           <hr className="setting-divider" />
 
