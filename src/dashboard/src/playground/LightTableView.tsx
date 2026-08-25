@@ -140,17 +140,34 @@ export function LightTableView({
       .map((slot): Frame => ({ kind: "pending", key: `pending:${slot.entry.id}:${slot.index}`, slot })),
   ]);
   const found = frames.findIndex((frame) => frame.key === held);
-  // Nothing held, or holding a frame this project no longer has. The newest
-  // frame when that frame is a run in flight, and the first otherwise.
+  // Nothing held, or holding a frame this project no longer has.
   //
-  // The exception is the whole of "the hero must not sit on an old picture with
-  // no explanation while something is being made": a run in flight is the last
-  // frame of the last lineage, so with no selection of the user's to respect,
-  // that is what the stage owes them. Once it finishes it is a picture like any
-  // other and the default goes back to the first frame — which is where a reload
-  // has always landed, and is a fact about *this* view rather than about the
-  // project.
-  const fallback = frames.at(-1)?.kind === "pending" ? frames.length - 1 : 0;
+  // A run genuinely *in flight* wins: it is the last frame of the last lineage,
+  // and "the hero must not sit on an old picture with no explanation while
+  // something is being made" is the whole of that exception.
+  //
+  // `kind === "pending"` alone is not that test, and reading it as one is what
+  // put "Generation failed. Interrupted by server restart" on the stage of a
+  // project holding twelve finished pictures. A frame is `pending` whenever its
+  // record owes no file — queued, running, failed *and* cancelled all qualify —
+  // so a project whose last run failed took the in-flight branch and pinned the
+  // stage to the failure. Measured in the browser: sixteen tiles, `aria-current`
+  // on the sixteenth, which was the marker rather than a picture.
+  //
+  // Only queued and running are worth pre-empting a picture for. A failure has
+  // already happened; it keeps its place in the strip and says so there.
+  const last = frames.at(-1);
+  const inFlight =
+    last?.kind === "pending" &&
+    (last.slot.entry.status === "queued" || last.slot.entry.status === "running");
+  // Otherwise the first *picture*, not the first frame — those differ exactly
+  // when a project opens on a lineage that produced nothing.
+  //
+  // A project with nothing but failures falls back to the first frame, which is
+  // the failure: there is nothing better to show, and showing it is how the view
+  // says so.
+  const firstPicture = frames.findIndex((frame) => frame.kind === "image");
+  const fallback = inFlight ? frames.length - 1 : firstPicture === -1 ? 0 : firstPicture;
   const at = found === -1 ? fallback : found;
   const current = frames[at];
 
@@ -239,9 +256,23 @@ export function LightTableView({
                   frame.kind === "pending" ? "pg-strip-tile pg-strip-pending" : "pg-strip-tile"
                 }
                 aria-current={frame.key === current.key ? "true" : undefined}
-                aria-label={
-                  frame.kind === "pending" ? `Generating: ${frame.slot.prompt}` : undefined
-                }
+                {...(frame.kind === "pending"
+                  ? {
+                      // What this frame *is*, which is not always "generating".
+                      // A pending frame covers queued, running, failed and
+                      // cancelled alike, so the old unconditional "Generating:"
+                      // announced a run that had already failed as though it
+                      // were still working — and, with the stage now defaulting
+                      // to a picture, the strip is the only place a failure is
+                      // announced at all.
+                      //
+                      // `title` as well as `aria-label`: the error is the reason
+                      // to click this tile, and hovering it should say so rather
+                      // than requiring the click first.
+                      "aria-label": labelOfPending(frame.slot),
+                      title: frame.slot.entry.error ?? undefined,
+                    }
+                  : {})}
                 onClick={() => setHeld(frame.key)}
               >
                 {frame.kind === "pending" ? (
@@ -309,6 +340,20 @@ export function LightTableView({
   );
 }
 
+/** What a strip tile announces, which is not always "generating". */
+function labelOfPending(slot: PendingSlot): string {
+  const status = slot.entry.status;
+  if (status === "failed") {
+    // The reason, not just the fact: with the stage defaulting to a picture,
+    // this tile is where a failure is stated, and "it failed" without "why" is
+    // a dead end.
+    return slot.entry.error ? `Generation failed: ${slot.entry.error}` : "Generation failed";
+  }
+  if (status === "cancelled") return "Generation cancelled";
+  if (status === "queued") return `Queued: ${slot.prompt}`;
+  return `Generating: ${slot.prompt}`;
+}
+
 /**
  * The selected frame's facts.
  *
@@ -362,11 +407,20 @@ function Inspector({
       </section>
       {/* Only when there is one, and never as the title: the same rule the feed
           follows — nobody is shown words they did not write as though they had
-          written them. */}
+          written them.
+
+          Collapsed, and by the feed's own mechanism. An enhanced prompt runs to
+          a couple of hundred words; expanded by default it filled the whole
+          panel, clipped mid-sentence, and pushed Settings and Actions below the
+          fold — so compacting the settings bought height that this then spent.
+          The feed had already answered this with a `<details>`; a second
+          treatment of the same text in the same app was the anomaly. */}
       {root.rewrittenPrompt && (
         <section className="pg-insp-section">
-          <h3>Enhanced</h3>
-          <p className="pg-insp-prompt pg-insp-enhanced">{root.rewrittenPrompt}</p>
+          <details className="pg-rewrite">
+            <summary>Enhanced prompt</summary>
+            <p className="pg-rewrite-text pg-insp-enhanced">{root.rewrittenPrompt}</p>
+          </details>
         </section>
       )}
       <section className="pg-insp-section">

@@ -156,3 +156,24 @@ describe("the light table's frame", () => {
     expect(box.inset).toBe("0");
   });
 });
+
+it("centres the picture even when its button is wider than it", () => {
+  // Reported by the user, and missed by a probe that measured the wrong box.
+  // `.pg-table-main` is a `place-items: center` grid, so the *button* is
+  // centred and every measurement of the button came back symmetric — while
+  // the picture inside it sat hard against the left edge, because a stretched
+  // `<button>` puts its content at the inline start.
+  //
+  // Auto inline margins are what make the centring a property of the picture's
+  // own box rather than of an assumption about its parent's width. Asserted on
+  // both the button and the image: either one alone leaves the other free to
+  // reintroduce the offset.
+  document.body.innerHTML = FRAME;
+  const button = getComputedStyle(document.querySelector(".pg-table-hero")!);
+  const image = getComputedStyle(document.querySelector(".pg-table-hero img")!);
+
+  // jsdom does not expand the `margin-inline` shorthand into its longhands, so
+  // the shorthand itself is what can be read back.
+  expect(button.marginInline).toBe("auto");
+  expect(image.marginInline).toBe("auto");
+});

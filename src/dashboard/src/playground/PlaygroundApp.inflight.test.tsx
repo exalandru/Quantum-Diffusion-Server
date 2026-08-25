@@ -409,12 +409,30 @@ it("keeps a failed run visible in the light table", async () => {
   const { container } = render(<PlaygroundApp />);
   await open(user, "Light Table");
 
+  // Still visible, and that is what this test was written for: a run that
+  // produced nothing must not vanish from the project.
   await waitFor(() => expect(container.querySelector(".pg-strip-pending")).toBeTruthy());
-  // The newest thing in the project is a run that failed: the stage says so
-  // rather than showing the previous picture as though nothing had happened.
-  expect(container.querySelector(".pg-table-pending")).toBeTruthy();
-  expect(screen.getByText("Generation failed.")).toBeTruthy();
-  expect(screen.getByText(/Out of memory/)).toBeTruthy();
+
+  // Re-aimed, on the user's call, after they hit it: this used to require the
+  // failure on the *stage* too — "the stage says so rather than showing the
+  // previous picture as though nothing had happened". Reported from a real
+  // project where that rule put "Generation failed. Interrupted by server
+  // restart" on the stage while twelve finished pictures sat in the strip.
+  //
+  // The failure keeps its frame; the stage keeps a picture. Nothing is hidden —
+  // the marker is one click away and the strip is where the project's history
+  // lives — and the view opens on something worth looking at.
+  expect(container.querySelector(".pg-table-pending")).toBeNull();
+  expect(container.querySelector(".pg-table-hero img")).toBeTruthy();
+
+  // The words themselves are still rendered — on the strip's marker, which is
+  // where a failure now lives. Announced with its reason rather than as
+  // "Generating:", which is what that tile used to claim whatever had happened.
+  // `listitem`, not `button`: the tile carries an explicit `role` so the strip
+  // reads as a list, and the implicit button role is overridden.
+  expect(
+    screen.getByRole("listitem", { name: /Generation failed: Out of memory/ }),
+  ).toBeTruthy();
   await act(async () => {});
 });
 

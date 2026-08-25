@@ -367,3 +367,158 @@ it("opens the stage's picture in the viewer, full resolution", async () => {
   // other views use — so the upscale reads as upscaled, at its own size.
   expect(viewer.textContent).toContain("4096x4096");
 });
+
+it("opens on the first picture, not on a failed run that came before it", async () => {
+  // Reported from the browser twice before it was read as a defect: a project
+  // whose first lineage failed opened with "Generation failed" on the stage
+  // while a dozen finished pictures sat in the strip. A failure is a frame —
+  // it has to be, or a run that produced nothing would vanish — but it is not
+  // something to look at, and the stage is for looking.
+  server.on("GET /playground/api/sessions/s1", () => ({
+    session: playgroundSession({ id: "s1", title: "foxes" }),
+    generations: [
+      {
+        ...base,
+        id: "g0",
+        sessionId: "s1",
+        groupId: "g0",
+        prompt: "a fox that never arrived",
+        kind: "txt2img" as const,
+        model: "qwen-image-2512",
+        steps: 6,
+        n: 1,
+        size: "512x512",
+        seeds: [9],
+        images: [],
+        status: "failed" as const,
+        error: "Interrupted by server restart",
+      },
+      ...FOXES,
+    ],
+  }));
+
+  const user = userEvent.setup();
+  const { container } = render(<PlaygroundApp />);
+  await openTable(user);
+
+  // The failure keeps its place in the strip — first, where it happened.
+  // Counted as tiles, not as `<img>`: a failed run has no picture to load, so
+  // `inStrip` (which reads image sources) cannot see it.
+  await waitFor(() =>
+    expect(container.querySelectorAll(".pg-strip-tile")).toHaveLength(4),
+  );
+  // …and the stage holds the first actual picture instead.
+  expect(onStage(container)).toBe(FOX_IMAGES[0]);
+  expect(container.querySelector(".pg-table-hero img")).toBeTruthy();
+});
+
+it("still shows the failure when a project has nothing else", async () => {
+  // The counterfactual, and the reason the fix is "first picture" rather than
+  // "skip failures": with no picture to prefer, the view must say what happened
+  // rather than render an empty stage.
+  server.on("GET /playground/api/sessions/s1", () => ({
+    session: playgroundSession({ id: "s1", title: "foxes" }),
+    generations: [
+      {
+        ...base,
+        id: "g0",
+        sessionId: "s1",
+        groupId: "g0",
+        prompt: "a fox that never arrived",
+        kind: "txt2img" as const,
+        model: "qwen-image-2512",
+        steps: 6,
+        n: 1,
+        size: "512x512",
+        seeds: [9],
+        images: [],
+        status: "failed" as const,
+        error: "Interrupted by server restart",
+      },
+    ],
+  }));
+
+  const user = userEvent.setup();
+  const { container } = render(<PlaygroundApp />);
+  await user.click(screen.getByRole("tab", { name: "Light Table" }));
+  await waitFor(() => expect(document.querySelector(".pg-table")).toBeTruthy());
+
+  expect(container.textContent).toContain("Interrupted by server restart");
+});
+
+it("does not treat a failed run as a run in flight when it is the newest", async () => {
+  // The case the first fix missed, and the one the user actually had. A frame
+  // is `pending` whenever its record owes no file, so `failed` and `cancelled`
+  // look exactly like `queued` and `running` unless the status is read. With
+  // the failure LAST, "prefer the newest when something is being made" grabbed
+  // it and pinned the stage to "Generation failed" — measured in the browser as
+  // aria-current on the sixteenth of sixteen tiles.
+  server.on("GET /playground/api/sessions/s1", () => ({
+    session: playgroundSession({ id: "s1", title: "foxes" }),
+    generations: [
+      ...FOXES,
+      {
+        ...base,
+        id: "g9",
+        sessionId: "s1",
+        groupId: "g9",
+        prompt: "a fox that never arrived",
+        kind: "txt2img" as const,
+        model: "qwen-image-2512",
+        steps: 6,
+        n: 1,
+        size: "512x512",
+        seeds: [9],
+        images: [],
+        status: "failed" as const,
+        error: "Interrupted by server restart",
+      },
+    ],
+  }));
+
+  const user = userEvent.setup();
+  const { container } = render(<PlaygroundApp />);
+  await openTable(user);
+
+  await waitFor(() =>
+    expect(container.querySelectorAll(".pg-strip-tile")).toHaveLength(4),
+  );
+  // A picture on the stage, not the failure that happened after it.
+  expect(container.querySelector(".pg-table-pending")).toBeNull();
+  expect(onStage(container)).toBe(FOX_IMAGES[0]);
+});
+
+it("still gives the stage to a run that is genuinely running", async () => {
+  // The counterfactual for the fix above: narrowing "in flight" to queued and
+  // running must not cost the property it was written for.
+  server.on("GET /playground/api/sessions/s1", () => ({
+    session: playgroundSession({ id: "s1", title: "foxes" }),
+    generations: [
+      ...FOXES,
+      {
+        ...base,
+        id: "g9",
+        sessionId: "s1",
+        groupId: "g9",
+        prompt: "a fox still arriving",
+        kind: "txt2img" as const,
+        model: "qwen-image-2512",
+        steps: 6,
+        n: 1,
+        size: "512x512",
+        seeds: [9],
+        images: [],
+        status: "running" as const,
+        error: null,
+        finishedAt: null,
+      },
+    ],
+  }));
+
+  const user = userEvent.setup();
+  const { container } = render(<PlaygroundApp />);
+  await openTable(user);
+
+  await waitFor(() => expect(container.querySelector(".pg-table-pending")).toBeTruthy());
+  expect(onStage(container)).toBeUndefined();
+});

@@ -2827,6 +2827,16 @@ main.playground {
      the box it was given and lets both columns scroll inside it. */
   grid-template-rows: minmax(0, 1fr);
   gap: var(--s3);
+  /* The full composer height, and the earlier attempt to halve it is why this
+     comment exists. The reasoning was that this view does not scroll, so it
+     need not clear the glass the way the feed and the gallery do — but the
+     filmstrip is this view's bottom edge, and at 50% it went straight under
+     the composer: visible, and not clickable. A picture that is slightly
+     smaller is a preference; a filmstrip you cannot reach is a broken control.
+
+     The hero being height-bound on a tall window is the honest consequence of
+     a fixed stage sharing a screen with a floating composer, and it is not
+     fixed by taking room from the strip. */
   padding-bottom: calc(var(--pg-dock-h, 0px) + var(--s2));
 }
 
@@ -2865,6 +2875,15 @@ main.playground {
   min-height: 0;
   max-width: 100%;
   max-height: 100%;
+  /* Centres the picture when the button is wider than it.
+     `.pg-table-main` is a `place-items: center` grid, which centres the *button*
+     — and that was measured as symmetric, which is why this looked fine and was
+     not. A `<button>` is not shrink-to-fit in every state: when it stretches to
+     the cell, its content sits at the inline start and the picture hugs the left
+     edge with all the slack on the right. `auto` margins spend that slack evenly
+     whatever the button's width turns out to be, so the picture is centred by
+     its own box rather than by an assumption about its parent's. */
+  margin-inline: auto;
   background: none;
   border: none;
   cursor: zoom-in;
@@ -2877,6 +2896,9 @@ main.playground {
      grid-centred cell, so a 4096² upscale and a 512² original are framed the
      same way. */
   max-height: 100%;
+  /* The same reasoning one level down: the image is the thing being looked at,
+     and it must be centred in the button whether or not the button hugs it. */
+  margin-inline: auto;
   object-fit: contain;
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
@@ -3001,17 +3023,32 @@ main.playground {
   color: var(--faint);
 }
 
+/* The prompt as typed. Bounded rather than free-running: a long prompt used to
+   push Settings and Actions off the bottom of the panel, and the panel scrolls,
+   so what fell below the fold was invisible without anyone knowing it was
+   there. Ten lines is enough for the prompts this app actually produces; past
+   that it scrolls within its own box and the sections below stay put.
+
+   Not a `<details>` like the enhanced text beside it: this is what the user
+   wrote, and the one thing the panel exists to show. */
 .pg-insp-prompt {
   margin: 0;
+  max-height: 15em;
+  overflow-y: auto;
   font-size: var(--font-sm);
   line-height: 1.6;
   color: var(--text);
+  overflow-wrap: anywhere;
 }
 
 /* Quieter than the prompt above it, for the reason the feed hides it behind a
    disclosure: these are not the user's words. */
 .pg-insp-enhanced {
   color: var(--muted);
+  /* Same bound once expanded, for the same reason — a couple of hundred words
+     of rewritten prompt is longer than anything else in the panel. */
+  max-height: 15em;
+  overflow-y: auto;
 }
 
 .pg-insp-tag {
