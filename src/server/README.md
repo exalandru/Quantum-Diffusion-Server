@@ -47,7 +47,10 @@ Every subcommand carries its own `--help`.
 qds serve
 ```
 
-The server listens on `http://127.0.0.1:8765`. Interactive docs at `/docs`.
+The server listens on `http://127.0.0.1:8765`. The OpenAPI schema is at
+`/openapi.json` — point an OpenAPI client at it, or read it directly. There is
+no built-in Swagger or ReDoc page: rendering one means shipping a browser bundle
+this project does not carry.
 
 ```sh
 curl http://127.0.0.1:8765/health

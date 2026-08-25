@@ -73,7 +73,7 @@ The dashboard is the control panel behind the playground: install and manage mod
 
 A few things worth knowing about, covered briefly since they matter more to integrators than to everyday use:
 
-- **OpenAI-Images-compatible API** at `/v1/images/generations` and `/v1/images/edits`, with interactive docs at `/docs`.
+- **OpenAI-Images-compatible API** at `/v1/images/generations` and `/v1/images/edits`, with the OpenAPI schema at `/openapi.json`.
 - **Editing and img2img** on the models that support them, over the standard edits endpoint.
 - **Idle memory release**: the loaded model is freed automatically after a period of inactivity (or on demand), giving the RAM back for other work.
 - **Local by default**: binds to `127.0.0.1`; opening it to the network requires setting an API key, which the server enforces.

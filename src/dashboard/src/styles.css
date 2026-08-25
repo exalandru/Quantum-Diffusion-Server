@@ -643,7 +643,12 @@ dd.wrap {
 
 /* ── Controls ───────────────────────────────────────────────────────────── */
 
-button {
+/* `a.button` alongside `button`: the dashboard links out to the OpenAPI schema,
+   which is a document rather than an action, so it is an anchor — and an anchor
+   takes none of an element selector's styling. Written as one rule so a control
+   that navigates cannot drift away from a control that acts. */
+button,
+a.button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -658,9 +663,11 @@ button {
   font-weight: 500;
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled),
+a.button:hover {
   border-color: var(--accent);
   color: var(--accent);
 }

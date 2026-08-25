@@ -9,7 +9,7 @@ export UV_PROJECT_ENVIRONMENT := $(ROOT)/.venv
 
 .PHONY: help install install-server install-dashboard dev-server dev-dashboard \
 	test test-server test-dashboard test-app lint build build-server build-dashboard \
-	build-app build-dmg clean
+	build-app build-dmg clean-build clean
 
 help:
 	@printf '%s\n' \

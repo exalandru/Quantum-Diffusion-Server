@@ -79,6 +79,30 @@ The menubar app starts the server and gets out of the way; the server owns
 its own configuration, its jobs and its interface. That split is why the same
 dashboard works on a headless Mac with no app at all.
 
+## API documentation
+
+The server publishes its OpenAPI schema at `/openapi.json` and renders no
+documentation page: `docs_url` and `redoc_url` are both `None`.
+
+That is a deliberate constraint rather than an omission. FastAPI's `/docs` and
+`/redoc` load Swagger UI and ReDoc from a CDN, and the server sends
+`script-src 'self'` (see `CSP` in `qds/app.py`), so the browser refuses the
+bundle and the page renders blank while still answering 200 — a broken page that
+looks healthy to anything checking status codes. The alternatives were serving
+those bundles from this package, which means carrying ~2.7 MB of third-party
+browser code through the build, or opening a CSP hole for two pages. Neither is
+worth a renderer for a schema that clients read directly.
+
+To browse the surface interactively, point a local viewer at the schema, or
+paste it into any OpenAPI client:
+
+```sh
+curl http://127.0.0.1:8765/openapi.json
+```
+
+`tests/test_no_docs_ui.py` holds the decision in place: it fails if a
+documentation page reappears, and checks the schema is still served.
+
 ## API surface beyond OpenAI's shape
 
 Beyond the OpenAI fields (`prompt`, `model`, `n`, `size`, `response_format`),

@@ -385,7 +385,8 @@ export const models = () => get<ModelList>("/v1/models");
 /** One model's capabilities, by public name. */
 export const modelInfo = (id: string) => get<ModelEntry>(`/v1/models/${encodeURIComponent(id)}`);
 
-export const docsUrl = () => "/docs";
+/** The OpenAPI schema. The server serves no rendered documentation page. */
+export const schemaUrl = () => "/openapi.json";
 
 // ── Playground ─────────────────────────────────────────────────────────────
 //

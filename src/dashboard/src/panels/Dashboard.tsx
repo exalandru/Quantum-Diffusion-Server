@@ -255,10 +255,14 @@ export function Dashboard({
           >
             {busy("unload") ? "Releasing…" : "Free memory"}
           </button>
-          {/* A plain link now that this is a web page: `/docs` is served by the
-              same origin, so there is nothing to ask a native shell to open. */}
-          <a className="button" href={api.docsUrl()} target="_blank" rel="noreferrer">
-            Open /docs
+          {/* A plain link now that this is a web page: the schema is served by
+              the same origin, so there is nothing to ask a native shell to
+              open. `/openapi.json` rather than a rendered page — the server
+              ships no documentation UI, because the browser bundle one needs
+              is a dependency this project does not carry. Any OpenAPI client
+              reads this URL directly. */}
+          <a className="button" href={api.schemaUrl()} target="_blank" rel="noreferrer">
+            Open API schema
           </a>
         </div>
         {["cancel", "unload"].map((key) => (

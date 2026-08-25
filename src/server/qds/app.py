@@ -313,6 +313,13 @@ def create_app(
         title="Quantum Diffusion Server",
         version=__version__,
         lifespan=lifespan,
+        # No `/docs` and no `/redoc`. FastAPI's pages load Swagger UI and ReDoc
+        # from a CDN, which the CSP below refuses, and serving them from this
+        # package would mean carrying a browser bundle for a page the dashboard
+        # already links past. `/openapi.json` is the documentation surface: it
+        # is the schema itself, and every OpenAPI client reads it.
+        docs_url=None,
+        redoc_url=None,
     )
     install_host_guard(app, settings)
     app.add_middleware(
@@ -596,7 +603,13 @@ def create_recovery_app(
         logbuffer.detach(buffer_handler)
         logger.info("Server stopped")
 
-    app = FastAPI(title="Quantum Diffusion Server (recovery)", version=__version__, lifespan=lifespan)
+    app = FastAPI(
+        title="Quantum Diffusion Server (recovery)",
+        version=__version__,
+        lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
+    )
     install_host_guard(app, settings)
     app.add_middleware(
         CORSMiddleware,
