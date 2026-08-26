@@ -4,7 +4,7 @@
   "version": "2.2.0",
   "type": "module",
   "description": "Web dashboard for Quantum Diffusion Server, served by the server at /dashboard",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.build.json && vite build",

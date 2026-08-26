@@ -380,3 +380,241 @@ final class NetworkBindingTests: XCTestCase {
         XCTAssertEqual(config.baseURL.absoluteString, "http://192.168.1.19:8765")
     }
 }
+
+final class VersionOrderingTests: XCTestCase {
+    /// The reason this is not a string comparison.
+    ///
+    /// `"2.10.0" < "2.9.0"` is *true* alphabetically, so a string compare goes
+    /// quiet exactly when the tenth minor release ships — and stays quiet for
+    /// every release after it. Nothing about that failure is visible: the app
+    /// simply never mentions an update again.
+    func testTenSortsAfterNineRatherThanAlphabetically() {
+        XCTAssertTrue(Version("2.9.0")! < Version("2.10.0")!)
+        XCTAssertFalse(Version("2.10.0")! < Version("2.9.0")!)
+        // The bug this pins, stated directly.
+        XCTAssertTrue("2.10.0" < "2.9.0", "the string ordering changed; this test's premise is gone")
+    }
+
+    func testTheTagsVPrefixIsOptionalBecauseThisRepositoryUsesBoth() {
+        // Real tags from this repository: `1.0.0` and `v2.1.0`.
+        XCTAssertEqual(Version("v2.1.0"), Version("2.1.0"))
+        XCTAssertTrue(Version("1.0.0")! < Version("v2.0.0")!)
+    }
+
+    /// The rendering defect the mockup comparison caught.
+    ///
+    /// The UI writes "Version \(version) is available", and this repository
+    /// tags releases `v2.1.0`. Echoing the tag as written produced
+    /// "Version v2.3.0" — the `v` saying again what the word already said. The
+    /// spelling is normalised here rather than stripped at each call site,
+    /// because there are two of them (the window and the menu item) and they
+    /// must name the same release identically.
+    func testTheDisplayedSpellingIsNormalisedRatherThanTheTagAsWritten() {
+        XCTAssertEqual(Version("v2.3.0")!.description, "2.3.0")
+        XCTAssertEqual(Version("2.3.0")!.description, "2.3.0")
+        // Padding is not invented either: what was parsed is what is shown.
+        XCTAssertEqual(Version("v2.1")!.description, "2.1")
+    }
+
+    func testAMissingComponentReadsAsZeroRatherThanAsNewer() {
+        XCTAssertEqual(Version("2.1"), Version("2.1.0"))
+        XCTAssertTrue(Version("2.1")! < Version("2.1.1")!)
+    }
+
+    /// Fail closed: a tag that is not a version must not be coerced into an
+    /// ordering. `nil` reaches the UI as "could not check", which is honest;
+    /// a guess would be an update offered on the strength of nothing.
+    func testANonNumericOrOverflowingTagIsRefusedRatherThanGuessed() {
+        XCTAssertNil(Version("nightly"))
+        XCTAssertNil(Version(""))
+        XCTAssertNil(Version("v"))
+        XCTAssertNil(Version("2..0"))
+        XCTAssertNil(Version("99999999999999999999.0.0"))
+    }
+
+    /// A prerelease suffix is not ordered, so `2.3.0-rc1` can never be reported
+    /// as newer than `2.3.0`. GitHub's `prerelease` flag is what actually
+    /// excludes them; this is the second, structural guard.
+    func testAPrereleaseSuffixNeverSortsAboveTheMatchingFinal() {
+        XCTAssertFalse(Version("2.3.0-rc1")! > Version("2.3.0")!)
+    }
+}
+
+final class ReleaseDecodingTests: XCTestCase {
+    /// A real response from
+    /// `api.github.com/repos/exalandru/Quantum-Diffusion-Server/releases/latest`,
+    /// trimmed to the fields this app reads.
+    private let latest = Data(
+        #"""
+        {"tag_name":"v2.1.0","name":"v2.1.0","draft":false,"prerelease":false,
+         "published_at":"2026-08-24T18:06:25Z",
+         "html_url":"https://github.com/exalandru/Quantum-Diffusion-Server/releases/tag/v2.1.0"}
+        """#.utf8)
+
+    func testTheFieldsTheAppActuallyUsesAreRead() throws {
+        let release = try ReleaseCheck.decode(latest)
+        XCTAssertEqual(release.tagName, "v2.1.0")
+        XCTAssertEqual(release.version, Version("2.1.0"))
+        XCTAssertFalse(release.draft)
+        XCTAssertFalse(release.prerelease)
+        XCTAssertNotNil(release.publishedAt)
+        XCTAssertTrue(release.isOfferable)
+        XCTAssertEqual(release.url.absoluteString, release.htmlURL)
+    }
+
+    /// The flags are required rather than defaulted. A response missing them
+    /// cannot be shown to be a stable release, and defaulting `prerelease` to
+    /// `false` would advertise one.
+    func testAResponseWithoutTheStabilityFlagsIsRefusedRatherThanAssumedStable() {
+        let partial = Data(#"{"tag_name":"v9.9.9","html_url":"https://x/y"}"#.utf8)
+        XCTAssertThrowsError(try ReleaseCheck.decode(partial))
+    }
+
+    func testADraftOrPrereleaseIsNotOfferable() throws {
+        for flag in ["draft", "prerelease"] {
+            let json = Data(
+                """
+                {"tag_name":"v9.9.9","html_url":"https://x/y",
+                 "draft":\(flag == "draft"),"prerelease":\(flag == "prerelease")}
+                """.utf8)
+            XCTAssertFalse(try ReleaseCheck.decode(json).isOfferable, flag)
+        }
+    }
+
+    func testAnUnparseableURLFallsBackToTheRepositoryRatherThanCrashing() throws {
+        let json = Data(
+            #"{"tag_name":"v9.9.9","html_url":"","draft":false,"prerelease":false}"#.utf8)
+        XCTAssertEqual(try ReleaseCheck.decode(json).url, Product.repositoryURL)
+    }
+}
+
+final class ReleaseVerdictTests: XCTestCase {
+    private func release(_ tag: String, draft: Bool = false, prerelease: Bool = false) -> Release {
+        Release(
+            tagName: tag, htmlURL: "https://github.com/x/y/releases/tag/\(tag)",
+            draft: draft, prerelease: prerelease, publishedAt: nil)
+    }
+
+    func testANewerPublishedReleaseIsOffered() {
+        guard case .available(let found) = MenuModel.verdict(for: release("v2.3.0"), current: "2.2.0")
+        else { return XCTFail("a newer release was not offered") }
+        XCTAssertEqual(found.tagName, "v2.3.0")
+    }
+
+    /// The state this repository is actually in right now: `pyproject.toml` says
+    /// 2.2.0 and the newest tag is v2.1.0. A check that only asked "are they
+    /// different" would report an update *downwards* on every development build.
+    func testABuildAheadOfTheNewestTagIsCurrentRatherThanOutdated() {
+        XCTAssertEqual(MenuModel.verdict(for: release("v2.1.0"), current: "2.2.0"), .current)
+    }
+
+    func testTheSameVersionIsCurrent() {
+        XCTAssertEqual(MenuModel.verdict(for: release("v2.2.0"), current: "2.2.0"), .current)
+    }
+
+    /// Fail closed at each of the three ways the comparison can be impossible.
+    /// None of them may answer `.current`: that is a claim, and nothing here
+    /// established it.
+    func testAnImpossibleComparisonIsUnknownRatherThanUpToDate() {
+        XCTAssertEqual(MenuModel.verdict(for: release("nightly"), current: "2.2.0"), .unknown)
+        XCTAssertEqual(MenuModel.verdict(for: release("v2.3.0"), current: nil), .unknown)
+        XCTAssertEqual(MenuModel.verdict(for: release("v2.3.0"), current: "not-a-version"), .unknown)
+    }
+
+    func testADraftOrPrereleaseIsNeverOffered() {
+        XCTAssertEqual(
+            MenuModel.verdict(for: release("v9.9.9", draft: true), current: "2.2.0"), .unknown)
+        XCTAssertEqual(
+            MenuModel.verdict(for: release("v9.9.9", prerelease: true), current: "2.2.0"), .unknown)
+    }
+}
+
+final class ReleaseCheckScheduleTests: XCTestCase {
+    func testTheFirstCheckIsDueAndAFreshOneIsNot() {
+        XCTAssertTrue(ReleaseCheck.isDue(lastChecked: nil))
+        let now = Date()
+        XCTAssertFalse(ReleaseCheck.isDue(lastChecked: now, now: now))
+        XCTAssertFalse(ReleaseCheck.isDue(lastChecked: now.addingTimeInterval(-3600), now: now))
+    }
+
+    func testACheckOlderThanTheIntervalIsDue() {
+        let now = Date()
+        XCTAssertTrue(
+            ReleaseCheck.isDue(lastChecked: now.addingTimeInterval(-ReleaseCheck.interval), now: now))
+    }
+
+    /// The clock trap.
+    ///
+    /// A machine whose time moved backwards — a correction, a restore, a user
+    /// setting it by hand — leaves a `lastChecked` in the future. `elapsed >=
+    /// interval` on a negative elapsed is `false`, so without this the app would
+    /// never check again for as long as that timestamp stood: a permanent,
+    /// silent stall that no error would report.
+    func testATimestampInTheFutureIsDueRatherThanStallingForever() {
+        let now = Date()
+        XCTAssertTrue(ReleaseCheck.isDue(lastChecked: now.addingTimeInterval(86_400 * 365), now: now))
+    }
+}
+
+final class ProductIdentityTests: XCTestCase {
+    /// The three URLs the About window offers all descend from one pair of
+    /// coordinates, so "Show on GitHub" and the update check cannot point at
+    /// different repositories.
+    func testEveryLinkIsBuiltFromTheSameCoordinates() {
+        XCTAssertEqual(Product.authorURL.absoluteString, "https://github.com/exalandru")
+        XCTAssertEqual(
+            Product.repositoryURL.absoluteString,
+            "https://github.com/exalandru/Quantum-Diffusion-Server")
+        XCTAssertEqual(
+            Product.latestReleaseAPI.absoluteString,
+            "https://api.github.com/repos/exalandru/Quantum-Diffusion-Server/releases/latest")
+    }
+}
+
+@MainActor
+final class CreditLinkTests: XCTestCase {
+    /// The `-50` defect, pinned where it actually lived.
+    ///
+    /// The credit line was written as interpolated markdown:
+    ///
+    /// ```swift
+    /// Text("Crafted by [\(owner)](\(url.absoluteString))")
+    /// ```
+    ///
+    /// A literal string is a `LocalizedStringKey`, and SwiftUI parses the
+    /// markdown on the *format* string — `"Crafted by [%@](%@)"` — before
+    /// substituting. The link's destination became the literal `%@`, which
+    /// reaches LaunchServices as the relative URL `%25@` and fails with `-50`
+    /// (`paramErr`). Measured, not guessed: a probe clicked all four spellings
+    /// and the two with an interpolated destination both delivered `%25@`.
+    ///
+    /// Nothing about it was visible. The text rendered correctly, the link was
+    /// blue, the accessibility tree reported an `AXLink` — it only failed when
+    /// pressed. So this asserts on the *destination*, which is the only thing
+    /// that was ever wrong.
+    func testTheCreditLinkPointsAtTheAuthorRatherThanAFormatPlaceholder() {
+        let credit = AboutView.credit
+
+        let links = credit.runs.compactMap(\.link)
+        XCTAssertEqual(links.count, 1, "the credit line should carry exactly one link")
+        XCTAssertEqual(links.first, Product.authorURL)
+
+        // The regression, stated as what must never appear again.
+        let destination = links.first?.absoluteString ?? ""
+        XCTAssertFalse(destination.contains("%"), "the destination is a format placeholder: \(destination)")
+        XCTAssertTrue(destination.hasPrefix("https://"), destination)
+    }
+
+    func testTheCreditReadsAsASentenceWithTheNameInIt() {
+        let text = String(AboutView.credit.characters)
+        XCTAssertEqual(text, "Crafted by exalandru")
+    }
+
+    /// The link is on the name only — not on "Crafted by".
+    func testOnlyTheNameIsClickable() {
+        let credit = AboutView.credit
+        for run in credit.runs where run.link != nil {
+            XCTAssertEqual(String(credit[run.range].characters), Product.owner)
+        }
+    }
+}

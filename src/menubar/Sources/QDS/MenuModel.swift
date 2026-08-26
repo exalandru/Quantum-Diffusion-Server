@@ -31,12 +31,18 @@ final class MenuModel {
     private var pollTask: Task<Void, Never>?
     private var progressTask: Task<Void, Never>?
 
+    private let releaseCheck = ReleaseCheck()
+    private let releaseCache = ReleaseCache()
+    private let about = AboutWindowController()
+    private var releaseTask: Task<Void, Never>?
+
     init() {
         supervisor = Supervisor(paths: paths, onChange: { [weak self] in self?.onSupervisorChange() })
         bootstrap = Bootstrap(paths: paths, onChange: { [weak self] in self?.touch() })
         reloadConfig()
         client = ServerClient(config: config, tokenFile: paths.adminToken)
         bootstrap.refresh()
+        restoreCachedRelease()
     }
 
     /// The children's state, mirrored into properties `@Observable` can see.
@@ -280,6 +286,102 @@ final class MenuModel {
 
     var canCancelGeneration: Bool { isRunning && progress?.isGenerating == true }
     var hasWarmModel: Bool { isRunning && health?.loaded_model != nil }
+
+    // ── About, and the release check ───────────────────────────────────────
+
+    /// What the GitHub release check found. Distinct from `updateAvailable`,
+    /// which is about the *server* — see `newVersion` below.
+    private(set) var releaseState: ReleaseState = .unknown
+
+    /// The release to offer, or nothing.
+    ///
+    /// **Not the same fact as `updateAvailable`.** That one compares the wheel
+    /// this app carries against the server installed on disk, and is satisfied
+    /// by "Update Server & Restart" using bytes already on the machine. This one
+    /// says a newer QDS was published, and the only thing to do about it is open
+    /// a browser. Two things called "update" in one menu would make both
+    /// unreadable, so this is worded as a version and that one is not.
+    var newVersion: Release? {
+        if case .available(let release) = releaseState { return release }
+        return nil
+    }
+
+    func showAbout() {
+        about.show(model: self)
+        // Opening the window is the one moment somebody is definitely looking at
+        // the answer, so a cached one that has gone stale is refreshed now
+        // rather than at the next timer tick.
+        checkForNewVersion()
+    }
+
+    func openNewVersion() {
+        guard let release = newVersion else { return }
+        NSWorkspace.shared.open(release.url)
+    }
+
+    /// Show what the last run found, before asking anything.
+    ///
+    /// The comparison is redone here rather than the verdict being cached: what
+    /// is stored is the *release*, and whether it is newer depends on which
+    /// version this build is — which changes when the app is updated. Caching
+    /// "an update is available" instead would keep offering 2.3.0 to a 2.3.0
+    /// that had just installed it.
+    private func restoreCachedRelease() {
+        guard let release = releaseCache.release else { return }
+        releaseState = Self.verdict(for: release, current: Product.version)
+    }
+
+    /// Ask GitHub, at most once a day, and never twice at once.
+    ///
+    /// - Parameter force: skip the interval, for a check the user asked for.
+    func checkForNewVersion(force: Bool = false) {
+        // Nothing to compare against: a checkout build has no Info.plist and so
+        // no version. Asking anyway would spend a request to learn nothing.
+        guard Product.version != nil else {
+            releaseState = .unknown
+            return
+        }
+        guard releaseTask == nil else { return }
+        guard force || ReleaseCheck.isDue(lastChecked: releaseCache.lastChecked) else { return }
+
+        // Only *shown* as checking when there is nothing to show instead: a
+        // cached answer replaced by "Checking…" flickers for no reason.
+        if case .unknown = releaseState { releaseState = .checking }
+        if case .failed = releaseState { releaseState = .checking }
+
+        releaseTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.releaseTask = nil }
+            do {
+                let release = try await self.releaseCheck.latest()
+                // The timestamp is written on success only. A failed check that
+                // recorded one would make an offline day count as a day checked,
+                // and the news would arrive up to 24 hours late.
+                self.releaseCache.store(release.isOfferable ? release : nil)
+                self.releaseState = Self.verdict(for: release, current: Product.version)
+            } catch {
+                // Silent by design: `note` is for actions the user took, and an
+                // unreachable GitHub is not a failure of anything they did. The
+                // window says so; the menu simply does not gain an item.
+                self.releaseState = .failed
+            }
+        }
+    }
+
+    /// Newer, older, or not offerable — with the version this build claims.
+    ///
+    /// `nonisolated` because it is pure: it reads its two arguments and touches
+    /// nothing else. That is what lets the ordering be tested directly, with no
+    /// main actor, no network, no bundle and no clock — the comparison is the
+    /// part that can be silently wrong, so it has to be the part a test can
+    /// reach.
+    nonisolated static func verdict(for release: Release, current: String?) -> ReleaseState {
+        // A draft, a prerelease, or a tag that is not a version. Not "current":
+        // nothing was established about which is newer.
+        guard release.isOfferable, let published = release.version else { return .unknown }
+        guard let current = current.flatMap(Version.init) else { return .unknown }
+        return published > current ? .available(release) : .current
+    }
 
     // ── Launch at login ────────────────────────────────────────────────────
 

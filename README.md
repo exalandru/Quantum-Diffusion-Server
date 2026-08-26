@@ -5,13 +5,21 @@
 A Midjourney-like image generation experience that runs entirely on your Mac: no account, no per-image cost, no prompt or image ever leaving the machine.
 QDS gives you a prompt-and-browse **playground**, an **OpenAI-compatible API**, an **MCP server**, and **native Hermes plugins** so chat models can generate images for you, all backed by the same local diffusion models.
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Apple%20Silicon-gray?logo=apple&logoColor=white" alt="platform">
+  <img src="https://img.shields.io/github/v/release/exalandru/Quantum-Diffusion-Server" alt="release">
+  <img src="https://img.shields.io/github/license/exalandru/Quantum-Diffusion-Server" alt="license">
+</p>
+
 ## What is QDS?
 
-Quantum Diffusion Server turns a Mac into a local image generation studio. It runs FLUX, Qwen-Image, Z-Image, ERNIE-Image, Anima, Krea, FIBO, and Ideogram directly on Apple Silicon: pick a model, type a prompt, get an image, no cloud round-trip.
+Quantum Diffusion Server turns a Mac into a local image generation studio. It runs multiple models directly on Apple Silicon: pick a model, type a prompt, get an image, no cloud round-trip.
 
 A small **menubar app** installs and runs the server for you. Everything else is a **web dashboard** served by the server itself, so there's nothing else to install, and a headless Mac gets exactly the same interface.
 
-![QDS Playground](assets/app-traymenu.jpg)
+<p align="center">
+  <img src="assets/app-traymenu.jpg" alt="tray menu">
+</p>
 
 Four ways in, one shared engine:
 
@@ -64,7 +72,6 @@ The dashboard is the control panel behind the playground: install and manage mod
 ![Dashboard](assets/app-dashboard-main.png)
 
 - **Model catalog**: browse the whole model catalogue, install weights from Hugging Face or point at an existing local copy, and manage quantized variants, all without stopping the server.
-
 - **Configuration**: port, API key, CORS, timeouts, storage locations, and per-model defaults, all as a form.
 - **Logs**: structured events and raw output, filterable by level.
 
@@ -101,41 +108,44 @@ Launch it: it lives in the menu bar, with no window and no Dock icon.
 3. The server answers within a second; the first generation is what actually loads the weights.
 4. Open the playground, or point an OpenAI-compatible client at `http://127.0.0.1:8765/v1`, any API key value works unless you set one in the Configuration tab.
 
-
 ## Models
+
+Multiple models available : From lightweight and fast to more accurate and slow.
+
+> Prequantize reduce memory footprint
 
 | model | licence | RAM/VRAM | notes |
 |---|---|---|---|
 | **Qwen Image Flash** | NVIDIA Open Model | ~15 GB | Qwen-Image distilled to 4 steps |
 | **Qwen Image 2512** | Apache-2.0 | ~55 GB | 20B, strong text rendering, optional editing |
-|---|---|---|---|
-| **Krea 2 Turbo** | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, adjustable guidance |
-|---|---|---|---|
+|-| | | |
+| **Krea 2 Turbo** | Krea 2 Community 🔒 | ~20 GB | 12B distilled, 8 steps, stylized work |
+|-| | | |
 | **Anima Turbo** | CircleStone Non-Commercial | a few GB | 2B anime-oriented, distilled to 10 steps |
-| **Anima** | CircleStone Non-Commercial | a few GB | undistilled aesthetic fine-tune, 30 steps |
-|---|---|---|---|
-| **Stable Diffusion 3.5 Large Turbo** | Stability AI Community 🔒 | ~14 GB (8-bit) | 8B distilled, 4 steps, guidance fixed off |
-| **Stable Diffusion 3.5 Large** | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps; pre-quantize to avoid a ~41 GB bf16 peak |
-| **Stable Diffusion 3.5 Medium** | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
-|---|---|---|---|
-| **Flux 2 Klein** | FLUX Non-Commercial 🔒 | ~15 GB | 9B distilled, 4 steps, instruction editing |
-| **Flux 2 Dev** | FLUX Non-Commercial 🔒 | ~58 GB | 32B; pre-quantized variants keep peak memory bounded |
-|---|---|---|---|
-| **Z-Image Turbo** | Apache-2.0 | a few GB (8-bit) | on out of the box; 9 steps, fast |
-| **Z-Image** | Apache-2.0 | a few GB (8-bit) | 20 steps, adjustable guidance |
-|---|---|---|---|
-| **FIBO Lite** | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON |
-| **FIBO** | CC-BY-NC-4.0 🔒 | a few GB | prompts are structured JSON, 50 steps |
-|---|---|---|---|
-| **Ernie Turbo**  | Apache-2.0 | a few GB (8-bit) | on out of the box; 8 steps, fast |
+| **Anima Aesthetics** | CircleStone Non-Commercial | a few GB | undistilled aesthetic fine-tune, 30 steps |
+|-| | | |
+| **Flux 2 Klein** | FLUX Non-Commercial 🔒 | ~15 GB | 9B distilled, 4 steps |
+| **Flux 2 Dev** | FLUX Non-Commercial 🔒 | ~58 GB (8-bit) | 32B |
+|-| | | |
+| **Z-Image Turbo** | Apache-2.0 | a few GB (8-bit) | 9 steps, fast |
+| **Z-Image** | Apache-2.0 | a few GB (8-bit) | 20 steps |
+|-| | | |
+| **FIBO Lite** | CC-BY-NC-4.0 🔒 | a few GB | JSON prompts |
+| **FIBO** | CC-BY-NC-4.0 🔒 | a few GB | JSON prompts, 50 steps |
+|-| | | |
+| **Ernie Turbo**  | Apache-2.0 | a few GB (8-bit) | 8 steps, fast |
 | **Ernie** | Apache-2.0 | a few GB (8-bit) | 20 steps |
-|---|---|---|---|
+|-| | | |
 | **Ideogram 4** | Ideogram Non-Commercial 🔒 | a few GB | sampler presets instead of a step count |
+|-| | | |
+| **Stable Diffusion 3.5 Large Turbo** | Stability AI Community 🔒 | ~14 GB (8-bit) | 8B distilled, 4 steps |
+| **Stable Diffusion 3.5 Large** | Stability AI Community 🔒 | ~14 GB (8-bit) | 8.1B, 28 steps |
+| **Stable Diffusion 3.5 Medium** | Stability AI Community 🔒 | ~17 GB | 2.5B MMDiT-X, 40 steps |
+   
 
+> 🔒 = gated on Hugging Face: you need a token whose access has been approved. QDS ships with Z-Image Turbo and Ernie Turbo enabled and everything else switched off — requesting access and accepting a licence is your decision, not the app's. Enable or disable models, and see exact disk usage, from the Models tab.
 
-🔒 = gated on Hugging Face: you need a token whose access has been approved. QDS ships with Z-Image Turbo and Ernie Turbo enabled and everything else switched off — requesting access and accepting a licence is your decision, not the app's. Enable or disable models, and see exact disk usage, from the Models tab.
-
-RAM/VRAM figures are approximate resident memory while generating (small 8-bit models vs. the 20B/32B entries), see [`src/server/README.md`](src/server/README.md#models) for the full capability matrix, or query the running server at `GET /v1/capabilities`.
+> RAM/VRAM figures are approximate resident memory while generating (small 8-bit models vs. the 20B/32B entries), see [`src/server/README.md`](src/server/README.md#models) for the full capability matrix, or query the running server at `GET /v1/capabilities`.
 
 ## Using it via MCP
 
@@ -170,7 +180,7 @@ Two ways in, install either or both:
 - **Image provider** — QDS becomes the engine behind Hermes' built-in image generation. You ask, an image comes back in the conversation. Nothing new to learn.
 - **Playground plugin** — Hermes opens a live playground session beside the chat and you watch the image form, then steer it in plain language: *"now make it wider"*, *"upscale that one"*. Renders keep running whether or not you're watching.
 
-**Install** (desktop app): open **Settings → Plugins → Open plugins folder**, copy `hermes/image_gen/qds` to `plugins/image_gen/qds` and `hermes/qds_playground` to `plugins/qds_playground`, restart Hermes, then enable them under **Settings → Plugins → Agent plugins**. For the provider, also pick **QDS (local)** under **Settings → Tools & Keys → Image Generation**. No API key.
+> **Install** (desktop app): open **Settings → Plugins → Open plugins folder**, copy `hermes/image_gen/qds` to `plugins/image_gen/qds` and `hermes/qds_playground` to `plugins/qds_playground`, restart Hermes, then enable them under **Settings → Plugins → Agent plugins**. For the provider, also pick **QDS (local)** under **Settings → Tools & Keys → Image Generation**. No API key.
 
 Then try *"Generate an image of a red fox asleep in a snowy forest"*, or *"Open the QDS playground and start a cinematic wide shot of a lighthouse in a storm"*.
 
@@ -178,9 +188,9 @@ Details, example prompts and troubleshooting in [`hermes/README.md`](hermes/READ
 
 ## Licence
 
-The code in this repository is MIT licensed — see [LICENSE](LICENSE).
+The code in this repository is Apache-2.0 licensed — see [LICENSE](LICENSE).
 
-**Model weights are not.** Each entry in the catalogue carries its own licence, listed in the table above and enforced by nobody but you: several models are non-commercial, and most gated ones require an approved Hugging Face access request. Only the Apache-2.0 models are enabled out of the box.
+**Model weights are not.** The licence above covers this repository's code only. Each entry in the catalogue carries its own, listed in the table above and enforced by nobody but you: several models are non-commercial, and most gated ones require an approved Hugging Face access request. Only the models whose own weights are Apache-2.0 are enabled out of the box.
 
 QDS is a client of [mflux](https://github.com/filipstrand/mflux) (MIT), which does the actual MLX inference.
 

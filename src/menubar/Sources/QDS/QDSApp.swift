@@ -81,6 +81,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // A server this app started and never stopped is still out there.
         model.adoptOrphan()
         installSignalHandlers()
+        // At most one request a day, and none at all if the last one was
+        // recent — a launch is not by itself a reason to ask GitHub anything.
+        model.checkForNewVersion()
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -160,6 +163,19 @@ struct MenuContent: View {
         Toggle("Launch at Login", isOn: $model.launchesAtLogin)
 
         Divider()
+
+        // Only when there is one, so the menu does not carry a permanent "you
+        // are up to date" line nobody needs to read. This is the *app*, not the
+        // server — see `MenuModel.newVersion`. The version is the normalised
+        // one, so the menu and the window name it identically whichever way the
+        // tag happened to be spelled.
+        if let release = model.newVersion {
+            Button("QDS \(release.version?.description ?? release.tagName) is available…") {
+                model.openNewVersion()
+            }
+        }
+
+        Button("About QDS") { model.showAbout() }
 
         // Named for what it does. "Quit" alone would be a lie: the server is a
         // child of this process, and it goes too.

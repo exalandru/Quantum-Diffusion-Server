@@ -3,14 +3,14 @@ name = "qds"
 version = "2.2.0"
 description = "Quantum Diffusion Server: a local, OpenAI-Images-compatible image generation server for Apple Silicon"
 readme = "README.md"
-license = "MIT"
+license = "Apache-2.0"
 requires-python = ">=3.12,<3.14"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: MacOS X",
     "Framework :: FastAPI",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: MacOS :: MacOS X",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
