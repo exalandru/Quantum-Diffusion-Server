@@ -1,27 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// The palette, from the dashboard's tokens.
-///
-/// Written out rather than derived from the system: this window is deliberately
-/// dark whatever the system theme is, because it is a piece of QDS rather than a
-/// standard About box, and a light one would be the only light surface the
-/// product has. Values mirror `src/dashboard/src/styles.css`; there is no
-/// mechanism keeping them in step, and there does not need to be — five colours
-/// on one window is not a design system.
-private enum Palette {
-    static let bg = Color(red: 0.055, green: 0.078, blue: 0.110)
-    static let raised = Color(red: 0.110, green: 0.141, blue: 0.184)
-    static let line = Color(red: 0.192, green: 0.235, blue: 0.298)
-    static let text = Color(red: 0.910, green: 0.929, blue: 0.961)
-    static let muted = Color(red: 0.576, green: 0.631, blue: 0.710)
-    static let faint = Color(red: 0.373, green: 0.427, blue: 0.502)
-    static let accent = Color(red: 0.369, green: 0.722, blue: 1.0)
-    static let accentLine = Color(red: 0.114, green: 0.435, blue: 0.722)
-    static let accentTint = Color(red: 0.369, green: 0.722, blue: 1.0, opacity: 0.16)
-    static let onAccent = Color(red: 0.024, green: 0.071, blue: 0.118)
-}
-
 /// The About window: what this is, which version, who made it, and whether a
 /// newer one exists.
 struct AboutView: View {
@@ -206,41 +185,6 @@ struct AboutView: View {
     }
 }
 
-private struct QuietButton: ButtonStyle {
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13))
-            .foregroundStyle(Palette.text)
-            .frame(height: 32)
-            .padding(.horizontal, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(hovering || configuration.isPressed ? Palette.line : Palette.raised)
-                    .overlay(RoundedRectangle(cornerRadius: 8).stroke(Palette.line, lineWidth: 1))
-            )
-            .onHover { hovering = $0 }
-    }
-}
-
-private struct PrimaryButton: ButtonStyle {
-    @State private var hovering = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(Palette.onAccent)
-            .frame(height: 27)
-            .padding(.horizontal, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Palette.accent.opacity(hovering || configuration.isPressed ? 0.85 : 1))
-            )
-            .onHover { hovering = $0 }
-    }
-}
-
 /// One window, kept between openings.
 ///
 /// `isReleasedWhenClosed` is the load-bearing line: a code-created `NSWindow`
@@ -260,8 +204,7 @@ final class AboutWindowController: NSObject, NSWindowDelegate {
             window.titlebarAppearsTransparent = true
             window.isMovableByWindowBackground = true
             window.isReleasedWhenClosed = false
-            window.backgroundColor = NSColor(
-                srgbRed: 0.055, green: 0.078, blue: 0.110, alpha: 1)
+            window.backgroundColor = Palette.windowBackground
             // Dark whatever the system is set to: the window is drawn in the
             // product's own palette, and a light title bar over it would be the
             // one seam.

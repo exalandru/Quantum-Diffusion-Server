@@ -140,6 +140,15 @@ struct MenuContent: View {
 
         Divider()
 
+        // Only while an install is running: a way back to a window the user
+        // closed. Absent the rest of the time, so the menu does not carry a
+        // permanent item about something that is not happening.
+        if model.isInstalling {
+            Button("Show Setup Progress…") { model.showSetupProgress() }
+
+            Divider()
+        }
+
         if model.isRunning {
             Button("Stop Server") { model.stopServer() }
             Button("Restart Server") { model.restartServer() }

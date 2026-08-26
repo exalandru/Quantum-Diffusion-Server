@@ -58,7 +58,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 cp "$MENUBAR_DIR/.build/release/QDS" "$APP/Contents/MacOS/QDS"
-cp "$MENUBAR_DIR/Resources/icon.icns" "$APP/Contents/Resources/icon.icns"
+cp "$ROOT/assets/icons/icon.icns" "$APP/Contents/Resources/icon.icns"
 cp "$WHEEL" "$APP/Contents/Resources/"
 # Copied rather than linked so the bundle is self-contained on a machine that has
 # no uv of its own.

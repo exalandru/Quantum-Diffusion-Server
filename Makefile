@@ -9,7 +9,7 @@ export UV_PROJECT_ENVIRONMENT := $(ROOT)/.venv
 
 .PHONY: help install install-server install-dashboard dev-server dev-dashboard \
 	test test-server test-dashboard test-app lint build build-server build-dashboard \
-	build-app build-dmg clean-build clean
+	build-app build-dmg dmg-background dmg-preview app-icon clean-build clean
 
 help:
 	@printf '%s\n' \
@@ -23,6 +23,8 @@ help:
 		'make build-server     Build the wheel, dashboard included' \
 		'make build-app        Build QDS.app, wheel and uv included' \
 		'make build-dmg        Package QDS.app into dist/app/QDS-<version>.dmg' \
+		'make dmg-background   Re-render the disk image background (rarely needed)' \
+		'make app-icon         Repack icon.icns from assets/icons/png (rare)' \
 		'make clean            Remove build/ and dist/'
 
 install: install-server install-dashboard
@@ -60,8 +62,10 @@ test-dashboard:
 test-app:
 	swift test --package-path "$(MENUBAR_DIR)"
 
+# `scripts/` as well as the package: the build's own Python is code too, and it
+# was unlinted until the disk-image work added two files to it.
 lint:
-	uv run --project "$(SERVER_DIR)" ruff check "$(SERVER_DIR)"
+	uv run --project "$(SERVER_DIR)" ruff check "$(SERVER_DIR)" "$(ROOT)/scripts"
 	npm --prefix "$(DASHBOARD_DIR)" run typecheck
 
 build: build-server build-app build-dmg clean-build
@@ -87,6 +91,27 @@ build-app: build-server
 # its own is not something to hand someone.
 build-dmg: build-app
 	"$(ROOT)/scripts/make-dmg.sh"
+
+# The disk image's background picture. NOT part of `build-dmg`: the rendered
+# PNGs are committed, so packaging needs no Python and produces the same bytes
+# on every machine. Run this only after editing the artwork, and commit the
+# result alongside it. (The wordmark is real text, so the render depends on the
+# build host's fonts — pinning it in the repository is the point.)
+dmg-background:
+	uv run --project "$(SERVER_DIR)" python "$(ROOT)/scripts/dmg-background.py"
+
+# Composite the real icons onto that background at their final coordinates, to
+# /tmp. The background cannot be judged on its own: what matters is whether the
+# icons and the drag arrow stay readable on top of it.
+dmg-preview:
+	uv run --project "$(SERVER_DIR)" python "$(ROOT)/scripts/dmg-preview.py"
+
+# Pack assets/icons/png/*.png into assets/icons/icon.icns. NOT part of any
+# build: the .icns is committed, and this runs only after re-exporting the icon
+# from Illustrator. It rasterizes nothing — see the script's header for why that
+# is done by hand.
+app-icon:
+	node "$(MENUBAR_DIR)/pack-app-icon.mjs"
 
 clean-build:
 	rm -rf "$(BUILD_DIR)" "$(MENUBAR_DIR)/.build"

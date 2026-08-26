@@ -18,6 +18,7 @@ admin-token
 dist/
 build/
 .build/
+*.zip
 
 # Python
 __pycache__/

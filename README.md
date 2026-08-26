@@ -1,6 +1,6 @@
 # Quantum Diffusion Server
 
-![QDS Playground](assets/app-playground-main.png)
+![QDS Playground](assets/screenshots/app-playground-main.png)
 
 A Midjourney-like image generation experience that runs entirely on your Mac: no account, no per-image cost, no prompt or image ever leaving the machine.
 QDS gives you a prompt-and-browse **playground**, an **OpenAI-compatible API**, an **MCP server**, and **native Hermes plugins** so chat models can generate images for you, all backed by the same local diffusion models.
@@ -18,7 +18,7 @@ Quantum Diffusion Server turns a Mac into a local image generation studio. It ru
 A small **menubar app** installs and runs the server for you. Everything else is a **web dashboard** served by the server itself, so there's nothing else to install, and a headless Mac gets exactly the same interface.
 
 <p align="center">
-  <img src="assets/app-traymenu.jpg" alt="tray menu">
+  <img src="assets/screenshots/app-traymenu.jpg" alt="tray menu">
 </p>
 
 Four ways in, one shared engine:
@@ -59,17 +59,16 @@ A project is one set of images; how you look at them is up to you. The switcher 
 
 | Gallery | Light Table |
 |---|---|
-| ![The Gallery: every picture in the project, in full-width rows](assets/app-playground-gallery.png) | ![The Light Table: one image on a stage, the project as a filmstrip](assets/app-playground-lighttable.png) |
+| ![The Gallery: every picture in the project, in full-width rows](assets/screenshots/app-playground-gallery.png) | ![The Light Table: one image on a stage, the project as a filmstrip](assets/screenshots/app-playground-lighttable.png) |
 
 *(The Prompts feed is the screenshot at the top of this page.)*
 
-Galleries and filmstrips load small derived thumbnails rather than the full files, so a project with hundreds of images opens as quickly as one with three.
 
 ### Dashboard
 
 The dashboard is the control panel behind the playground: install and manage models, and see what the server is doing.
 
-![Dashboard](assets/app-dashboard-main.png)
+![Dashboard](assets/screenshots/app-dashboard-main.png)
 
 - **Model catalog**: browse the whole model catalogue, install weights from Hugging Face or point at an existing local copy, and manage quantized variants, all without stopping the server.
 - **Configuration**: port, API key, CORS, timeouts, storage locations, and per-model defaults, all as a form.
@@ -171,7 +170,7 @@ The model gets `generate_image`, `refine_image`, `vary_image`, `upscale_image` a
 
 ## Using it with Hermes
 
-![Hermes](assets/hermes-chat.png)
+![Hermes](assets/screenshots/hermes-chat.png)
 
 QDS is natively compatible with [Hermes](https://claude-code.nousresearch.com): two plugins ship in this repository, no MCP adapter in between. Ask for an image in the chat and your own Mac makes it.
 

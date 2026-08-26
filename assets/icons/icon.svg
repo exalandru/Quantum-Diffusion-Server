@@ -8,7 +8,7 @@
   icon and the UI agree. Note that XML comments cannot contain a double hyphen,
   so that property is spelled out here rather than written with its prefix.
 
-  Rendered by `scripts/generate-app-icon.mjs`, which drives resvg through the
+  Formerly rendered by a resvg-based script through the
   Tauri CLI. Constraints that come from that renderer, all load-bearing:
 
   * `width`/`height`/`viewBox` must be explicit, numeric and square. Given a

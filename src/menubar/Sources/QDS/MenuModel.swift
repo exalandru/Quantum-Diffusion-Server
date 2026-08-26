@@ -34,6 +34,7 @@ final class MenuModel {
     private let releaseCheck = ReleaseCheck()
     private let releaseCache = ReleaseCache()
     private let about = AboutWindowController()
+    private let setup = SetupWindowController()
     private var releaseTask: Task<Void, Never>?
 
     init() {
@@ -62,10 +63,42 @@ final class MenuModel {
     private(set) var bootstrapState: Bootstrap.State = .absent
     private(set) var lastExit: String?
 
+    /// The install's progress and output, mirrored for the same reason as the
+    /// states above: `Bootstrap` is a plain class, so a view reading
+    /// `bootstrap.progress` registers no dependency and never redraws.
+    private(set) var installProgress = InstallProgress()
+    private(set) var installTranscript: [String] = []
+    /// Whether an install is running *or* has just settled with its window still
+    /// up. Drives the setup window and the menu item that reopens it.
+    private(set) var isInstalling = false
+
+    /// Counts installs, so a delayed action can tell whether the run it was
+    /// started for is still the current one.
+    private var installGeneration = 0
+
     private func touch() {
         supervisorState = supervisor.state
         bootstrapState = bootstrap.state
         lastExit = supervisor.lastExit
+        installProgress = bootstrap.progress
+        installTranscript = bootstrap.transcript
+        let wasInstalling = isInstalling
+        isInstalling = bootstrap.isPresenting
+        // A refused install says nothing about the run already in progress, so
+        // it is reported the way any other rejected command is — as a note —
+        // and never as a state that would disturb the running install.
+        if let refused = bootstrap.refusal {
+            bootstrap.refusal = nil
+            note = refused
+        }
+        // A new run: count it, and forget that a *previous* window was
+        // dismissed — the user closing the last install's window did not ask to
+        // never see another one.
+        if isInstalling && !wasInstalling {
+            installGeneration += 1
+            setup.reset()
+        }
+        syncSetupWindow()
     }
 
     private func onSupervisorChange() {
@@ -114,7 +147,24 @@ final class MenuModel {
 
     func startServer() {
         guard isReady else {
-            Task { await bootstrap.install(); if isReady { startServer() } }
+            // Through `act`, like every other command, so a second click while
+            // an install is running is refused rather than starting a *second*
+            // `uv tool install` into the same directory. `flock` stops the two
+            // from corrupting the install, but the loser still resets the shared
+            // progress and transcript out from under the window — the second
+            // click would appear to restart the first install from zero.
+            //
+            // This was reachable before the setup window existed; the window is
+            // what makes an install long enough and visible enough to click at.
+            act("Installing…") {
+                await self.bootstrap.install()
+                guard self.isReady else {
+                    throw QDSError("The install did not complete; the server was not started.")
+                }
+                self.reloadConfig()
+                await self.client.update(config: self.config)
+                try await self.supervisor.start(config: self.config)
+            }
             return
         }
         act("Starting…") {
@@ -182,6 +232,78 @@ final class MenuModel {
             do { try await body() } catch { note = error.localizedDescription }
             busy = nil
         }
+    }
+
+    // ── The setup window ───────────────────────────────────────────────────
+
+    /// Open the window when an install starts, close it once it has finished
+    /// *and* succeeded.
+    ///
+    /// Only on success: a failure leaves it up, because the failure and its log
+    /// are the whole reason the window exists. A window that vanished on the
+    /// error would put the user back where they started, staring at a menu.
+    private func syncSetupWindow() {
+        if isInstalling {
+            setup.present(model: self)
+            return
+        }
+        guard setup.isOpen else { return }
+        if case .ready = bootstrapState {
+            // A beat, so "QDS is ready" and the four ticks are actually seen
+            // rather than flashing past on the way out.
+            //
+            // Generation-stamped: an update started during the wait gets its own
+            // window, and this timer must not close *that* one. Comparing a
+            // counter rather than re-reading `isInstalling` because the second
+            // install could also have finished by then, which would look
+            // identical and close a window the user is still reading.
+            let generation = installGeneration
+            Task {
+                try? await Task.sleep(for: .seconds(1.6))
+                guard self.installGeneration == generation, !self.isInstalling else { return }
+                self.setup.close()
+            }
+        }
+    }
+
+    /// Bring the window back after it was closed mid-install.
+    func showSetupProgress() {
+        setup.reveal(model: self)
+    }
+
+    func closeSetupWindow() {
+        setup.close()
+    }
+
+    /// Stop the install, or skip the enhancer — `Bootstrap.cancel` decides which
+    /// by looking at the phase, since only it knows whether the record is
+    /// already written.
+    func cancelInstall() {
+        bootstrap.cancel()
+    }
+
+    /// Run the whole thing again from the top, after a failure.
+    ///
+    /// No guard of its own: `act` already refuses while another command runs,
+    /// and a second one here would be a second authority on the same question.
+    func retryInstall() {
+        act("Installing…") {
+            await self.bootstrap.install()
+            guard self.isReady else {
+                throw QDSError("The install did not complete.")
+            }
+            self.reloadConfig()
+            await self.client.update(config: self.config)
+            try await self.supervisor.start(config: self.config)
+        }
+    }
+
+    /// The installer's output on the pasteboard, for a bug report.
+    func copyInstallLog() {
+        let text = installTranscript.joined(separator: "\n")
+        guard !text.isEmpty else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
     }
 
     // ── Reading ────────────────────────────────────────────────────────────

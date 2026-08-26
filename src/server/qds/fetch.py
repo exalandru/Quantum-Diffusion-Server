@@ -10,6 +10,10 @@ Two modes, both aimed at the desktop app but usable on their own:
 * `--rewriter` downloads whichever prompt rewriter the configuration names. An
   intent rather than a key, because the menubar app calls it and must not carry
   a copy of the catalogue in Swift.
+* `--upscalers` downloads every upscaler in the catalogue, for the same reason
+  and at the same call site. All of them rather than a chosen one: nothing
+  configures a default upscaler — the caller picks per request — and the whole
+  catalogue is 42.5 MB, so there is no subset worth choosing.
 * `--status` prints one JSON line per catalogue entry, saying whether its repo is
   in the HuggingFace cache and how much room it takes. Imports nothing heavier
   than `huggingface_hub`, so it answers instantly.
@@ -589,6 +593,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="download the configured prompt rewriter, whichever it is",
     )
     parser.add_argument(
+        "--upscalers",
+        action="store_true",
+        help="download every upscaler in the catalogue",
+    )
+    parser.add_argument(
         "--json-logs",
         action="store_true",
         default=env.flag("LOG_JSON"),
@@ -655,8 +664,30 @@ def main(argv: list[str] | None = None) -> int:
         key = settings.rewrite.model if by_key(settings.rewrite.model) else KEYS[0]
         return run_guarded(lambda: fetch(key), what="download")
 
+    if args.upscalers:
+        # An *intent*, like `--rewriter` above and for the same reason: the
+        # menubar app calls this at install time, and the two catalogue keys
+        # written out in Swift would be catalogue data duplicated into a second
+        # language that no test can keep in step. Adding a third upscaler should
+        # be an edit to `upscale/catalogue.py` and nowhere else.
+        #
+        # *Every* entry, not the configured one: unlike the rewriter there is no
+        # "configured upscaler" — the caller picks per request — and the whole
+        # catalogue is 42.5 MB, measured, against the 2.2 GB the rewriter costs.
+        # Choosing a subset would save nothing worth the decision.
+        setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
+        from qds.upscale.catalogue import KEYS as UPSCALER_KEYS
+
+        # Every one is attempted even if an earlier one fails, and the worst
+        # status wins: these are independent downloads, and stopping at the
+        # first failure would leave the rest un-fetched for no reason.
+        worst = 0
+        for key in UPSCALER_KEYS:
+            worst = max(worst, run_guarded(lambda key=key: fetch(key), what="download"))
+        return worst
+
     if not args.model:
-        parser.error("give a model key, --rewriter, or --status")
+        parser.error("give a model key, --rewriter, --upscalers, or --status")
 
     setup_logging(level="INFO", log_file=None, json_lines=args.json_logs)
     return run_guarded(lambda: fetch(args.model), what="download")

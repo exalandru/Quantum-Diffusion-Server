@@ -79,6 +79,58 @@ The menubar app starts the server and gets out of the way; the server owns
 its own configuration, its jobs and its interface. That split is why the same
 dashboard works on a headless Mac with no app at all.
 
+### Reporting an install
+
+Installing the server takes minutes on a cold cache — the packages alone were
+measured at 3m21s — so `Bootstrap` streams the installer's output instead of
+waiting for it. Two properties are load-bearing and easy to undo by accident:
+
+- **The pipe is drained incrementally** (`Bootstrap.drain`), never with
+  `readDataToEndOfFile()`, which returns only at EOF and therefore has nothing
+  to report while the install is running. The read happens off the main actor
+  because `availableData` blocks.
+- **`uv` writes its progress to stderr**, and its `Downloading <pkg> (<size>)`
+  lines are what `InstallProgress` weighs the bar by. Only that one phase has an
+  honest fraction; `fraction` returns `nil` for the others and the window draws
+  an indeterminate bar rather than inventing a percentage.
+
+`SetupWindow` renders it. `Bootstrap.label(for:)` is the shared status wording,
+and its ordering is pinned by `LabelMonotonicityTests` — both regressions caught
+there were labels that walked *backwards* mid-install.
+
+### The disk image
+
+`make build-dmg` builds in three stages, and the shape is forced by macOS:
+Finder's window settings (background picture, icon size and coordinates, window
+frame) live in a `.DS_Store` that only Finder can write, and only on a mounted,
+*writable* volume. So the script creates a UDRW image, mounts it, drives Finder
+over AppleScript, then converts to compressed UDZO.
+
+Three constraints were measured rather than assumed, and each one silently
+produced a plain image when got wrong:
+
+- **The volume must mount under `/Volumes`.** Finder resolves `disk "<name>"`
+  only for volumes mounted there; with `hdiutil attach -mountpoint <tmpdir>`
+  every `tell disk` fails with `-1728` and the window is never dressed.
+- **`.background` must be hidden *before* the AppleScript runs**, or Finder
+  catalogues it as a visible item and it appears in the shipped window.
+- **`bounds` is the window frame, not its content area.** The frame has to be
+  the artwork's height plus the title bar, or Finder tiles the picture and
+  leaves a bare strip.
+
+Two things the image cannot control, by design: Finder's **path bar** is a
+per-user preference, so the artwork keeps its lower rows empty
+(`PATHBAR_LANE` in `scripts/dmg-background.py`); and a user who has enabled
+"Show all filename extensions" sees `QDS.app` rather than `QDS`, whatever the
+per-item flag says.
+
+The background is committed at `assets/dmg/background*.png`. `make dmg-background`
+re-renders it and `make dmg-preview` composites the real icons onto it — the
+picture cannot be judged on its own, and both layout defects found during its
+development (a band swallowing the drag arrow, bands crossing the icons) were
+only visible in that composite. `_check_clear_lane` now refuses to render
+artwork that would collide with the icons, the wordmark, or the path bar.
+
 ## API documentation
 
 The server publishes its OpenAPI schema at `/openapi.json` and renders no
